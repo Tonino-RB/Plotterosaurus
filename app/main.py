@@ -61,6 +61,7 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Invalid calibration filename": "invalid_calibration_filename",
     "Calibration file not found": "calibration_file_not_found",
     "Pen height can only be live-adjusted at a pen-change pause": "pen_height_not_at_pause",
+    "Plotter is not actively plotting": "not_plotting",
     "No active job": "no_active_job",
     "Plotter busy": "plotter_busy",
     "Could not connect to the plotter. Check that it is powered on and plugged in.": "cannot_connect",
@@ -159,6 +160,8 @@ class _OptimizeCreateFields(BaseModel):
     optimize_svg_linesimplify: bool = True
     optimize_svg_linesort: bool = True
     optimize_svg_reloop: bool = True
+    optimize_svg_min_length: bool = False
+    optimize_svg_min_length_mm: float = 1.0
 
 
 class _OptimizeOptionalFields(BaseModel):
@@ -168,6 +171,8 @@ class _OptimizeOptionalFields(BaseModel):
     optimize_svg_linesimplify: bool | None = None
     optimize_svg_linesort: bool | None = None
     optimize_svg_reloop: bool | None = None
+    optimize_svg_min_length: bool | None = None
+    optimize_svg_min_length_mm: float | None = None
 
 
 class JobCreate(_OptimizeCreateFields):
@@ -214,14 +219,16 @@ class SettingsUpdate(BaseModel):
     speed_pendown_default: int | None = Field(None, ge=1, le=110)
     speed_penup_default: int | None = Field(None, ge=1, le=110)
     acceleration_default: int | None = Field(None, ge=1, le=100)
-    pen_pos_up_default: int | None = Field(None, ge=0, le=100)
-    pen_pos_down_default: int | None = Field(None, ge=0, le=100)
+    pen_pos_up_default: int | None = Field(None, ge=29, le=85)
+    pen_pos_down_default: int | None = Field(None, ge=29, le=85)
     optimize_svg_default: bool | None = None
     optimize_svg_tolerance_default_mm: float | None = Field(None, ge=0.01, le=10.0)
     optimize_svg_linemerge_default: bool | None = None
     optimize_svg_linesimplify_default: bool | None = None
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
+    optimize_svg_min_length_default: bool | None = None
+    optimize_svg_min_length_mm_default: float | None = Field(None, ge=0.01, le=100.0)
     display_unit: Literal["mm", "cm", "in"] | None = None
     machine_custom_enabled: bool | None = None
     machine_width_mm: float | None = Field(None, gt=0)
@@ -265,13 +272,14 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "speed_pendown": (1, 110),
     "speed_penup": (1, 110),
     "acceleration": (1, 100),
-    "pen_pos_up": (0, 100),
-    "pen_pos_down": (0, 100),
+    "pen_pos_up": (29, 85),
+    "pen_pos_down": (29, 85),
     "record_timelapse_interval_s": (0.5, 3600.0),
     "record_speed_multiplier": (1.1, 60.0),
     "transform_scale": (0.01, 5.0),
     "transform_rotation_deg": (0.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
+    "optimize_svg_min_length_mm": (0.01, 100.0),
 }
 
 
@@ -634,6 +642,9 @@ async def api_create_job(file: UploadFile = File(...),
         "optimize_svg_linesimplify": pick(meta.optimize_svg_linesimplify, config.OPTIMIZE_SVG_LINESIMPLIFY_DEFAULT),
         "optimize_svg_linesort": pick(meta.optimize_svg_linesort, config.OPTIMIZE_SVG_LINESORT_DEFAULT),
         "optimize_svg_reloop": pick(meta.optimize_svg_reloop, config.OPTIMIZE_SVG_RELOOP_DEFAULT),
+        "optimize_svg_min_length": pick(meta.optimize_svg_min_length, config.OPTIMIZE_SVG_MIN_LENGTH_DEFAULT),
+        "optimize_svg_min_length_mm": pick(meta.optimize_svg_min_length_mm,
+                                          config.OPTIMIZE_SVG_MIN_LENGTH_MM_DEFAULT),
     }
     _clamp_job_fields(job_payload, paper_width_mm, paper_height_mm)
     # auto_plot: only kick the worker if no other job is in a runnable or
@@ -923,8 +934,8 @@ def api_nudge_origin_queue(req: NudgeOriginRequest):
 
 
 class LivePenHeightRequest(BaseModel):
-    pen_pos_up: int | None = Field(None, ge=0, le=100)
-    pen_pos_down: int | None = Field(None, ge=0, le=100)
+    pen_pos_up: int | None = Field(None, ge=29, le=85)
+    pen_pos_down: int | None = Field(None, ge=29, le=85)
     test: Literal["up", "down"]
 
 
@@ -940,6 +951,28 @@ def live_pen_height_queue(req: LivePenHeightRequest):
 @app.post("/api/v1/queue/pen-height", dependencies=[Depends(require_api_key)])
 def api_live_pen_height_queue(req: LivePenHeightRequest):
     return live_pen_height_queue(req)
+
+
+class LivePlotSettingsRequest(BaseModel):
+    speed_pendown: int | None = Field(None, ge=1, le=110)
+    speed_penup: int | None = Field(None, ge=1, le=110)
+    acceleration: int | None = Field(None, ge=1, le=100)
+    pen_pos_up: int | None = Field(None, ge=29, le=85)
+    pen_pos_down: int | None = Field(None, ge=29, le=85)
+
+
+@app.post("/queue/live-settings")
+def live_plot_settings_queue(req: LivePlotSettingsRequest):
+    try:
+        plot_worker.set_live_plot_settings(**req.model_dump())
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/queue/live-settings", dependencies=[Depends(require_api_key)])
+def api_live_plot_settings_queue(req: LivePlotSettingsRequest):
+    return live_plot_settings_queue(req)
 
 
 # Manual pen control -------------------------------------------------------

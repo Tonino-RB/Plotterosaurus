@@ -36,6 +36,27 @@ def _top_level_layers(root):
     return [g for g in root if g.tag == LAYER_TAG and g.get(GROUPMODE_ATTR) == "layer"]
 
 
+def svg_size_mm(root) -> tuple[float | None, float | None]:
+    """Physical size in mm from the width/height attributes, falling back to
+    the viewBox (treated as CSS px at 96dpi) when width/height are missing or
+    use a non-physical unit like `%`. This mirrors how vpype resolves the same
+    ambiguity, so a job's plotted size stays consistent whether or not
+    "Optimize SVG" is enabled.
+    """
+    w = parse_dim_to_mm(root.get("width", ""))
+    h = parse_dim_to_mm(root.get("height", ""))
+    if w is None or h is None:
+        vb = root.get("viewBox", "")
+        parts = vb.split() if vb else []
+        if len(parts) == 4:
+            vb_w, vb_h = float(parts[2]), float(parts[3])
+            if w is None and vb_w:
+                w = vb_w * 25.4 / 96.0
+            if h is None and vb_h:
+                h = vb_h * 25.4 / 96.0
+    return w, h
+
+
 def parse_layers(svg_path: Path) -> dict:
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
@@ -49,13 +70,14 @@ def parse_layers(svg_path: Path) -> dict:
                 "addressable": bool(label) and label[0].isdigit(),
             }
         )
+    width_mm, height_mm = svg_size_mm(root)
     return {
         "layers": layers,
         "width": root.get("width", ""),
         "height": root.get("height", ""),
         "viewBox": root.get("viewBox", ""),
-        "width_mm": parse_dim_to_mm(root.get("width", "")),
-        "height_mm": parse_dim_to_mm(root.get("height", "")),
+        "width_mm": width_mm,
+        "height_mm": height_mm,
     }
 
 
@@ -94,8 +116,9 @@ def transform_to_paper(
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
 
-    orig_w_mm = parse_dim_to_mm(root.get("width", "")) or paper_width_mm
-    orig_h_mm = parse_dim_to_mm(root.get("height", "")) or paper_height_mm
+    orig_w_mm, orig_h_mm = svg_size_mm(root)
+    orig_w_mm = orig_w_mm or paper_width_mm
+    orig_h_mm = orig_h_mm or paper_height_mm
 
     vb = root.get("viewBox", "")
     if vb:

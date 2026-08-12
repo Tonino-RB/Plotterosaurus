@@ -44,11 +44,15 @@ def build_pipeline(
     linesimplify: bool,
     linesort: bool,
     reloop: bool,
+    min_length_enabled: bool = False,
+    min_length_mm: float = 1.0,
 ) -> list[str]:
     cmd = _vpype_cmd()
     cmd += ["read", str(src)]
     if linemerge:
         cmd += ["linemerge", "--tolerance", f"{tolerance_mm}mm"]
+    if min_length_enabled:
+        cmd += ["filter", "--min-length", f"{min_length_mm}mm"]
     if linesimplify:
         cmd += ["linesimplify", "--tolerance", f"{tolerance_mm}mm"]
     if linesort:
@@ -67,13 +71,16 @@ def optimize_svg(
     linesimplify: bool,
     linesort: bool,
     reloop: bool,
+    min_length_enabled: bool = False,
+    min_length_mm: float = 1.0,
 ) -> None:
     """Produce ``dst`` from ``src``. Raises ``OptimizeError`` on vpype failure."""
-    if not any([linemerge, linesimplify, linesort, reloop]):
+    if not any([linemerge, linesimplify, linesort, reloop, min_length_enabled]):
         # No-op pipeline: copy source to keep downstream code uniform.
         shutil.copyfile(src, dst)
         return
-    cmd = build_pipeline(src, dst, tolerance_mm, linemerge, linesimplify, linesort, reloop)
+    cmd = build_pipeline(src, dst, tolerance_mm, linemerge, linesimplify, linesort, reloop,
+                         min_length_enabled, min_length_mm)
     log.info("optimize: %s", " ".join(cmd))
     env = {**os.environ, "VPYPE_NO_COLOR": "1"}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

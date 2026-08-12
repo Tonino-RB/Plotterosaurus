@@ -180,6 +180,8 @@
   "optimize.linesort": "Reorder for less travel (linesort)",
   "optimize.reloop": "Randomize closed-path start (reloop)",
   "optimize.tolerance_label": "Tolerance (mm) — used by linemerge + linesimplify",
+  "optimize.min_length": "Drop segments shorter than a minimum length",
+  "optimize.min_length_label": "Minimum segment length (mm)",
 
   "layer.default_label": "Layer {n}",
   "layer_type.pattern": "pattern",

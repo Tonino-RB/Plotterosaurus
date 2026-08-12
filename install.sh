@@ -109,6 +109,17 @@ if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     run_sudo systemctl stop "$SERVICE_NAME"
 fi
 
+# Retire a pre-rename "plotterhub" unit left over from before this project
+# was forked as Plotterosaurus. Only touched if it points at this exact repo
+# checkout, so an unrelated same-named service elsewhere is never disturbed.
+LEGACY_UNIT="/etc/systemd/system/plotterhub.service"
+if [ -f "$LEGACY_UNIT" ] && grep -q "^WorkingDirectory=$PROJECT_DIR$" "$LEGACY_UNIT"; then
+    echo ">>> Retiring legacy plotterhub.service (superseded by $SERVICE_NAME)"
+    run_sudo systemctl disable --now plotterhub
+    run_sudo rm -f "$LEGACY_UNIT"
+    run_sudo systemctl daemon-reload
+fi
+
 # Pick a free port
 if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE '(^|:)80$'; then
     PORT=8080

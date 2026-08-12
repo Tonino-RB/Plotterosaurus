@@ -42,6 +42,14 @@ _calibration_filename: str | None = None   # set alongside _calibrate_event to r
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
+# Pending live speed/pen-height changes, applied from the worker thread at the
+# next pause_check() checkpoint (see _LiveAdjustAxiDraw) — the only hook
+# plot_run() calls repeatedly on the worker thread while a stage is in
+# progress, and the one safe place to touch the serial port without racing
+# the worker thread's own writes.
+_live_settings_lock = threading.Lock()
+_pending_live_settings: dict | None = None
+
 _poll_thread: threading.Thread | None = None
 _stop_polling = threading.Event()
 _BUTTON_POLL_INTERVAL_S = 0.3
@@ -260,10 +268,55 @@ def _apply_custom_bed_size(ad: axidraw.AxiDraw) -> None:
     setattr(ad.params, y_attr, min(config.MACHINE_HEIGHT_MM / 25.4, hw_y_in))
 
 
+class _LiveAdjustAxiDraw(axidraw.AxiDraw):
+    """AxiDraw subclass that applies pending live speed/pen-height changes at
+    the same per-segment checkpoint the driver already uses for pause
+    handling — see _apply_pending_live_settings."""
+
+    def pause_check(self):
+        _apply_pending_live_settings(self)
+        return super().pause_check()
+
+
+def _apply_pending_live_settings(ad: axidraw.AxiDraw) -> None:
+    global _pending_live_settings
+    with _live_settings_lock:
+        pending = _pending_live_settings
+        _pending_live_settings = None
+    if not pending:
+        return
+    speed_changed = False
+    if "speed_pendown" in pending:
+        ad.options.speed_pendown = pending["speed_pendown"]
+        speed_changed = True
+    if "speed_penup" in pending:
+        ad.options.speed_penup = pending["speed_penup"]
+        speed_changed = True
+    if "acceleration" in pending:
+        ad.options.accel = pending["acceleration"]  # read fresh per segment already
+    if speed_changed:
+        try:
+            ad.enable_motors()
+        except Exception:
+            log.exception("live settings: enable_motors failed")
+    pen_changed = False
+    if "pen_pos_up" in pending:
+        ad.options.pen_pos_up = pending["pen_pos_up"]
+        pen_changed = True
+    if "pen_pos_down" in pending:
+        ad.options.pen_pos_down = pending["pen_pos_down"]
+        pen_changed = True
+    if pen_changed:
+        try:
+            ad.pen.servo_init(ad)
+        except Exception:
+            log.exception("live settings: servo_init failed")
+
+
 def _run_stage(current_svg: Path, mode: str, job: dict,
                stage: dict | None = None) -> tuple[int, str]:
     global _current_ad
-    ad = axidraw.AxiDraw()
+    ad = _LiveAdjustAxiDraw()
     try:
         ad.plot_setup(str(current_svg))
         ad.options.mode = mode
@@ -581,6 +634,33 @@ def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
         ad.disconnect()
 
 
+def set_live_plot_settings(speed_pendown: int | None = None, speed_penup: int | None = None,
+                           acceleration: int | None = None, pen_pos_up: int | None = None,
+                           pen_pos_down: int | None = None) -> None:
+    """Live-adjust speed/pen-height while a stage is actively plotting. Applied
+    at the next pause_check() checkpoint (i.e. the next motion/pen command) —
+    see _LiveAdjustAxiDraw. Persists onto the job so the UI reflects it and
+    later stages default to it (a per-stage speed override, used for
+    layer-encoded speeds in multi-stage jobs, can still take precedence at the
+    next stage boundary — same limitation set_live_pen_heights already has for
+    pen height across stages)."""
+    job = state.active_job()
+    if job is None or job["status"] != "plotting" or _current_ad is None:
+        raise RuntimeError("Plotter is not actively plotting")
+    updates = {}
+    for key, val in (("speed_pendown", speed_pendown), ("speed_penup", speed_penup),
+                     ("acceleration", acceleration), ("pen_pos_up", pen_pos_up),
+                     ("pen_pos_down", pen_pos_down)):
+        if val is not None:
+            updates[key] = val
+    if not updates:
+        return
+    global _pending_live_settings
+    with _live_settings_lock:
+        _pending_live_settings = {**(_pending_live_settings or {}), **updates}
+    state.update_job(job["job_id"], **updates)
+
+
 def trigger_calibration() -> None:
     """Run a one-shot plot of every layer with type='calibration', then return
     to the awaiting_pen_change pause. Only valid while the active job is
@@ -760,6 +840,8 @@ def _optimize_cache_key(job: dict) -> str:
         f"ls={int(bool(job.get('optimize_svg_linesimplify', True)))}",
         f"so={int(bool(job.get('optimize_svg_linesort', True)))}",
         f"rl={int(bool(job.get('optimize_svg_reloop', True)))}",
+        f"ml={int(bool(job.get('optimize_svg_min_length', False)))}",
+        f"mlm={float(job.get('optimize_svg_min_length_mm', 1.0)):.4f}",
     ])
 
 
@@ -1160,7 +1242,22 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
 
         if stopped in _PAUSED_CODES:
             resume_path = svg_path.with_name(f"{job['svg_id']}.s{i}.resume.svg")
-            resume_path.write_text(output_svg, encoding="utf-8")
+            try:
+                resume_path.write_text(output_svg, encoding="utf-8")
+            except OSError:
+                # The plotter has already physically stopped at this point —
+                # if we can't save resume progress (e.g. disk full), the job
+                # must still leave 'plotting' or it's stuck there forever with
+                # no worker thread left to move it (every future pause/cancel
+                # click 409s on an invalid transition until a service restart).
+                log.exception("failed to write resume SVG for job %s", job_id)
+                _cancel_flag.clear()
+                _stop_button_poll()
+                state.update_job(job_id, status="failed", resume_path=None,
+                                 error="Could not save plot progress (disk full or write "
+                                       "error). The plotter has stopped physically; home it "
+                                       "manually before starting another job.")
+                return
             if _cancel_flag.is_set():
                 _cancel_flag.clear()
                 state.update_job(job_id, status="homing", resume_path=str(resume_path))

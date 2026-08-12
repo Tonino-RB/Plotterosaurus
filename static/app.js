@@ -87,6 +87,8 @@ let appSettings = {
   optimize_svg_linesimplify_default: true,
   optimize_svg_linesort_default: true,
   optimize_svg_reloop_default: true,
+  optimize_svg_min_length_default: false,
+  optimize_svg_min_length_mm_default: 1.0,
   display_unit: null,
 };
 
@@ -275,6 +277,8 @@ async function uploadAndQueue(file) {
       optimize_svg_linesimplify: appSettings.optimize_svg_linesimplify_default,
       optimize_svg_linesort: appSettings.optimize_svg_linesort_default,
       optimize_svg_reloop: appSettings.optimize_svg_reloop_default,
+      optimize_svg_min_length: appSettings.optimize_svg_min_length_default,
+      optimize_svg_min_length_mm: appSettings.optimize_svg_min_length_mm_default,
     };
     const jobRes = await fetch("/jobs", {
       method: "POST",
@@ -506,6 +510,9 @@ function createCardForJob(job) {
   card.querySelector(".optimize-linesort").checked = job.optimize_svg_linesort !== false;
   card.querySelector(".optimize-reloop").checked = job.optimize_svg_reloop !== false;
   card.querySelector(".optimize-tolerance").value = (job.optimize_svg_tolerance_mm ?? 0.10).toFixed(2);
+  card.querySelector(".optimize-min-length").checked = !!job.optimize_svg_min_length;
+  card.querySelector(".optimize-min-length-mm").value = (job.optimize_svg_min_length_mm ?? 1.0).toFixed(2);
+  card.querySelector(".optimize-min-length-options").hidden = !job.optimize_svg_min_length;
   applyOptimizeEnabledStyle(card);
 
   // Clicking the card header toggles expansion; action buttons stop propagation.
@@ -572,6 +579,11 @@ function createCardForJob(job) {
       queueCardUpdate(card);
     }));
   card.querySelector(".optimize-tolerance").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".optimize-min-length").addEventListener("change", () => {
+    card.querySelector(".optimize-min-length-options").hidden = !card.querySelector(".optimize-min-length").checked;
+    queueCardUpdate(card);
+  });
+  card.querySelector(".optimize-min-length-mm").addEventListener("change", () => queueCardUpdate(card));
   [card.querySelector(".speed-pendown"),
    card.querySelector(".speed-penup"),
    card.querySelector(".accel"),
@@ -583,6 +595,14 @@ function createCardForJob(job) {
   // the new height, the same way the camera picture sliders push live.
   card.querySelector(".pen-pos-up").addEventListener("input", () => applyLivePenHeight(card, "up"));
   card.querySelector(".pen-pos-down").addEventListener("input", () => applyLivePenHeight(card, "down"));
+  // While this card's job is actively plotting, dragging any of these
+  // sliders also pushes the change live to the running plot (see
+  // applyLiveSetting) — applied at the next motion/pen command.
+  card.querySelector(".speed-pendown").addEventListener("input", () => applyLiveSetting(card, "speed_pendown", ".speed-pendown"));
+  card.querySelector(".speed-penup").addEventListener("input", () => applyLiveSetting(card, "speed_penup", ".speed-penup"));
+  card.querySelector(".accel").addEventListener("input", () => applyLiveSetting(card, "acceleration", ".accel"));
+  card.querySelector(".pen-pos-up").addEventListener("input", () => applyLiveSetting(card, "pen_pos_up", ".pen-pos-up"));
+  card.querySelector(".pen-pos-down").addEventListener("input", () => applyLiveSetting(card, "pen_pos_down", ".pen-pos-down"));
 
   const transformInputs = [
     card.querySelector(".transform-scale"),
@@ -674,12 +694,13 @@ async function fetchSvgMeta(svg_id) {
       layers.push({ index, label, addressable: !!label && /^\d/.test(label) });
       index++;
     }
+    const [width_mm, height_mm] = svgSizeMm(root);
     return {
       id: svg_id,
       width: root.getAttribute("width") || "",
       height: root.getAttribute("height") || "",
-      width_mm: parseDimToMm(root.getAttribute("width") || ""),
-      height_mm: parseDimToMm(root.getAttribute("height") || ""),
+      width_mm,
+      height_mm,
       viewBox: root.getAttribute("viewBox") || "",
       layers,
       text,
@@ -698,6 +719,22 @@ function parseDimToMm(s) {
   if (unit === "in") return v * 25.4;
   if (unit === "mm") return v;
   return v * 25.4 / 96;
+}
+
+// Falls back to the viewBox (treated as CSS px at 96dpi) when width/height
+// are missing or use a non-physical unit like `%` — mirrors svg_size_mm() in
+// app/svg_utils.py so the preview matches what actually gets plotted.
+function svgSizeMm(root) {
+  let w = parseDimToMm(root.getAttribute("width") || "");
+  let h = parseDimToMm(root.getAttribute("height") || "");
+  if (w == null || h == null) {
+    const parts = (root.getAttribute("viewBox") || "").trim().split(/\s+/).map(Number);
+    if (parts.length === 4) {
+      if (w == null && parts[2]) w = parts[2] * 25.4 / 96;
+      if (h == null && parts[3]) h = parts[3] * 25.4 / 96;
+    }
+  }
+  return [w, h];
 }
 
 function formatDim(s) {
@@ -971,6 +1008,10 @@ function resetOptimize(card) {
   card.querySelector(".optimize-reloop").checked = !!appSettings.optimize_svg_reloop_default;
   card.querySelector(".optimize-tolerance").value =
     (appSettings.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
+  card.querySelector(".optimize-min-length").checked = !!appSettings.optimize_svg_min_length_default;
+  card.querySelector(".optimize-min-length-mm").value =
+    (appSettings.optimize_svg_min_length_mm_default ?? 1.0).toFixed(2);
+  card.querySelector(".optimize-min-length-options").hidden = !card.querySelector(".optimize-min-length").checked;
   applyOptimizeEnabledStyle(card);
   queueCardUpdate(card);
 }
@@ -1248,6 +1289,11 @@ function renderLayers(card, job) {
         }
         return sel;
       });
+      // Write back immediately so a second edit fired before this one's
+      // debounced PATCH lands (e.g. rapid checkbox toggles or a toggle right
+      // after a reorder) builds on this result instead of the stale
+      // pre-edit snapshot still sitting in serverState.queue.
+      if (cur) cur.layer_selections = layers;
       const selectedCount = layers.filter((l) => l.selected).length;
       card.querySelector(".multi-layer-options").hidden = selectedCount < 2;
       syncPreviewLayers(card, { ...job, layer_selections: layers });
@@ -1274,6 +1320,11 @@ function moveLayer(card, layerIndex, delta) {
   const newPos = pos + delta;
   if (newPos < 0 || newPos >= layers.length) return;
   [layers[pos], layers[newPos]] = [layers[newPos], layers[pos]];
+  // Write back immediately — see the matching comment in the checkbox
+  // handler above. Without this, clicking ↑/↓ repeatedly (faster than the
+  // 150ms PATCH debounce) has each click reorder the same stale pre-edit
+  // array instead of stacking on the previous click's result.
+  job.layer_selections = layers;
   renderLayers(card, { ...job, layer_selections: layers });
   queueCardUpdate(card, { layer_selections: layers });
 }
@@ -1419,6 +1470,9 @@ async function sendCardUpdate(card, immediateUpdates) {
     updates.optimize_svg_reloop = card.querySelector(".optimize-reloop").checked;
     const tol = parseFloat(card.querySelector(".optimize-tolerance").value);
     if (isFinite(tol) && tol > 0) updates.optimize_svg_tolerance_mm = tol;
+    updates.optimize_svg_min_length = card.querySelector(".optimize-min-length").checked;
+    const minLen = parseFloat(card.querySelector(".optimize-min-length-mm").value);
+    if (isFinite(minLen) && minLen > 0) updates.optimize_svg_min_length_mm = minLen;
   }
   try {
     await fetch(`/jobs/${card.dataset.id}`, {
@@ -1598,6 +1652,33 @@ function applyLivePenHeight(card, which) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+    } catch (e) {
+      topMessage.textContent = t("error.request_failed", { message: e.message });
+      topMessage.className = "error";
+    }
+  }, 300);
+}
+
+// Live speed/pen-height push while a plot is actively running (as opposed to
+// applyLivePenHeight above, which only fires at an awaiting_pen_change pause
+// and does a physical test move). The two gates are mutually exclusive by
+// status, so both sets of listeners can safely share the pen-pos-up/down
+// inputs. See set_live_plot_settings in plot_worker.py.
+const liveSettingsDebounceTimers = {};
+function applyLiveSetting(card, field, selector) {
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job || job.job_id !== serverState.active_id || job.status !== "plotting") return;
+  clearTimeout(liveSettingsDebounceTimers[field]);
+  liveSettingsDebounceTimers[field] = setTimeout(async () => {
+    try {
+      const val = parseInt(card.querySelector(selector).value, 10);
+      if (!Number.isFinite(val)) return;
+      const res = await fetch("/queue/live-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: val }),
       });
       if (!res.ok) throw new Error(await readErr(res));
     } catch (e) {
@@ -1932,6 +2013,9 @@ const settingsOptimizeLinesimplify = $("settings-optimize-linesimplify");
 const settingsOptimizeLinesort = $("settings-optimize-linesort");
 const settingsOptimizeReloop = $("settings-optimize-reloop");
 const settingsOptimizeTolerance = $("settings-optimize-tolerance");
+const settingsOptimizeMinLength = $("settings-optimize-min-length");
+const settingsOptimizeMinLengthMm = $("settings-optimize-min-length-mm");
+const settingsOptimizeMinLengthOptions = $("settings-optimize-min-length-options");
 const settingsDisplayUnit = $("settings-display-unit");
 const settingsLanguage = $("settings-language");
 settingsBtn.addEventListener("click", openSettings);
@@ -1985,6 +2069,8 @@ function applyAppSettings(data) {
     optimize_svg_linesimplify_default: data.optimize_svg_linesimplify_default ?? appSettings.optimize_svg_linesimplify_default,
     optimize_svg_linesort_default: data.optimize_svg_linesort_default ?? appSettings.optimize_svg_linesort_default,
     optimize_svg_reloop_default: data.optimize_svg_reloop_default ?? appSettings.optimize_svg_reloop_default,
+    optimize_svg_min_length_default: data.optimize_svg_min_length_default ?? appSettings.optimize_svg_min_length_default,
+    optimize_svg_min_length_mm_default: data.optimize_svg_min_length_mm_default ?? appSettings.optimize_svg_min_length_mm_default,
     display_unit: data.display_unit ?? appSettings.display_unit,
     machine_custom_enabled: data.machine_custom_enabled ?? appSettings.machine_custom_enabled,
     machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
@@ -2064,6 +2150,9 @@ async function openSettings() {
     settingsOptimizeLinesort.checked = data.optimize_svg_linesort_default !== false;
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
+    settingsOptimizeMinLength.checked = !!(data.optimize_svg_min_length_default ?? false);
+    settingsOptimizeMinLengthMm.value = (data.optimize_svg_min_length_mm_default ?? 1.0).toFixed(2);
+    settingsOptimizeMinLengthOptions.hidden = !settingsOptimizeMinLength.checked;
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
@@ -2090,6 +2179,7 @@ async function openSettings() {
 async function saveSettings() {
   try {
     const tol = parseFloat(settingsOptimizeTolerance.value);
+    const minLen = parseFloat(settingsOptimizeMinLengthMm.value);
     const body = {
       plotter_model: parseInt(settingsPlotterModel.value),
       pause_between_layers_default: settingsPauseBetweenLayers.checked,
@@ -2106,6 +2196,8 @@ async function saveSettings() {
       optimize_svg_linesimplify_default: settingsOptimizeLinesimplify.checked,
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
+      optimize_svg_min_length_default: settingsOptimizeMinLength.checked,
+      optimize_svg_min_length_mm_default: isFinite(minLen) && minLen > 0 ? minLen : 1.0,
       display_unit: settingsDisplayUnit.value,
       machine_custom_enabled: settingsMachineCustomEnabled.checked,
       machine_width_mm: parseFloat(settingsMachineWidth.value) || 297,
@@ -2443,6 +2535,9 @@ function resetSettingsOptimize() {
   settingsOptimizeLinesort.checked = true;
   settingsOptimizeReloop.checked = true;
   settingsOptimizeTolerance.value = (0.10).toFixed(2);
+  settingsOptimizeMinLength.checked = false;
+  settingsOptimizeMinLengthMm.value = (1.0).toFixed(2);
+  settingsOptimizeMinLengthOptions.hidden = true;
   applySettingsOptimizeEnabledStyle();
 }
 
@@ -2464,6 +2559,9 @@ settingsOptimize?.addEventListener("change", () => {
 [settingsOptimizeLinemerge, settingsOptimizeLinesimplify,
  settingsOptimizeLinesort, settingsOptimizeReloop]
   .forEach((el) => el?.addEventListener("change", syncSettingsOptimizeMaster));
+settingsOptimizeMinLength?.addEventListener("change", () => {
+  settingsOptimizeMinLengthOptions.hidden = !settingsOptimizeMinLength.checked;
+});
 
 // Wire collapsible sections + reset button inside the Settings modal
 function resetSettingsSpeed() {

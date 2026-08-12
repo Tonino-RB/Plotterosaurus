@@ -7,7 +7,24 @@
 </head>
 <body>
   <header>
-    <h1><span class="app-logo">Plotterosaurus</span> <span class="version" id="app-version"></span></h1>
+    <h1>
+      <span class="app-logo-icon" aria-hidden="true">
+        <svg viewBox="0 0 40 32" width="30" height="24" focusable="false">
+          <path d="M8,19 Q2,17 1,11 Q5,14 9,16 Z" fill="#7c9a5e" stroke="#2c2418" stroke-width="1" stroke-linejoin="round"/>
+          <ellipse cx="17" cy="20" rx="10" ry="7.5" fill="#7c9a5e" stroke="#2c2418" stroke-width="1"/>
+          <rect x="10" y="24.5" width="4.5" height="6.5" rx="2.2" fill="#7c9a5e" stroke="#2c2418" stroke-width="1"/>
+          <rect x="20" y="24.5" width="4.5" height="6.5" rx="2.2" fill="#7c9a5e" stroke="#2c2418" stroke-width="1"/>
+          <polygon points="13,12.5 15,6.5 17,12.5" fill="#b8563a" stroke="#2c2418" stroke-width="0.8" stroke-linejoin="round"/>
+          <polygon points="17,12.5 19,5.5 21,12.5" fill="#b8563a" stroke="#2c2418" stroke-width="0.8" stroke-linejoin="round"/>
+          <polygon points="21,12.5 23,6.5 25,12.5" fill="#b8563a" stroke="#2c2418" stroke-width="0.8" stroke-linejoin="round"/>
+          <circle cx="30" cy="13" r="5.5" fill="#7c9a5e" stroke="#2c2418" stroke-width="1"/>
+          <ellipse cx="35.2" cy="14.5" rx="2.6" ry="2" fill="#7c9a5e" stroke="#2c2418" stroke-width="1"/>
+          <circle cx="31.3" cy="11.3" r="1" fill="#2c2418"/>
+          <path d="M34,16.3 Q36,17.6 37.8,16.2" fill="none" stroke="#2c2418" stroke-width="1" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="app-logo">Plotterosaurus</span> <span class="version" id="app-version"></span>
+    </h1>
     <div class="header-right">
       <div id="status" class="status idle" data-i18n="status.idle">Idle</div>
       <button id="camera-settings-btn" class="icon-btn" title="Camera" aria-label="Camera settings" data-i18n-title="a11y.camera_settings" data-i18n-aria-label="a11y.camera_settings" hidden>
@@ -31,23 +48,25 @@
     </div>
   </header>
 
-  <div id="pen-controls" class="pen-controls">
-    <span class="pen-controls-label" data-i18n="controls.pen_label">Manual pen control:</span>
-    <button id="pen-up-btn" class="neutral" type="button" data-i18n="controls.pen_up">Pen Up</button>
-    <button id="pen-down-btn" class="neutral" type="button" data-i18n="controls.pen_down">Pen Down</button>
-    <button id="motors-enable-btn" class="neutral" type="button" data-i18n="controls.motors_enable">Enable Motors</button>
-    <button id="motors-disable-btn" class="neutral" type="button" data-i18n="controls.motors_disable">Disable Motors</button>
-    <span id="pen-controls-message" class="muted"></span>
-  </div>
+  <div class="controls-bar">
+    <div id="pen-controls" class="pen-controls">
+      <span class="pen-controls-label" data-i18n="controls.pen_label">Manual pen control:</span>
+      <button id="pen-up-btn" class="neutral" type="button" data-i18n="controls.pen_up">Pen Up</button>
+      <button id="pen-down-btn" class="neutral" type="button" data-i18n="controls.pen_down">Pen Down</button>
+      <button id="motors-enable-btn" class="neutral" type="button" data-i18n="controls.motors_enable">Enable Motors</button>
+      <button id="motors-disable-btn" class="neutral" type="button" data-i18n="controls.motors_disable">Disable Motors</button>
+      <span id="pen-controls-message" class="muted"></span>
+    </div>
 
-  <div id="camera-controls" class="pen-controls" hidden>
-    <span class="pen-controls-label" data-i18n="controls.recording_label">Recording:</span>
-    <button id="camera-start-btn" class="neutral" type="button" data-i18n="controls.recording_start">Start</button>
-    <button id="camera-pause-btn" class="neutral" type="button" hidden data-i18n="controls.recording_pause">Pause</button>
-    <button id="camera-resume-btn" class="neutral" type="button" hidden data-i18n="controls.recording_resume">Resume</button>
-    <button id="camera-stop-btn" class="danger" type="button" hidden data-i18n="controls.recording_stop">Stop</button>
-    <span id="camera-recording-indicator" class="recording-indicator" hidden></span>
-    <span id="camera-controls-message" class="muted"></span>
+    <div id="camera-controls" class="pen-controls" hidden>
+      <span class="pen-controls-label" data-i18n="controls.recording_label">Recording:</span>
+      <button id="camera-start-btn" class="neutral" type="button" data-i18n="controls.recording_start">Start</button>
+      <button id="camera-pause-btn" class="neutral" type="button" hidden data-i18n="controls.recording_pause">Pause</button>
+      <button id="camera-resume-btn" class="neutral" type="button" hidden data-i18n="controls.recording_resume">Resume</button>
+      <button id="camera-stop-btn" class="danger" type="button" hidden data-i18n="controls.recording_stop">Stop</button>
+      <span id="camera-recording-indicator" class="recording-indicator" hidden></span>
+      <span id="camera-controls-message" class="muted"></span>
+    </div>
   </div>
 
   <div id="update-banner" class="update-banner" hidden>
@@ -225,17 +244,17 @@
           <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
           <div class="slider-stack">
             <label class="field slider">
-              <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (0–100)</span>
+              <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (29–85)</span>
               <div class="slider-row">
-                <input type="range" id="settings-pen-pos-up-slider" min="0" max="100" step="1" value="60" />
-                <input type="number" id="settings-pen-pos-up" min="0" max="100" step="1" value="60" />
+                <input type="range" id="settings-pen-pos-up-slider" min="29" max="85" step="1" value="60" />
+                <input type="number" id="settings-pen-pos-up" min="29" max="85" step="1" value="60" />
               </div>
             </label>
             <label class="field slider">
-              <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (0–100)</span>
+              <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (29–85)</span>
               <div class="slider-row">
-                <input type="range" id="settings-pen-pos-down-slider" min="0" max="100" step="1" value="30" />
-                <input type="number" id="settings-pen-pos-down" min="0" max="100" step="1" value="30" />
+                <input type="range" id="settings-pen-pos-down-slider" min="29" max="85" step="1" value="30" />
+                <input type="number" id="settings-pen-pos-down" min="29" max="85" step="1" value="30" />
               </div>
             </label>
           </div>
@@ -275,6 +294,16 @@
               <span class="field-label" data-i18n="optimize.tolerance_label">Tolerance (mm) — used by linemerge + linesimplify</span>
               <input type="number" id="settings-optimize-tolerance" min="0.01" max="10" step="0.01" value="0.10" />
             </label>
+            <label class="inline-check">
+              <input type="checkbox" id="settings-optimize-min-length" />
+              <span data-i18n="optimize.min_length">Drop segments shorter than a minimum length</span>
+            </label>
+            <div class="optimize-min-length-options" id="settings-optimize-min-length-options" hidden>
+              <label class="field">
+                <span class="field-label" data-i18n="optimize.min_length_label">Minimum segment length (mm)</span>
+                <input type="number" id="settings-optimize-min-length-mm" min="0.01" max="100" step="0.01" value="1.00" />
+              </label>
+            </div>
           </div>
         </div>
       </section>
@@ -720,17 +749,17 @@
                     </div>
                   </label>
                   <label class="field slider">
-                    <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (0–100)</span>
+                    <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (29–85)</span>
                     <div class="slider-row">
-                      <input type="range" class="pen-pos-up-slider" min="0" max="100" step="1" value="60" />
-                      <input type="number" class="pen-pos-up" value="60" min="0" max="100" step="1" />
+                      <input type="range" class="pen-pos-up-slider" min="29" max="85" step="1" value="60" />
+                      <input type="number" class="pen-pos-up" value="60" min="29" max="85" step="1" />
                     </div>
                   </label>
                   <label class="field slider">
-                    <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (0–100)</span>
+                    <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (29–85)</span>
                     <div class="slider-row">
-                      <input type="range" class="pen-pos-down-slider" min="0" max="100" step="1" value="30" />
-                      <input type="number" class="pen-pos-down" value="30" min="0" max="100" step="1" />
+                      <input type="range" class="pen-pos-down-slider" min="29" max="85" step="1" value="30" />
+                      <input type="number" class="pen-pos-down" value="30" min="29" max="85" step="1" />
                     </div>
                   </label>
                 </div>
@@ -898,6 +927,16 @@
                     <span class="field-label" data-i18n="optimize.tolerance_label">Tolerance (mm) — used by linemerge + linesimplify</span>
                     <input type="number" class="optimize-tolerance" min="0.01" max="10" step="0.01" value="0.10" />
                   </label>
+                  <label class="inline-check">
+                    <input type="checkbox" class="optimize-min-length" />
+                    <span data-i18n="optimize.min_length">Drop segments shorter than a minimum length</span>
+                  </label>
+                  <div class="optimize-min-length-options" hidden>
+                    <label class="field">
+                      <span class="field-label" data-i18n="optimize.min_length_label">Minimum segment length (mm)</span>
+                      <input type="number" class="optimize-min-length-mm" min="0.01" max="100" step="0.01" value="1.00" />
+                    </label>
+                  </div>
                 </div>
               </div>
             </section>
