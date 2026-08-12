@@ -1,16 +1,16 @@
-<p align="center">
-  <img src="static/plotter_hub_logo.svg" alt="Plotter Hub" width="360">
-</p>
+# Plotterosaurus
+
+> **Status: beta (v0.1.0-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
 
 A self-hosted plot server for the iDraw H SE A3 and AxiDraw-class pen plotters. Submit SVGs over the network and the Pi drives the plotter locally via the official AxiDraw Python API, so your workstation doesn't need to stay connected for the duration of the plot.
 
-Open `http://plotterhub.local` (or whatever your Pi's hostname is) and you get a drag-and-drop UI with layer-by-layer plotting, pen-change pauses, paper-size presets, and a live pen-position cursor.
+Open `http://plotterosaurus.local` (or whatever your Pi's hostname is) and you get a drag-and-drop UI with layer-by-layer plotting, pen-change pauses, paper-size presets, and a live pen-position cursor.
 
 ## Background
 
 I didn't like that my iDraw H SE A3 plotter had to stay connected to my laptop to run a plot. Luckily it's compatible with the great [AxiDraw software](https://axidraw.com/), which can be installed on a Raspberry Pi — this repo is just a UI around [AxiDraw's Python library](https://axidraw.com/doc/py_api/).
 
-I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't support the physical pause button on my iDraw. AxiDraw does recognize button presses, so Plotter Hub supports it: press the button once to pause, press it a second time to resume the plot. The same button also continues to the next layer when the plot is paused for a pen change.
+I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't support the physical pause button on my iDraw. AxiDraw does recognize button presses, so Plotterosaurus supports it: press the button once to pause, press it a second time to resume the plot. The same button also continues to the next layer when the plot is paused for a pen change.
 
 **Disclaimer:** this code was completely created by [Claude Code](https://claude.com/claude-code) (Claude Opus 4.7-4.8, 1M-context).
 
@@ -79,10 +79,10 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 
 **System files** (written / overwritten on every run):
 
-- `/etc/systemd/system/plotterhub.service` — templated from `systemd/plotterhub.service` with the invoking user and the repo path
-- `/etc/sudoers.d/plotterhub-shutdown` — grants the service user NOPASSWD on `/sbin/shutdown` so the UI's shutdown button works
-- `/usr/local/sbin/plotterhub-update` — root-owned self-update helper invoked by the UI's "Update now" button (templated from `scripts/plotterhub-update.in`)
-- `/etc/sudoers.d/plotterhub-update` — grants the service user NOPASSWD on just that helper
+- `/etc/systemd/system/plotterosaurus.service` — templated from `systemd/plotterosaurus.service` with the invoking user and the repo path
+- `/etc/sudoers.d/plotterosaurus-shutdown` — grants the service user NOPASSWD on `/sbin/shutdown` so the UI's shutdown button works
+- `/usr/local/sbin/plotterosaurus-update` — root-owned self-update helper invoked by the UI's "Update now" button (templated from `scripts/plotterosaurus-update.in`)
+- `/etc/sudoers.d/plotterosaurus-update` — grants the service user NOPASSWD on just that helper
 
 ### Assumed already present on Raspberry Pi OS
 
@@ -93,15 +93,15 @@ The script relies on these but does not install them: `sudo`, `apt`, `systemctl`
 On a clean Raspberry Pi, as whichever user you want the service to run as. From your workstation, ssh in (replace the hostname/username with your Pi's):
 
 ```bash
-ssh plotter@plotterhub.local
+ssh plotter@plotterosaurus.local
 ```
 
 Raspberry Pi OS Lite doesn't ship with git, so install it first if needed, then clone and run the installer:
 
 ```bash
 sudo apt update && sudo apt install -y git
-git clone https://github.com/Synendo/PlotterHub.git ~/PlotterHub
-cd ~/PlotterHub
+git clone https://github.com/Tonino-RB/Plotterosaurus.git ~/Plotterosaurus
+cd ~/Plotterosaurus
 ./install.sh
 ```
 
@@ -133,11 +133,11 @@ After install, the plotter model can also be changed from the UI (gear icon → 
 
 ### Network and access
 
-Plotter Hub has no built-in login — anyone who can reach its web port can upload, plot, change settings, update, or shut down the Pi. That's intentional for a trusted home LAN (like a network printer's web page), but it means you should **keep it on your local network and not port-forward it to the internet**. For remote access, put it behind a VPN such as [Tailscale](https://tailscale.com/) or WireGuard rather than exposing it directly. The `X-API-Key` only guards the `/api/v1/*` endpoints and is itself readable on the LAN — it's a scripting convenience, not a security boundary.
+Plotterosaurus has no built-in login — anyone who can reach its web port can upload, plot, change settings, update, or shut down the Pi. That's intentional for a trusted home LAN (like a network printer's web page), but it means you should **keep it on your local network and not port-forward it to the internet**. For remote access, put it behind a VPN such as [Tailscale](https://tailscale.com/) or WireGuard rather than exposing it directly. The `X-API-Key` only guards the `/api/v1/*` endpoints and is itself readable on the LAN — it's a scripting convenience, not a security boundary.
 
 ## Updating
 
-Plotter Hub can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed.
+Plotterosaurus can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed.
 
 ### From the UI (recommended)
 
@@ -149,16 +149,16 @@ When a newer version is published on `main`, a banner appears at the top of the 
 
 Updates are **refused while a plot is running** (wait until the queue is idle), and a second update can't start while one is already in progress. If the app folder has **local changes**, the update asks you to confirm before overwriting them — your settings, job queue, and uploads are always kept (they're gitignored, so `git reset` never touches them).
 
-Under the hood: `install.sh` installs a small root-owned helper at `/usr/local/sbin/plotterhub-update` with a scoped NOPASSWD sudoers rule. When triggered it re-launches itself in a transient systemd unit so it survives the service restart, runs `git reset --hard` to the latest `main`, then re-runs `install.sh`. All output is written to `update.log`.
+Under the hood: `install.sh` installs a small root-owned helper at `/usr/local/sbin/plotterosaurus-update` with a scoped NOPASSWD sudoers rule. When triggered it re-launches itself in a transient systemd unit so it survives the service restart, runs `git reset --hard` to the latest `main`, then re-runs `install.sh`. All output is written to `update.log`.
 
-If an update doesn't come back up, the cause is usually in `update.log` (or `journalctl -u plotterhub -n 50`); ssh in and re-run `./install.sh` to recover.
+If an update doesn't come back up, the cause is usually in `update.log` (or `journalctl -u plotterosaurus -n 50`); ssh in and re-run `./install.sh` to recover.
 
 ### Manually over ssh
 
 ssh to the Pi, pull the latest version of the repository and re-run the installer:
 
 ```bash
-cd ~/PlotterHub
+cd ~/Plotterosaurus
 git pull
 ./install.sh
 ```
@@ -177,7 +177,7 @@ Before upgrading (either way), it's cleanest to wait until the queue is idle (or
 | Frontend | Vanilla HTML + CSS + JavaScript, no build step |
 | Transport | HTTP + WebSocket |
 | State | In-memory, broadcast via `asyncio.Queue` |
-| Process mgmt | systemd (`plotterhub.service`) |
+| Process mgmt | systemd (`plotterosaurus.service`) |
 | Persistence | Uploaded SVGs + resume SVGs on disk; `config.json` for plotter model; `state.json` for the job queue (so a paused plot survives a service restart) |
 
 Key module layout:
@@ -195,8 +195,8 @@ app/
   config.py         # plotter model config, persisted to config.json
   updates.py        # self-update: remote version check + guarded apply
 static/             # index.html, app.js, style.css
-systemd/            # plotterhub.service (template)
-scripts/            # plotterhub-update.in (self-update helper template)
+systemd/            # plotterosaurus.service (template)
+scripts/            # plotterosaurus-update.in (self-update helper template)
 install.sh          # idempotent installer
 uploads/            # gitignored; uploaded SVGs and per-stage filtered / resume files
 ```
@@ -206,11 +206,11 @@ uploads/            # gitignored; uploaded SVGs and per-stage filtered / resume 
 The local source of truth is on your workstation; deploy to the Pi via rsync:
 
 ```bash
-# Replace <user>@<host> with your Pi's ssh target, and ~/PlotterHub with
+# Replace <user>@<host> with your Pi's ssh target, and ~/Plotterosaurus with
 # the path where you cloned the repo.
 rsync -avz --exclude=.git --exclude=venv --exclude='uploads/*' \
-  -e ssh ./ <user>@<host>.local:~/PlotterHub/
-ssh <user>@<host>.local '~/PlotterHub/install.sh'
+  -e ssh ./ <user>@<host>.local:~/Plotterosaurus/
+ssh <user>@<host>.local '~/Plotterosaurus/install.sh'
 ```
 
 `install.sh` detects that dependencies are already installed and just restarts the service.
@@ -225,4 +225,4 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 
 Released under the MIT License — see [LICENSE](LICENSE). Built around the AxiDraw Python API from Evil Mad Scientist (GPL-2.0), which is installed as a runtime dependency rather than bundled; the assembled system is therefore subject to GPL-2.0 terms. Optional path optimization uses [vpype](https://vpype.readthedocs.io/) (MIT, © Antoine Beyeler & Contributors), invoked as a separate subprocess and likewise installed as a runtime dependency.
 
-Plotter Hub is an independent project and is not affiliated with, endorsed by, or supported by Evil Mad Scientist Laboratories. AxiDraw is a trademark of Evil Mad Scientist Laboratories.
+Plotterosaurus is an independent project and is not affiliated with, endorsed by, or supported by Evil Mad Scientist Laboratories. AxiDraw is a trademark of Evil Mad Scientist Laboratories.

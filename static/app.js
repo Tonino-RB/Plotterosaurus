@@ -15,6 +15,57 @@ const resumeBtn = $("resume-btn");
 const continueBtn = $("continue-btn");
 const calibrateBtn = $("calibrate-btn");
 const cancelBtn = $("cancel-btn");
+const penUpBtn = $("pen-up-btn");
+const penDownBtn = $("pen-down-btn");
+const motorsEnableBtn = $("motors-enable-btn");
+const motorsDisableBtn = $("motors-disable-btn");
+const penControlsMessage = $("pen-controls-message");
+const originNudge = $("origin-nudge");
+const nudgeXReadout = $("nudge-x-readout");
+const nudgeYReadout = $("nudge-y-readout");
+const calibrationFileRow = $("calibration-file-row");
+const calibrationFileSelect = $("calibration-file-select");
+const calibrationFileRunBtn = $("calibration-file-run-btn");
+
+// Camera / plot recording
+const cameraControls = $("camera-controls");
+const cameraStartBtn = $("camera-start-btn");
+const cameraPauseBtn = $("camera-pause-btn");
+const cameraResumeBtn = $("camera-resume-btn");
+const cameraStopBtn = $("camera-stop-btn");
+const cameraRecordingIndicator = $("camera-recording-indicator");
+const cameraControlsMessage = $("camera-controls-message");
+const cameraSettingsBtn = $("camera-settings-btn");
+const cameraSettingsModal = $("camera-settings-modal");
+const cameraPreviewFrame = $("camera-preview-frame");
+const cameraPreviewPausedOverlay = $("camera-preview-paused-overlay");
+const cameraAfMode = $("camera-af-mode");
+const cameraAfSpeed = $("camera-af-speed");
+const cameraLensPositionField = $("camera-lens-position-field");
+const cameraLensPosition = $("camera-lens-position");
+const cameraResolutionWidth = $("camera-resolution-width");
+const cameraResolutionHeight = $("camera-resolution-height");
+const cameraFps = $("camera-fps");
+const cameraBitrate = $("camera-bitrate");
+const cameraBrightness = $("camera-brightness");
+const cameraContrast = $("camera-contrast");
+const cameraSaturation = $("camera-saturation");
+const cameraSharpness = $("camera-sharpness");
+const cameraEv = $("camera-ev");
+const cameraGain = $("camera-gain");
+const cameraAwbMode = $("camera-awb-mode");
+const cameraDenoise = $("camera-denoise");
+const cameraHflip = $("camera-hflip");
+const cameraVflip = $("camera-vflip");
+const cameraRecordPlotDefault = $("camera-record-plot-default");
+const cameraRecordingMode = $("camera-recording-mode");
+const cameraTimelapseInterval = $("camera-timelapse-interval");
+const cameraSpeedMultiplier = $("camera-speed-multiplier");
+const cameraOutputFolder = $("camera-output-folder");
+const cameraRcloneTarget = $("camera-rclone-target");
+const cameraRtspUrl = $("camera-rtsp-url");
+const cameraHlsUrl = $("camera-hls-url");
+const cameraSettingsMessage = $("camera-settings-message");
 const jobCardTemplate = $("job-card-template");
 const queueProgress = $("queue-progress");
 
@@ -188,8 +239,8 @@ async function uploadAndQueue(file) {
     // Auto-detect paper
     const detected = detectPaper(svg.width_mm, svg.height_mm);
     const portraitDims = PAPER_SIZES[detected.preset];
-    const { w, h } = computePaperDims(detected.preset, detected.orientation,
-      svg.width_mm || 210, svg.height_mm || 297);
+    const { w, h } = applyMachineAutoRotate(computePaperDims(detected.preset, detected.orientation,
+      svg.width_mm || 210, svg.height_mm || 297));
 
     const jobReq = {
       svg_id: svg.id,
@@ -212,6 +263,12 @@ async function uploadAndQueue(file) {
       speed_pendown: appSettings.speed_pendown_default,
       speed_penup: appSettings.speed_penup_default,
       acceleration: appSettings.acceleration_default,
+      pen_pos_up: appSettings.pen_pos_up_default,
+      pen_pos_down: appSettings.pen_pos_down_default,
+      record_plot: appSettings.record_plot_default,
+      record_mode: appSettings.camera_recording_mode_default,
+      record_timelapse_interval_s: appSettings.camera_timelapse_interval_s_default,
+      record_speed_multiplier: appSettings.camera_speed_multiplier_default,
       optimize_svg: appSettings.optimize_svg_default,
       optimize_svg_tolerance_mm: appSettings.optimize_svg_tolerance_default_mm,
       optimize_svg_linemerge: appSettings.optimize_svg_linemerge_default,
@@ -301,7 +358,7 @@ function relabelPaperOptions(selectEl) {
 function readPaperFromCard(card) {
   const sel = card.querySelector(".paper-size");
   const opt = sel.options[sel.selectedIndex];
-  const orientation = getSegmentedValue(card.querySelector(".orientation"));
+  const orientation = getSegmentedValue(card.querySelector(".orientation"), "portrait");
   if (sel.value === "__named_custom__" && opt) {
     let w = parseFloat(opt.dataset.w);
     let h = parseFloat(opt.dataset.h);
@@ -330,6 +387,17 @@ function computePaperDims(preset, orientation, customW, customH) {
   }
   const p = PAPER_SIZES[preset];
   return orientation === "landscape" ? { w: p.h, h: p.w } : { w: p.w, h: p.h };
+}
+
+// When a custom machine profile has auto-rotate on, force the longer/shorter
+// side to match its policy — the per-job orientation toggle is disabled in
+// that case (see applyTopControls/onPaperChange) so this always wins.
+function applyMachineAutoRotate({ w, h }) {
+  if (!appSettings.machine_custom_enabled) return { w, h };
+  const rotate = appSettings.machine_auto_rotate;
+  if (rotate === "landscape" && h > w) return { w: h, h: w };
+  if (rotate === "portrait" && w > h) return { w: h, h: w };
+  return { w, h };
 }
 
 // ───── Queue rendering ───────────────────────────────────────────────────
@@ -398,6 +466,7 @@ function createCardForJob(job) {
   }
   const orientation = guessPresetFromDims(job.paper_width_mm, job.paper_height_mm).orientation;
   setSegmentedValue(card.querySelector(".orientation"), orientation);
+  applyMachineAutoRotateToCard(card);
   // The `custom-dims` block is `hidden` in the template; only `onPaperChange`
   // reveals it. Sync visibility on initial render so a job that arrives with
   // Custom selected actually shows its dimension fields.
@@ -418,9 +487,19 @@ function createCardForJob(job) {
   card.querySelector(".speed-pendown").value = job.speed_pendown;
   card.querySelector(".speed-penup").value = job.speed_penup;
   card.querySelector(".accel").value = job.acceleration;
+  card.querySelector(".pen-pos-up").value = job.pen_pos_up ?? appSettings.pen_pos_up_default;
+  card.querySelector(".pen-pos-down").value = job.pen_pos_down ?? appSettings.pen_pos_down_default;
   card.querySelector(".pause-between-layers").checked = job.pause_between_layers;
   card.querySelector(".pause-after-job").checked = job.pause_after_job;
   card.querySelector(".delete-on-complete").checked = !!job.delete_on_complete;
+  card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
+  card.querySelector(".record-plot").checked = !!job.record_plot;
+  card.querySelector(".record-plot-options").hidden = !job.record_plot;
+  card.querySelector(".record-mode").value = job.record_mode || appSettings.camera_recording_mode_default;
+  card.querySelector(".record-timelapse-interval").value =
+    job.record_timelapse_interval_s ?? appSettings.camera_timelapse_interval_s_default;
+  card.querySelector(".record-speed-multiplier").value =
+    job.record_speed_multiplier ?? appSettings.camera_speed_multiplier_default;
   card.querySelector(".optimize").checked = !!job.optimize_svg;
   card.querySelector(".optimize-linemerge").checked = job.optimize_svg_linemerge !== false;
   card.querySelector(".optimize-linesimplify").checked = job.optimize_svg_linesimplify !== false;
@@ -465,6 +544,14 @@ function createCardForJob(job) {
   card.querySelector(".pause-between-layers").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".pause-after-job").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".delete-on-complete").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".record-plot").addEventListener("change", () => {
+    card.querySelector(".record-plot-options").hidden = !card.querySelector(".record-plot").checked;
+    queueCardUpdate(card);
+  });
+  [card.querySelector(".record-mode"),
+   card.querySelector(".record-timelapse-interval"),
+   card.querySelector(".record-speed-multiplier")]
+    .forEach((el) => el.addEventListener("change", () => queueCardUpdate(card)));
   card.querySelector(".optimize").addEventListener("change", () => {
     // Master ON while every sub-option is off would be a no-op pipeline —
     // re-enable all four so the toggle actually does something.
@@ -487,8 +574,15 @@ function createCardForJob(job) {
   card.querySelector(".optimize-tolerance").addEventListener("change", () => queueCardUpdate(card));
   [card.querySelector(".speed-pendown"),
    card.querySelector(".speed-penup"),
-   card.querySelector(".accel")]
+   card.querySelector(".accel"),
+   card.querySelector(".pen-pos-up"),
+   card.querySelector(".pen-pos-down")]
     .forEach((el) => el.addEventListener("change", () => queueCardUpdate(card)));
+  // While this card's job is paused between layers, dragging the pen height
+  // also live-moves the physical pen (debounced) so the user can see/feel
+  // the new height, the same way the camera picture sliders push live.
+  card.querySelector(".pen-pos-up").addEventListener("input", () => applyLivePenHeight(card, "up"));
+  card.querySelector(".pen-pos-down").addEventListener("input", () => applyLivePenHeight(card, "down"));
 
   const transformInputs = [
     card.querySelector(".transform-scale"),
@@ -512,6 +606,8 @@ function createCardForJob(job) {
   pairSlider(card, ".speed-pendown", ".speed-pendown-slider");
   pairSlider(card, ".speed-penup", ".speed-penup-slider");
   pairSlider(card, ".accel", ".accel-slider");
+  pairSlider(card, ".pen-pos-up", ".pen-pos-up-slider");
+  pairSlider(card, ".pen-pos-down", ".pen-pos-down-slider");
 
   // Collapsible section headers
   card.querySelectorAll(".card-section-head").forEach((head) => {
@@ -640,8 +736,22 @@ function setSegmentedValue(seg, val) {
   seg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.val === val));
 }
 
-function getSegmentedValue(seg) {
-  return seg.querySelector("button.active")?.dataset.val || "portrait";
+// When a custom machine profile has auto-rotate on, force the card's
+// orientation toggle to match it and disable the buttons (the policy always
+// wins) rather than just leaving it as a one-time default.
+function applyMachineAutoRotateToCard(card) {
+  const seg = card.querySelector(".orientation");
+  const rotate = appSettings.machine_custom_enabled ? appSettings.machine_auto_rotate : "off";
+  const locked = rotate !== "off";
+  if (locked) setSegmentedValue(seg, rotate);
+  seg.querySelectorAll("button").forEach((b) => {
+    b.disabled = locked;
+    b.title = locked ? t("settings.machine.auto_rotate_locked_title") : "";
+  });
+}
+
+function getSegmentedValue(seg, fallback) {
+  return seg.querySelector("button.active")?.dataset.val ?? fallback;
 }
 
 function toggleCardExpanded(card) {
@@ -757,6 +867,27 @@ function updateCard(card, job) {
   }
   renderStages(card, job);
   renderPlotInfo(card, job);
+  renderMachineBoundsWarning(card, job);
+}
+
+// Advisory only: pyaxidraw enforces the real AxiDraw travel bounds at plot
+// time regardless — this just gives an earlier heads-up against the custom
+// bed-size profile the user configured in Settings.
+function renderMachineBoundsWarning(card, job) {
+  const el = card.querySelector(".machine-bounds-warning");
+  if (!el) return;
+  const exceeds = appSettings.machine_custom_enabled &&
+    (job.paper_width_mm > appSettings.machine_width_mm ||
+     job.paper_height_mm > appSettings.machine_height_mm);
+  el.hidden = !exceeds;
+  if (exceeds) {
+    const u = effectiveDisplayUnit();
+    el.textContent = t("card.machine_bounds_warning", {
+      width: formatLengthValue(appSettings.machine_width_mm, u),
+      height: formatLengthValue(appSettings.machine_height_mm, u),
+      unit: u,
+    });
+  }
 }
 
 function formatPaperLabel(job) {
@@ -849,6 +980,8 @@ function resetParameters(card) {
     [".speed-pendown", appSettings.speed_pendown_default],
     [".speed-penup", appSettings.speed_penup_default],
     [".accel", appSettings.acceleration_default],
+    [".pen-pos-up", appSettings.pen_pos_up_default],
+    [".pen-pos-down", appSettings.pen_pos_down_default],
   ];
   for (const [sel, val] of pairs) {
     const el = card.querySelector(sel);
@@ -885,6 +1018,25 @@ function updateSliderProgress(slider) {
   }
   const pct = Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
   slider.style.setProperty("--progress", pct + "%");
+}
+
+// Parses a form field's numeric value, falling back only when it's genuinely
+// invalid/empty — unlike `parseFloat(v) || fallback`, this doesn't also
+// override a legitimate 0 (wrong for fields like contrast whose neutral
+// value is 1, not 0).
+function numOr(value, fallback) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Sets a number input and its paired "<id>-slider" range input to the same
+// value (used for the camera settings modal's picture-tuning fields).
+function setSliderNumber(baseId, value) {
+  const number = $(baseId);
+  const slider = $(`${baseId}-slider`);
+  number.value = value;
+  slider.value = value;
+  updateSliderProgress(slider);
 }
 
 function applyOffsetBoundsToCard(card, paperW, paperH) {
@@ -1032,59 +1184,67 @@ function renderLayers(card, job) {
   const ul = card.querySelector(".layers");
   // Layer entries carry their own metadata (label, type) plus an optional
   // `selected` flag; entries with selected===false stay in the list so the
-  // metadata is preserved across toggles.
+  // metadata is preserved across toggles. The array order IS the plot/
+  // execution order (see _run_job in plot_worker.py), so we iterate
+  // job.layer_selections directly rather than the SVG's native layer order —
+  // that's what lets the move-up/down buttons reorder execution.
   const selected = new Set(
     job.layer_selections.filter((s) => s.selected !== false).map((s) => s.index)
   );
-  const overrides = new Map(job.layer_selections.map((s) => [s.index, s]));
+  const svgByIndex = new Map(ctx.svg.layers.map((l) => [l.index, l]));
   ul.innerHTML = "";
-  for (const layer of ctx.svg.layers) {
+  const total = job.layer_selections.length;
+  job.layer_selections.forEach((sel, i) => {
+    const layer = svgByIndex.get(sel.index);
     const li = document.createElement("li");
-    const checked = selected.has(layer.index);
-    const override = overrides.get(layer.index);
-    const displayLabel = (override && override.label) || layer.label;
+    const checked = selected.has(sel.index);
+    const displayLabel = sel.label || (layer && layer.label) || "";
     // Optional pen name (API-set), trailing the layer name in grey.
-    const penName = (override && override.pen_name) || "";
+    const penName = sel.pen_name || "";
     const swatch = layerSwatch(
-      override && override.type,
-      (ctx.svg.layerColors || {})[layer.index] || null,
+      sel.type,
+      (ctx.svg.layerColors || {})[sel.index] || null,
       ctx.svg.pageColor || null,
     );
     li.innerHTML = `
       <label>
-        <input type="checkbox" data-index="${layer.index}" ${checked ? "checked" : ""} />
+        <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} />
         ${swatch}
         <span class="layer-label">${escapeHtml(displayLabel)}${
           penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
         }</span>
-      </label>`;
+      </label>
+      <div class="layer-move">
+        <button type="button" class="icon-btn layer-move-up" data-index="${sel.index}" ${i === 0 ? "disabled" : ""} title="${t("a11y.move_up")}" data-i18n-title="a11y.move_up">↑</button>
+        <button type="button" class="icon-btn layer-move-down" data-index="${sel.index}" ${i === total - 1 ? "disabled" : ""} title="${t("a11y.move_down")}" data-i18n-title="a11y.move_down">↓</button>
+      </div>`;
     ul.appendChild(li);
-  }
-  // Attach change handler once
+  });
+  // Attach change/click handlers once
   if (!ul.dataset.wired) {
     ul.addEventListener("change", () => {
       const cur = serverState.queue.find((j) => j.job_id === card.dataset.id);
-      const curOverrides = new Map((cur?.layer_selections || []).map((s) => [s.index, s]));
       const checkedIndices = new Set(
         Array.from(ul.querySelectorAll("input[type=checkbox]:checked"))
           .map((el) => parseInt(el.dataset.index))
       );
-      // Walk every SVG layer (not just the checked ones) so deselected
-      // layers stay in the list with `selected: false`. Their label/type
-      // and per-layer speed overrides survive a toggle off-and-on.
-      const layers = ctx.svg.layers.map((l) => {
-        const ovr = curOverrides.get(l.index);
+      // Walk the current (possibly reordered) selections list, not the SVG's
+      // native layer order, so a checkbox toggle never undoes a reorder.
+      // Deselected layers stay in the list with `selected: false`. Their
+      // label/type and per-layer speed overrides survive a toggle off-and-on.
+      const layers = (cur?.layer_selections || []).map((ovr) => {
+        const l = svgByIndex.get(ovr.index);
         const sel = {
-          index: l.index,
-          label: (ovr && ovr.label) || l.label,
-          selected: checkedIndices.has(l.index),
+          index: ovr.index,
+          label: ovr.label || (l && l.label) || "",
+          selected: checkedIndices.has(ovr.index),
         };
-        if (ovr && ovr.type) sel.type = ovr.type;
-        if (ovr && ovr.pen_name) sel.pen_name = ovr.pen_name;
+        if (ovr.type) sel.type = ovr.type;
+        if (ovr.pen_name) sel.pen_name = ovr.pen_name;
         // Carry through API-set per-layer speed overrides — there's no UI
         // control for them, so a checkbox toggle here must not drop them.
         for (const k of ["speed_pendown", "speed_penup", "acceleration"]) {
-          if (ovr && ovr[k] != null) sel[k] = ovr[k];
+          if (ovr[k] != null) sel[k] = ovr[k];
         }
         return sel;
       });
@@ -1093,10 +1253,29 @@ function renderLayers(card, job) {
       syncPreviewLayers(card, { ...job, layer_selections: layers });
       queueCardUpdate(card, { layer_selections: layers });
     });
+    ul.addEventListener("click", (e) => {
+      const btn = e.target.closest(".layer-move-up, .layer-move-down");
+      if (!btn || btn.disabled) return;
+      const delta = btn.classList.contains("layer-move-up") ? -1 : 1;
+      moveLayer(card, parseInt(btn.dataset.index), delta);
+    });
     ul.dataset.wired = "1";
   }
   const selectedCount = job.layer_selections.filter((s) => s.selected !== false).length;
   card.querySelector(".multi-layer-options").hidden = selectedCount < 2;
+}
+
+function moveLayer(card, layerIndex, delta) {
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job) return;
+  const layers = job.layer_selections.map((s) => ({ ...s }));
+  const pos = layers.findIndex((s) => s.index === layerIndex);
+  if (pos < 0) return;
+  const newPos = pos + delta;
+  if (newPos < 0 || newPos >= layers.length) return;
+  [layers[pos], layers[newPos]] = [layers[newPos], layers[pos]];
+  renderLayers(card, { ...job, layer_selections: layers });
+  queueCardUpdate(card, { layer_selections: layers });
 }
 
 // Per-stage status is a fixed small set; translate the known ones and fall
@@ -1156,6 +1335,7 @@ function onPaperChange(card) {
   const ctx = cardCtx.get(job.job_id);
   const preset = card.querySelector(".paper-size").value;
   card.querySelector(".custom-dims").hidden = preset !== "Custom";
+  applyMachineAutoRotateToCard(card);
   const { w, h, paper_size_name } = readPaperFromCard(card);
 
   const updates = {
@@ -1223,9 +1403,15 @@ async function sendCardUpdate(card, immediateUpdates) {
     updates.speed_pendown = parseInt(card.querySelector(".speed-pendown").value);
     updates.speed_penup = parseInt(card.querySelector(".speed-penup").value);
     updates.acceleration = parseInt(card.querySelector(".accel").value);
+    updates.pen_pos_up = parseInt(card.querySelector(".pen-pos-up").value);
+    updates.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
     updates.pause_between_layers = card.querySelector(".pause-between-layers").checked;
     updates.pause_after_job = card.querySelector(".pause-after-job").checked;
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
+    updates.record_plot = card.querySelector(".record-plot").checked;
+    updates.record_mode = card.querySelector(".record-mode").value;
+    updates.record_timelapse_interval_s = parseFloat(card.querySelector(".record-timelapse-interval").value) || 5;
+    updates.record_speed_multiplier = parseFloat(card.querySelector(".record-speed-multiplier").value) || 4;
     updates.optimize_svg = card.querySelector(".optimize").checked;
     updates.optimize_svg_linemerge = card.querySelector(".optimize-linemerge").checked;
     updates.optimize_svg_linesimplify = card.querySelector(".optimize-linesimplify").checked;
@@ -1287,6 +1473,41 @@ continueBtn.addEventListener("click", () => postAction("/queue/continue"));
 calibrateBtn.addEventListener("click", () => postAction("/queue/calibrate"));
 cancelBtn.addEventListener("click", () => postAction("/queue/cancel"));
 
+// Standalone calibration-test library (calibration/ folder): only relevant
+// at a pen-change pause. Re-fetched once per pause so a file dropped in
+// while paused shows up without a page reload.
+let calibrationFilesFetchedFor = null;
+async function refreshCalibrationFiles() {
+  try {
+    const res = await fetch("/calibration/files");
+    if (!res.ok) return;
+    const { files } = await res.json();
+    calibrationFileSelect.innerHTML = "";
+    for (const f of files) {
+      const opt = document.createElement("option");
+      opt.value = f;
+      opt.textContent = f;
+      calibrationFileSelect.appendChild(opt);
+    }
+    calibrationFileRow.hidden = files.length === 0;
+  } catch (e) {}
+}
+calibrationFileRunBtn.addEventListener("click", async () => {
+  const filename = calibrationFileSelect.value;
+  if (!filename) return;
+  try {
+    const res = await fetch("/queue/calibrate-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+});
+
 async function postAction(path) {
   try {
     const res = await fetch(path, { method: "POST" });
@@ -1295,6 +1516,95 @@ async function postAction(path) {
     topMessage.textContent = t("error.request_failed", { message: e.message });
     topMessage.className = "error";
   }
+}
+
+// Pen up/down live outside #queue-controls (which hides when the queue is
+// empty) so they get their own tiny message area instead of topMessage.
+penUpBtn.addEventListener("click", () => postPenAction("/pen/up"));
+penDownBtn.addEventListener("click", () => postPenAction("/pen/down"));
+motorsEnableBtn.addEventListener("click", () => postPenAction("/motors/enable"));
+motorsDisableBtn.addEventListener("click", () => postPenAction("/motors/disable"));
+
+async function postPenAction(path) {
+  penControlsMessage.textContent = "";
+  penControlsMessage.className = "muted";
+  try {
+    const res = await fetch(path, { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+  } catch (e) {
+    penControlsMessage.textContent = t("error.request_failed", { message: e.message });
+    penControlsMessage.className = "error";
+  }
+}
+
+// Manual recording controls — independent of any job's record_plot flag.
+async function postCameraAction(path, body) {
+  cameraControlsMessage.textContent = "";
+  cameraControlsMessage.className = "muted";
+  try {
+    const opts = { method: "POST" };
+    if (body) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    if (!res.ok) throw new Error(await readErr(res));
+  } catch (e) {
+    cameraControlsMessage.textContent = t("error.request_failed", { message: e.message });
+    cameraControlsMessage.className = "error";
+  }
+}
+cameraStartBtn.addEventListener("click", () => postCameraAction("/camera/recording/start", {}));
+cameraPauseBtn.addEventListener("click", () => postCameraAction("/camera/recording/pause"));
+cameraResumeBtn.addEventListener("click", () => postCameraAction("/camera/recording/resume"));
+cameraStopBtn.addEventListener("click", () => postCameraAction("/camera/recording/stop"));
+
+// Fine origin nudge — only meaningful at an awaiting_pen_change pause (see
+// applyTopControls, which shows/hides #origin-nudge and updates the readouts
+// from the broadcast state).
+originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const step = parseFloat(btn.dataset.step);
+    const body = btn.dataset.axis === "x" ? { dx_mm: step, dy_mm: 0 } : { dx_mm: 0, dy_mm: step };
+    try {
+      const res = await fetch("/queue/nudge-origin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+    } catch (e) {
+      topMessage.textContent = t("error.request_failed", { message: e.message });
+      topMessage.className = "error";
+    }
+  });
+});
+
+// Pen height live test — only takes effect while this card's job is the
+// active one and paused at a pen-change (see set_live_pen_heights); harmless
+// no-op otherwise (server rejects with 409, silently ignored here since the
+// normal queueCardUpdate "change" listener already surfaces real save errors).
+let penHeightDebounceTimer = null;
+function applyLivePenHeight(card, which) {
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job || job.job_id !== serverState.active_id || job.status !== "awaiting_pen_change") return;
+  clearTimeout(penHeightDebounceTimer);
+  penHeightDebounceTimer = setTimeout(async () => {
+    try {
+      const body = { test: which };
+      if (which === "up") body.pen_pos_up = parseInt(card.querySelector(".pen-pos-up").value);
+      else body.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
+      const res = await fetch("/queue/pen-height", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+    } catch (e) {
+      topMessage.textContent = t("error.request_failed", { message: e.message });
+      topMessage.className = "error";
+    }
+  }, 300);
 }
 
 // The pen loaded for a stage, or null when it's unknown. A stage normally
@@ -1349,6 +1659,33 @@ function applyTopControls() {
     : t("controls.calibrate");
   cancelBtn.hidden = !active && !s.awaiting_next_job;
 
+  // Standalone calibration-file library: only relevant at a pen-change
+  // pause. Fetched once per pause (tracked by job_id) rather than on every
+  // state broadcast.
+  if (active && status === "awaiting_pen_change") {
+    if (calibrationFilesFetchedFor !== active.job_id) {
+      calibrationFilesFetchedFor = active.job_id;
+      refreshCalibrationFiles();
+    }
+  } else {
+    calibrationFilesFetchedFor = null;
+    calibrationFileRow.hidden = true;
+  }
+
+  // Fine origin nudge: only relevant at a pen-change pause.
+  originNudge.hidden = !(active && status === "awaiting_pen_change");
+  nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
+  nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
+
+  // Pen up/down: only refused while a real plot_run is actively driving the
+  // pen (mirrors plot_worker's _current_ad guard) — enabled otherwise,
+  // including while idle or paused/awaiting_pen_change.
+  const penBusy = !!active && ["plotting", "homing", "plotting_calibration"].includes(status);
+  penUpBtn.disabled = penBusy;
+  penDownBtn.disabled = penBusy;
+  motorsEnableBtn.disabled = penBusy;
+  motorsDisableBtn.disabled = penBusy;
+
   // Top status pill text
   if (s.awaiting_next_job) {
     statusEl.textContent = statusLabel("awaiting_next_job");
@@ -1388,6 +1725,25 @@ function applyTopControls() {
     queueProgress.hidden = true;
     stopSharedElapsed();
   }
+}
+
+function applyCameraControls() {
+  if (!appSettings.camera_enabled) {
+    cameraControls.hidden = true;
+    return;
+  }
+  cameraControls.hidden = false;
+  const recStatus = serverState.recording_status || "idle";
+  cameraStartBtn.hidden = recStatus !== "idle";
+  cameraPauseBtn.hidden = recStatus !== "recording";
+  cameraResumeBtn.hidden = recStatus !== "paused";
+  cameraStopBtn.hidden = recStatus === "idle";
+  cameraRecordingIndicator.hidden = recStatus === "idle";
+  cameraRecordingIndicator.className = `recording-indicator ${recStatus}`;
+  cameraRecordingIndicator.textContent = recStatus === "recording"
+    ? t("controls.recording_status_recording")
+    : recStatus === "paused" ? t("controls.recording_status_paused") : "";
+  cameraPreviewPausedOverlay.hidden = recStatus !== "paused";
 }
 
 // ───── Elapsed / progress timer ──────────────────────────────────────────
@@ -1558,6 +1914,18 @@ const settingsDeleteOnComplete = $("settings-delete-on-complete");
 const settingsSpeedPendown = $("settings-speed-pendown");
 const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
+const settingsPenPosUp = $("settings-pen-pos-up");
+const settingsPenPosDown = $("settings-pen-pos-down");
+const settingsMachineCustomEnabled = $("settings-machine-custom-enabled");
+const settingsMachineCustomFields = $("settings-machine-custom-fields");
+const settingsMachineWidth = $("settings-machine-width");
+const settingsMachineHeight = $("settings-machine-height");
+const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
+const settingsWebhookUrl = $("settings-webhook-url");
+const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
+const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
+const settingsWebhookTest = $("settings-webhook-test");
+const settingsWebhookMessage = $("settings-webhook-message");
 const settingsOptimize = $("settings-optimize");
 const settingsOptimizeLinemerge = $("settings-optimize-linemerge");
 const settingsOptimizeLinesimplify = $("settings-optimize-linesimplify");
@@ -1609,6 +1977,8 @@ function applyAppSettings(data) {
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
     acceleration_default: data.acceleration_default ?? appSettings.acceleration_default,
+    pen_pos_up_default: data.pen_pos_up_default ?? appSettings.pen_pos_up_default,
+    pen_pos_down_default: data.pen_pos_down_default ?? appSettings.pen_pos_down_default,
     optimize_svg_default: data.optimize_svg_default ?? appSettings.optimize_svg_default,
     optimize_svg_tolerance_default_mm: data.optimize_svg_tolerance_default_mm ?? appSettings.optimize_svg_tolerance_default_mm,
     optimize_svg_linemerge_default: data.optimize_svg_linemerge_default ?? appSettings.optimize_svg_linemerge_default,
@@ -1616,8 +1986,45 @@ function applyAppSettings(data) {
     optimize_svg_linesort_default: data.optimize_svg_linesort_default ?? appSettings.optimize_svg_linesort_default,
     optimize_svg_reloop_default: data.optimize_svg_reloop_default ?? appSettings.optimize_svg_reloop_default,
     display_unit: data.display_unit ?? appSettings.display_unit,
+    machine_custom_enabled: data.machine_custom_enabled ?? appSettings.machine_custom_enabled,
+    machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
+    machine_height_mm: data.machine_height_mm ?? appSettings.machine_height_mm,
+    machine_auto_rotate: data.machine_auto_rotate ?? appSettings.machine_auto_rotate,
+    webhook_url: data.webhook_url ?? appSettings.webhook_url,
+    webhook_on_layer_complete: data.webhook_on_layer_complete ?? appSettings.webhook_on_layer_complete,
+    webhook_on_job_complete: data.webhook_on_job_complete ?? appSettings.webhook_on_job_complete,
+    camera_enabled: data.camera_enabled ?? appSettings.camera_enabled,
+    camera_resolution_width: data.camera_resolution_width ?? appSettings.camera_resolution_width,
+    camera_resolution_height: data.camera_resolution_height ?? appSettings.camera_resolution_height,
+    camera_fps: data.camera_fps ?? appSettings.camera_fps,
+    camera_bitrate: data.camera_bitrate ?? appSettings.camera_bitrate,
+    camera_af_mode: data.camera_af_mode ?? appSettings.camera_af_mode,
+    camera_lens_position: data.camera_lens_position ?? appSettings.camera_lens_position,
+    camera_af_speed: data.camera_af_speed ?? appSettings.camera_af_speed,
+    camera_brightness: data.camera_brightness ?? appSettings.camera_brightness,
+    camera_contrast: data.camera_contrast ?? appSettings.camera_contrast,
+    camera_saturation: data.camera_saturation ?? appSettings.camera_saturation,
+    camera_sharpness: data.camera_sharpness ?? appSettings.camera_sharpness,
+    camera_ev: data.camera_ev ?? appSettings.camera_ev,
+    camera_awb_mode: data.camera_awb_mode ?? appSettings.camera_awb_mode,
+    camera_gain: data.camera_gain ?? appSettings.camera_gain,
+    camera_denoise: data.camera_denoise ?? appSettings.camera_denoise,
+    camera_hflip: data.camera_hflip ?? appSettings.camera_hflip,
+    camera_vflip: data.camera_vflip ?? appSettings.camera_vflip,
+    camera_output_folder: data.camera_output_folder ?? appSettings.camera_output_folder,
+    camera_rclone_target: data.camera_rclone_target ?? appSettings.camera_rclone_target,
+    camera_recording_mode_default: data.camera_recording_mode_default ?? appSettings.camera_recording_mode_default,
+    camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
+    camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
+    record_plot_default: data.record_plot_default ?? appSettings.record_plot_default,
   };
   if (effectiveDisplayUnit() !== prevUnit) refreshUnitDependentDisplays();
+  cardEls.forEach((card) => applyMachineAutoRotateToCard(card));
+  cameraSettingsBtn.hidden = !appSettings.camera_enabled;
+  applyCameraControls();
+  document.querySelectorAll(".camera-job-options").forEach((el) => {
+    el.hidden = !appSettings.camera_enabled;
+  });
 }
 
 function refreshUnitDependentDisplays() {
@@ -1649,6 +2056,8 @@ async function openSettings() {
     settingsSpeedPendown.value = String(data.speed_pendown_default ?? 25);
     settingsSpeedPenup.value = String(data.speed_penup_default ?? 75);
     settingsAccel.value = String(data.acceleration_default ?? 75);
+    settingsPenPosUp.value = String(data.pen_pos_up_default ?? 60);
+    settingsPenPosDown.value = String(data.pen_pos_down_default ?? 30);
     settingsOptimize.checked = !!(data.optimize_svg_default ?? false);
     settingsOptimizeLinemerge.checked = data.optimize_svg_linemerge_default !== false;
     settingsOptimizeLinesimplify.checked = data.optimize_svg_linesimplify_default !== false;
@@ -1658,7 +2067,18 @@ async function openSettings() {
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
-    for (const sel of ["#settings-speed-pendown-slider", "#settings-speed-penup-slider", "#settings-accel-slider"]) {
+    settingsMachineCustomEnabled.checked = !!data.machine_custom_enabled;
+    settingsMachineWidth.value = data.machine_width_mm ?? 297;
+    settingsMachineHeight.value = data.machine_height_mm ?? 420;
+    setSegmentedValue(settingsMachineAutoRotate, data.machine_auto_rotate || "off");
+    settingsMachineCustomFields.hidden = !settingsMachineCustomEnabled.checked;
+    settingsWebhookUrl.value = data.webhook_url || "";
+    settingsWebhookOnLayerComplete.checked = !!data.webhook_on_layer_complete;
+    settingsWebhookOnJobComplete.checked = !!data.webhook_on_job_complete;
+    settingsWebhookMessage.textContent = "";
+    for (const sel of ["#settings-speed-pendown-slider", "#settings-speed-penup-slider",
+                        "#settings-accel-slider", "#settings-pen-pos-up-slider",
+                        "#settings-pen-pos-down-slider"]) {
       const s = document.querySelector(sel);
       const n = document.querySelector(sel.replace("-slider", ""));
       if (s && n) { s.value = n.value; updateSliderProgress(s); }
@@ -1678,6 +2098,8 @@ async function saveSettings() {
       speed_pendown_default: parseInt(settingsSpeedPendown.value),
       speed_penup_default: parseInt(settingsSpeedPenup.value),
       acceleration_default: parseInt(settingsAccel.value),
+      pen_pos_up_default: parseInt(settingsPenPosUp.value),
+      pen_pos_down_default: parseInt(settingsPenPosDown.value),
       optimize_svg_default: settingsOptimize.checked,
       optimize_svg_tolerance_default_mm: isFinite(tol) && tol > 0 ? tol : 0.10,
       optimize_svg_linemerge_default: settingsOptimizeLinemerge.checked,
@@ -1685,6 +2107,13 @@ async function saveSettings() {
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
       display_unit: settingsDisplayUnit.value,
+      machine_custom_enabled: settingsMachineCustomEnabled.checked,
+      machine_width_mm: parseFloat(settingsMachineWidth.value) || 297,
+      machine_height_mm: parseFloat(settingsMachineHeight.value) || 420,
+      machine_auto_rotate: getSegmentedValue(settingsMachineAutoRotate, "off"),
+      webhook_url: settingsWebhookUrl.value.trim(),
+      webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
+      webhook_on_job_complete: settingsWebhookOnJobComplete.checked,
     };
     const res = await fetch("/settings", {
       method: "PATCH",
@@ -1703,7 +2132,8 @@ async function saveSettings() {
 }
 
 // Wire the settings-modal sliders (they're not inside a card, so createCardForJob doesn't touch them)
-for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-accel"]) {
+for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-accel",
+                     "settings-pen-pos-up", "settings-pen-pos-down"]) {
   const number = $(base);
   const slider = $(base + "-slider");
   if (!number || !slider) continue;
@@ -1722,6 +2152,269 @@ function resetSettingsJobOptions() {
   settingsPauseBetweenLayers.checked = true;
   settingsPauseAfterJob.checked = true;
   settingsDeleteOnComplete.checked = false;
+}
+
+function resetSettingsPenHeight() {
+  const pairs = [["settings-pen-pos-up", 60], ["settings-pen-pos-down", 30]];
+  for (const [id, val] of pairs) {
+    const el = $(id);
+    if (el) { el.value = val; el.dispatchEvent(new Event("input", { bubbles: true })); }
+  }
+}
+
+settingsMachineCustomEnabled.addEventListener("change", () => {
+  settingsMachineCustomFields.hidden = !settingsMachineCustomEnabled.checked;
+});
+settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => setSegmentedValue(settingsMachineAutoRotate, btn.dataset.val));
+});
+
+settingsWebhookTest.addEventListener("click", async () => {
+  settingsWebhookMessage.textContent = "";
+  settingsWebhookMessage.className = "muted";
+  if (!settingsWebhookUrl.value.trim()) {
+    settingsWebhookMessage.textContent = t("settings.notifications.url_required");
+    settingsWebhookMessage.className = "error";
+    return;
+  }
+  try {
+    // Persist just the URL first (a partial PATCH, so it doesn't touch or
+    // close anything else in the modal) so the server has what's typed.
+    const patchRes = await fetch("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ webhook_url: settingsWebhookUrl.value.trim() }),
+    });
+    if (!patchRes.ok) throw new Error(await readErr(patchRes));
+    const res = await fetch("/webhook/test", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    settingsWebhookMessage.textContent = t("settings.notifications.test_sent");
+  } catch (e) {
+    settingsWebhookMessage.textContent = t("error.request_failed", { message: e.message });
+    settingsWebhookMessage.className = "error";
+  }
+});
+
+// ───── Camera settings modal ─────────────────────────────────────────────
+
+cameraSettingsBtn.addEventListener("click", openCameraSettings);
+
+function closeCameraSettings() {
+  cameraSettingsModal.hidden = true;
+  cameraPreviewFrame.src = "";
+}
+$("camera-settings-cancel").addEventListener("click", closeCameraSettings);
+cameraSettingsModal.addEventListener("click", (e) => {
+  if (e.target === cameraSettingsModal) closeCameraSettings();
+});
+
+// Collapsible sections (Resolution & Bitrate, Recording, Livestream Address)
+// need the same click-to-expand wiring settingsModal's sections get — without
+// it they're stuck collapsed and their fields are unreachable.
+cameraSettingsModal.querySelectorAll(".card-section-head").forEach((head) => {
+  head.addEventListener("click", () => {
+    head.parentElement.classList.toggle("collapsed");
+    syncSectionCaret(head.parentElement);
+  });
+  syncSectionCaret(head.parentElement);
+});
+
+async function openCameraSettings() {
+  cameraSettingsMessage.textContent = "";
+  try {
+    const res = await fetch("/settings");
+    const data = await res.json();
+    applyAppSettings(data);
+    cameraResolutionWidth.value = appSettings.camera_resolution_width;
+    cameraResolutionHeight.value = appSettings.camera_resolution_height;
+    cameraFps.value = appSettings.camera_fps;
+    cameraBitrate.value = appSettings.camera_bitrate;
+    setSegmentedValue(cameraAfMode, appSettings.camera_af_mode);
+    cameraLensPositionField.hidden = appSettings.camera_af_mode !== "manual";
+    setSliderNumber("camera-lens-position", appSettings.camera_lens_position);
+    setSegmentedValue(cameraAfSpeed, appSettings.camera_af_speed || "normal");
+    setSliderNumber("camera-brightness", appSettings.camera_brightness ?? 0);
+    setSliderNumber("camera-contrast", appSettings.camera_contrast ?? 1);
+    setSliderNumber("camera-saturation", appSettings.camera_saturation ?? 1);
+    setSliderNumber("camera-sharpness", appSettings.camera_sharpness ?? 1);
+    setSliderNumber("camera-ev", appSettings.camera_ev ?? 0);
+    setSliderNumber("camera-gain", appSettings.camera_gain ?? 0);
+    cameraAwbMode.value = appSettings.camera_awb_mode || "auto";
+    cameraDenoise.value = appSettings.camera_denoise || "off";
+    cameraHflip.checked = !!appSettings.camera_hflip;
+    cameraVflip.checked = !!appSettings.camera_vflip;
+    cameraRecordPlotDefault.checked = !!appSettings.record_plot_default;
+    cameraRecordingMode.value = appSettings.camera_recording_mode_default;
+    cameraTimelapseInterval.value = appSettings.camera_timelapse_interval_s_default;
+    cameraSpeedMultiplier.value = appSettings.camera_speed_multiplier_default;
+    cameraOutputFolder.value = appSettings.camera_output_folder;
+    cameraRcloneTarget.value = appSettings.camera_rclone_target || "";
+
+    const statusRes = await fetch("/camera/status");
+    if (statusRes.ok) {
+      const status = await statusRes.json();
+      cameraRtspUrl.value = status.rtsp_url;
+      cameraHlsUrl.value = status.hls_url;
+      cameraPreviewFrame.src = status.webrtc_view_url;
+    }
+  } catch (e) {}
+  cameraSettingsModal.hidden = false;
+}
+
+async function saveCameraSettings() {
+  try {
+    const body = {
+      camera_resolution_width: parseInt(cameraResolutionWidth.value) || 1920,
+      camera_resolution_height: parseInt(cameraResolutionHeight.value) || 1080,
+      camera_fps: parseInt(cameraFps.value) || 30,
+      camera_bitrate: parseInt(cameraBitrate.value) || 5000000,
+      camera_af_mode: getSegmentedValue(cameraAfMode, "continuous"),
+      camera_lens_position: parseFloat(cameraLensPosition.value) || 0,
+      camera_af_speed: getSegmentedValue(cameraAfSpeed, "normal"),
+      camera_brightness: numOr(cameraBrightness.value, 0),
+      camera_contrast: numOr(cameraContrast.value, 1),
+      camera_saturation: numOr(cameraSaturation.value, 1),
+      camera_sharpness: numOr(cameraSharpness.value, 1),
+      camera_ev: numOr(cameraEv.value, 0),
+      camera_gain: numOr(cameraGain.value, 0),
+      camera_awb_mode: cameraAwbMode.value,
+      camera_denoise: cameraDenoise.value,
+      camera_hflip: cameraHflip.checked,
+      camera_vflip: cameraVflip.checked,
+      record_plot_default: cameraRecordPlotDefault.checked,
+      camera_recording_mode_default: cameraRecordingMode.value,
+      camera_timelapse_interval_s_default: parseFloat(cameraTimelapseInterval.value) || 5,
+      camera_speed_multiplier_default: parseFloat(cameraSpeedMultiplier.value) || 4,
+      camera_output_folder: cameraOutputFolder.value.trim() || "recordings",
+      camera_rclone_target: cameraRcloneTarget.value.trim(),
+    };
+    const res = await fetch("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    applyAppSettings(await res.json());
+    closeCameraSettings();
+  } catch (e) {
+    cameraSettingsMessage.textContent = t("settings.save_failed", { message: e.message });
+    cameraSettingsMessage.className = "error";
+  }
+}
+$("camera-settings-save").addEventListener("click", saveCameraSettings);
+
+// AF mode + live focus: PATCHes /camera/focus immediately (debounced for the
+// slider) so the embedded preview reflects the change while framing a shot —
+// this is the "live adjust focus" the camera settings modal exists for.
+let focusDebounceTimer = null;
+function applyLiveFocus() {
+  const afMode = getSegmentedValue(cameraAfMode, "continuous");
+  const lensPosition = parseFloat(cameraLensPosition.value) || 0;
+  clearTimeout(focusDebounceTimer);
+  focusDebounceTimer = setTimeout(async () => {
+    try {
+      const res = await fetch("/camera/focus", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ af_mode: afMode, lens_position: lensPosition }),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+    } catch (e) {
+      cameraSettingsMessage.textContent = t("error.request_failed", { message: e.message });
+      cameraSettingsMessage.className = "error";
+    }
+  }, 200);
+}
+cameraAfMode.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    setSegmentedValue(cameraAfMode, btn.dataset.val);
+    cameraLensPositionField.hidden = btn.dataset.val !== "manual";
+    applyLiveFocus();
+  });
+});
+{
+  const number = cameraLensPosition;
+  const slider = $("camera-lens-position-slider");
+  slider.addEventListener("input", () => {
+    number.value = slider.value;
+    updateSliderProgress(slider);
+    applyLiveFocus();
+  });
+  number.addEventListener("input", () => {
+    slider.value = number.value;
+    updateSliderProgress(slider);
+    applyLiveFocus();
+  });
+  updateSliderProgress(slider);
+}
+
+cameraAfSpeed.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => setSegmentedValue(cameraAfSpeed, btn.dataset.val));
+});
+
+// Picture-tuning fields: bidirectional slider/number sync, pushed live
+// (debounced) to the running camera the same way the focus slider is, so the
+// preview reflects each change instead of only updating after Save.
+let pictureDebounceTimer = null;
+function applyLivePicture() {
+  clearTimeout(pictureDebounceTimer);
+  pictureDebounceTimer = setTimeout(async () => {
+    try {
+      const res = await fetch("/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          camera_brightness: numOr(cameraBrightness.value, 0),
+          camera_contrast: numOr(cameraContrast.value, 1),
+          camera_saturation: numOr(cameraSaturation.value, 1),
+          camera_sharpness: numOr(cameraSharpness.value, 1),
+          camera_ev: numOr(cameraEv.value, 0),
+          camera_gain: numOr(cameraGain.value, 0),
+          camera_awb_mode: cameraAwbMode.value,
+          camera_denoise: cameraDenoise.value,
+          camera_hflip: cameraHflip.checked,
+          camera_vflip: cameraVflip.checked,
+        }),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+      applyAppSettings(await res.json());
+    } catch (e) {
+      cameraSettingsMessage.textContent = t("error.request_failed", { message: e.message });
+      cameraSettingsMessage.className = "error";
+    }
+  }, 300);
+}
+for (const baseId of ["camera-brightness", "camera-contrast", "camera-saturation",
+                      "camera-sharpness", "camera-ev", "camera-gain"]) {
+  const number = $(baseId);
+  const slider = $(`${baseId}-slider`);
+  slider.addEventListener("input", () => {
+    number.value = slider.value;
+    updateSliderProgress(slider);
+    applyLivePicture();
+  });
+  number.addEventListener("input", () => {
+    slider.value = number.value;
+    updateSliderProgress(slider);
+    applyLivePicture();
+  });
+}
+cameraAwbMode.addEventListener("change", applyLivePicture);
+cameraDenoise.addEventListener("change", applyLivePicture);
+cameraHflip.addEventListener("change", applyLivePicture);
+cameraVflip.addEventListener("change", applyLivePicture);
+
+for (const [inputId, copyId] of [["camera-rtsp-url", "camera-rtsp-url-copy"],
+                                  ["camera-hls-url", "camera-hls-url-copy"]]) {
+  const input = $(inputId);
+  const btn = $(copyId);
+  btn.addEventListener("click", async () => {
+    if (!input.value) return;
+    try { await navigator.clipboard.writeText(input.value); }
+    catch { input.select(); document.execCommand("copy"); }
+    btn.textContent = t("common.copied");
+    setTimeout(() => { btn.textContent = t("common.copy"); }, 1200);
+  });
 }
 
 function resetSettingsDisplay() {
@@ -1836,6 +2529,7 @@ settingsModal.querySelectorAll(".card-section-reset").forEach((btn) => {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (btn.dataset.reset === "settings-speed") resetSettingsSpeed();
+    else if (btn.dataset.reset === "settings-pen-height") resetSettingsPenHeight();
     else if (btn.dataset.reset === "settings-job-options") resetSettingsJobOptions();
     else if (btn.dataset.reset === "settings-optimize") resetSettingsOptimize();
     else if (btn.dataset.reset === "settings-display") resetSettingsDisplay();
@@ -1855,20 +2549,12 @@ function updatePenCursor(msg) {
   const job = serverState.queue.find((j) => j.job_id === serverState.active_id);
   if (!cursor || !job) return;
   const w = job.paper_width_mm, h = job.paper_height_mm;
-  // AxiDraw's auto_rotate (on by default) rotates portrait documents
-  // (height > width) 90° CCW onto the landscape bed, so the reported physical
-  // pen position arrives in that rotated frame: phys_x runs along the document
-  // height and phys_y runs (inverted) along the document width. Map it back
-  // into the upright document frame the preview shows, otherwise the dot
-  // tracks the wrong axis and appears to move up/down instead of following.
-  let leftPct, topPct;
-  if (h > w) {
-    leftPct = ((w - msg.y_mm) / w) * 100;
-    topPct = (msg.x_mm / h) * 100;
-  } else {
-    leftPct = (msg.x_mm / w) * 100;
-    topPct = (msg.y_mm / h) * 100;
-  }
+  // This fork never sets ad.options.auto_rotate, so it stays at pyaxidraw's
+  // own default (False, see axidraw_conf.py) — the physical pen frame is
+  // never rotated relative to the document, and phys_x/phys_y map straight
+  // onto the document's own top-left-origin frame.
+  const leftPct = (msg.x_mm / w) * 100;
+  const topPct = (msg.y_mm / h) * 100;
   cursor.hidden = false;
   cursor.style.left = `${leftPct}%`;
   cursor.style.top = `${topPct}%`;
@@ -1902,6 +2588,7 @@ function connectWs() {
       serverState = msg;
       renderQueue();
       applyTopControls();
+      applyCameraControls();
       applyPenCursor();
     } else if (msg.type === "position") {
       updatePenCursor(msg);
@@ -1933,6 +2620,7 @@ const updateBanner = $("update-banner");
 // the render paths that build text via t()/tn() so dynamic copy updates too.
 I18N.onLanguageChange(() => {
   applyTopControls();
+  applyCameraControls();
   cardEls.forEach((card, id) => {
     const job = serverState.queue.find((j) => j.job_id === id);
     if (job) updateCard(card, job);

@@ -75,6 +75,13 @@ _awaiting_next_job: bool = False
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
 _error: str | None = None
+# Fine origin nudge dialed in during an awaiting_pen_change pause (see
+# plot_worker.nudge_origin). Session-only: applies to the remaining stages of
+# the current run, reset at the start of each run and when it ends.
+_origin_nudge: dict = {"x_mm": 0.0, "y_mm": 0.0}
+# Camera recording state (see app/camera.py). job_id is None for a manually
+# started recording that isn't tied to any job.
+_recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
 
 _clients: set = set()
 _event_queue: asyncio.Queue | None = None
@@ -215,6 +222,10 @@ def snapshot() -> dict:
         "awaiting_next_job": _awaiting_next_job,
         "pause_at_pen_up_pending": _pause_at_pen_up_pending,
         "last_pen_position": dict(_last_pen_position) if _last_pen_position else None,
+        "origin_nudge_x_mm": _origin_nudge["x_mm"],
+        "origin_nudge_y_mm": _origin_nudge["y_mm"],
+        "recording_status": _recording["status"],
+        "recording_job_id": _recording["job_id"],
         "status": _derive_top_status(),
         "error": _error,
     }
@@ -342,6 +353,30 @@ def set_pause_at_pen_up_pending(flag: bool) -> None:
 
 def pause_at_pen_up_pending() -> bool:
     return _pause_at_pen_up_pending
+
+
+def set_origin_nudge(x_mm: float, y_mm: float) -> None:
+    global _origin_nudge
+    if _origin_nudge["x_mm"] == x_mm and _origin_nudge["y_mm"] == y_mm:
+        return
+    _origin_nudge = {"x_mm": x_mm, "y_mm": y_mm}
+    _broadcast()
+
+
+def origin_nudge() -> tuple[float, float]:
+    return _origin_nudge["x_mm"], _origin_nudge["y_mm"]
+
+
+def set_recording(status: str, job_id: str | None) -> None:
+    global _recording
+    if _recording["status"] == status and _recording["job_id"] == job_id:
+        return
+    _recording = {"status": status, "job_id": job_id}
+    _broadcast()
+
+
+def recording() -> tuple[str, str | None]:
+    return _recording["status"], _recording["job_id"]
 
 
 def set_error(err: str | None) -> None:

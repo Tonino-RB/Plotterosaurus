@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# Idempotent install script for Plotter Hub.
+# Idempotent install script for Plotterosaurus.
 # Run from the project root on the Raspberry Pi: ./install.sh
 # Safe to re-run after `git pull` to update dependencies and restart the service.
 #
 # Unattended installs:
 #   SUDO_PW='your-password'   — pipe into sudo -S
 #   PLOTTER_MODEL=<1-8>       — set axidraw model for this installation
+#   ENABLE_CAMERA=1           — set up plot recording via a Pi Camera Module 3 +
+#                               MediaMTX (opt-in: skipped entirely otherwise)
+#   ENABLE_SELF_UPDATE=1      — install the in-app "Update now" path (root-owned
+#                               wrapper + passwordless sudo rule that does
+#                               `git fetch` + `git reset --hard` against
+#                               REPO_URL below, then re-runs this installer).
+#                               Off by default: safe for a stock checkout, but
+#                               a `reset --hard` would wipe out any local fork
+#                               changes, so it's opt-in rather than assumed.
 #
 # If port 80 is free the service binds there; otherwise it falls back to 8080.
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_NAME="plotterhub"
+SERVICE_NAME="plotterosaurus"
 UNIT_SRC="$PROJECT_DIR/systemd/$SERVICE_NAME.service"
 UNIT_DST="/etc/systemd/system/$SERVICE_NAME.service"
-REPO_URL="https://github.com/Synendo/PlotterHub.git"
+REPO_URL="https://github.com/Tonino-RB/Plotterosaurus.git"
 # The service runs as a specific non-root user. Normally that's whoever invokes
 # this script; the self-update path runs the script as root inside a transient
 # unit and passes the user in via SERVICE_USER (falling back to SUDO_USER).
@@ -69,6 +78,13 @@ if ! id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx dialout; then
 fi
 echo "    '$SERVICE_USER' is in dialout group"
 
+# video group (needed for camera access; only relevant with ENABLE_CAMERA=1)
+if [ "${ENABLE_CAMERA:-}" = "1" ] && ! id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx video; then
+    fail "user '$SERVICE_USER' is not in the 'video' group (needed for camera access).
+    Fix:    sudo usermod -a -G video $SERVICE_USER
+    Then log out and back in (or reboot) so the membership takes effect."
+fi
+
 # avahi (for plotterstudio.local)
 if systemctl is-active --quiet avahi-daemon; then
     echo "    avahi-daemon active ($(hostname).local should resolve)"
@@ -83,7 +99,7 @@ fi
 if [ "$(ps -p 1 -o comm= 2>/dev/null)" != "systemd" ]; then
     echo "    warning: PID 1 is not systemd; this installer requires a systemd-booted system."
     echo "             The service is managed via 'systemctl' and will not start under another init."
-    echo "             Plotter Hub is only tested on Raspberry Pi OS."
+    echo "             Plotterosaurus is only tested on Raspberry Pi OS."
 fi
 
 # If a previous install is already running, stop it so its own port-80
@@ -135,8 +151,102 @@ if [ -n "${PLOTTER_MODEL:-}" ]; then
     run_sudo sed -i "s/^Environment=PLOTTER_MODEL=.*/Environment=PLOTTER_MODEL=$PLOTTER_MODEL/" "$UNIT_DST"
 fi
 
+# Camera recording (opt-in) -------------------------------------------------
+# Sets up MediaMTX as a separate systemd service that reads a Pi Camera
+# Module 3 directly (its native `rpiCamera` source — no rpicam-vid/ffmpeg
+# piping needed for capture) and serves the live RTSP/HLS/WebRTC stream plus
+# on-disk recording segments. Plotterosaurus only drives MediaMTX's local
+# Control API (127.0.0.1:9997) and post-processes the segments with ffmpeg —
+# see app/camera.py. Skipped entirely unless explicitly requested, since most
+# installs have no camera attached.
+if [ "${ENABLE_CAMERA:-}" = "1" ]; then
+    echo ">>> Setting up camera recording (MediaMTX)"
+    # No unversioned libcamera0 package: Raspberry Pi OS ships it as a
+    # versioned package (e.g. libcamera0.7) that rpicam-apps already pulls in
+    # as a dependency, so it doesn't need to be named explicitly here.
+    run_sudo apt-get install -y rpicam-apps libfreetype6 ffmpeg
+
+    MEDIAMTX_DIR="/opt/mediamtx"
+    MEDIAMTX_BIN="$MEDIAMTX_DIR/mediamtx"
+    if [ ! -x "$MEDIAMTX_BIN" ]; then
+        echo "    downloading latest MediaMTX (arm64)"
+        # No curl/jq assumed present (README's dependency list doesn't
+        # guarantee them) — python3 already is, so resolve + download with it.
+        MEDIAMTX_TGZ="$(mktemp --suffix=.tar.gz)"
+        python3 - "$MEDIAMTX_TGZ" <<'PYEOF'
+import json, sys, urllib.request
+
+dest = sys.argv[1]
+data = json.load(urllib.request.urlopen(
+    "https://api.github.com/repos/bluenviron/mediamtx/releases/latest", timeout=15))
+url = next((a["browser_download_url"] for a in data["assets"]
+            if a["name"].endswith("_linux_arm64.tar.gz")), None)
+if not url:
+    sys.exit("could not find a linux_arm64 asset in the latest MediaMTX release")
+urllib.request.urlretrieve(url, dest)
+PYEOF
+        run_sudo mkdir -p "$MEDIAMTX_DIR"
+        run_sudo tar -xzf "$MEDIAMTX_TGZ" -C "$MEDIAMTX_DIR"
+        rm -f "$MEDIAMTX_TGZ"
+        run_sudo chmod +x "$MEDIAMTX_BIN"
+    fi
+
+    echo "    configuring $MEDIAMTX_DIR/mediamtx.yml"
+    # The release tarball bundles MediaMTX's own default mediamtx.yml (every
+    # section besides `paths:` is best left at its shipped default). `paths:`
+    # is the file's last top-level section, so replace everything from that
+    # marker onward with our single rpiCamera path rather than hand-writing
+    # the ~100-key file from scratch.
+    #
+    # Written to a temp file rather than piped in via a heredoc: run_sudo's
+    # SUDO_PW path pipes the password into the command's own stdin, which
+    # would otherwise clobber a heredoc meant for python3.
+    CONFIGURE_YML_PY="$(mktemp --suffix=.py)"
+    cat > "$CONFIGURE_YML_PY" <<'PYEOF'
+import re, sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+text = re.split(r"^paths:", text, maxsplit=1, flags=re.MULTILINE)[0]
+# MoQ (Media over QUIC) is on by default and, on first run, tries to write a
+# self-signed TLS cert (auto.key/auto.crt) to its working directory. That
+# directory is root-owned (created by this installer via sudo) while
+# MediaMTX itself runs as the unprivileged service user, so the write fails
+# and MediaMTX treats it as fatal, taking down RTSP/HLS/WebRTC with it even
+# though Plotterosaurus never uses MoQ at all. Just turn it off.
+text = re.sub(r"^moq: true", "moq: false", text, count=1, flags=re.MULTILINE)
+# The Control API is off by default; app/camera.py needs it (127.0.0.1:9997)
+# to drive recording/focus/settings. It has no authentication of its own, so
+# bind it to loopback only rather than the default all-interfaces ":9997" —
+# it's meant to be reachable from Plotterosaurus on the same box, not the LAN.
+text = re.sub(r"^api: false", "api: true", text, count=1, flags=re.MULTILINE)
+text = re.sub(r"^apiAddress: :9997", "apiAddress: 127.0.0.1:9997", text, count=1, flags=re.MULTILINE)
+text += (
+    "paths:\n"
+    "  cam:\n"
+    "    source: rpiCamera\n"
+    "    rpiCameraWidth: 1920\n"
+    "    rpiCameraHeight: 1080\n"
+    "    rpiCameraFPS: 30\n"
+)
+open(path, "w", encoding="utf-8").write(text)
+PYEOF
+    run_sudo python3 "$CONFIGURE_YML_PY" "$MEDIAMTX_DIR/mediamtx.yml"
+    rm -f "$CONFIGURE_YML_PY"
+
+    echo "    installing mediamtx systemd unit"
+    run_sudo cp "$PROJECT_DIR/systemd/mediamtx.service" /etc/systemd/system/mediamtx.service
+    run_sudo sed -i "s|__SERVICE_USER__|$SERVICE_USER|g" /etc/systemd/system/mediamtx.service
+    run_sudo systemctl daemon-reload
+    run_sudo systemctl enable mediamtx
+    run_sudo systemctl restart mediamtx
+
+    echo ">>> Enabling camera recording in plotterosaurus.service"
+    run_sudo sed -i "s/^Environment=ENABLE_CAMERA=.*/Environment=ENABLE_CAMERA=1/" "$UNIT_DST"
+fi
+
 echo ">>> Installing sudoers rule for shutdown button"
-SUDOERS_DST="/etc/sudoers.d/plotterhub-shutdown"
+SUDOERS_DST="/etc/sudoers.d/plotterosaurus-shutdown"
 SUDOERS_TMP="$(mktemp)"
 printf '%s ALL=(root) NOPASSWD: /sbin/shutdown\n' "$SERVICE_USER" > "$SUDOERS_TMP"
 chmod 0440 "$SUDOERS_TMP"
@@ -144,27 +254,34 @@ run_sudo visudo -cf "$SUDOERS_TMP" >/dev/null
 run_sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_DST"
 rm -f "$SUDOERS_TMP"
 
-echo ">>> Installing self-update wrapper"
-# Root-owned wrapper at a fixed path (so the NOPASSWD grant can't be widened by
-# editing a repo file), with the project dir / user / repo baked in.
-WRAPPER_DST="/usr/local/sbin/plotterhub-update"
-WRAPPER_TMP="$(mktemp)"
-sed -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
-    -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
-    -e "s|__REPO_URL__|$REPO_URL|g" \
-    "$PROJECT_DIR/scripts/plotterhub-update.in" > "$WRAPPER_TMP"
-run_sudo install -m 0755 -o root -g root "$WRAPPER_TMP" "$WRAPPER_DST"
-rm -f "$WRAPPER_TMP"
+if [ "${ENABLE_SELF_UPDATE:-}" = "1" ]; then
+    echo ">>> Installing self-update wrapper"
+    # Root-owned wrapper at a fixed path (so the NOPASSWD grant can't be widened by
+    # editing a repo file), with the project dir / user / repo baked in.
+    WRAPPER_DST="/usr/local/sbin/plotterosaurus-update"
+    WRAPPER_TMP="$(mktemp)"
+    sed -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+        -e "s|__SERVICE_USER__|$SERVICE_USER|g" \
+        -e "s|__REPO_URL__|$REPO_URL|g" \
+        "$PROJECT_DIR/scripts/plotterosaurus-update.in" > "$WRAPPER_TMP"
+    run_sudo install -m 0755 -o root -g root "$WRAPPER_TMP" "$WRAPPER_DST"
+    rm -f "$WRAPPER_TMP"
 
-echo ">>> Installing sudoers rule for self-update"
-UPD_SUDOERS_DST="/etc/sudoers.d/plotterhub-update"
-UPD_SUDOERS_TMP="$(mktemp)"
-printf '%s ALL=(root) NOPASSWD: %s "", %s --dry-run\n' \
-    "$SERVICE_USER" "$WRAPPER_DST" "$WRAPPER_DST" > "$UPD_SUDOERS_TMP"
-chmod 0440 "$UPD_SUDOERS_TMP"
-run_sudo visudo -cf "$UPD_SUDOERS_TMP" >/dev/null
-run_sudo install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" "$UPD_SUDOERS_DST"
-rm -f "$UPD_SUDOERS_TMP"
+    echo ">>> Installing sudoers rule for self-update"
+    UPD_SUDOERS_DST="/etc/sudoers.d/plotterosaurus-update"
+    UPD_SUDOERS_TMP="$(mktemp)"
+    printf '%s ALL=(root) NOPASSWD: %s "", %s --dry-run\n' \
+        "$SERVICE_USER" "$WRAPPER_DST" "$WRAPPER_DST" > "$UPD_SUDOERS_TMP"
+    chmod 0440 "$UPD_SUDOERS_TMP"
+    run_sudo visudo -cf "$UPD_SUDOERS_TMP" >/dev/null
+    run_sudo install -m 0440 -o root -g root "$UPD_SUDOERS_TMP" "$UPD_SUDOERS_DST"
+    rm -f "$UPD_SUDOERS_TMP"
+else
+    # Remove any grant/wrapper from a previous install so re-running this
+    # script (e.g. to pick up ENABLE_CAMERA) can't leave a stale passwordless
+    # `git reset --hard` path lying around once self-update is opted out of.
+    run_sudo rm -f /etc/sudoers.d/plotterosaurus-update /usr/local/sbin/plotterosaurus-update
+fi
 
 run_sudo systemctl daemon-reload
 run_sudo systemctl enable "$SERVICE_NAME"

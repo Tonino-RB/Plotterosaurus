@@ -2,14 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Plotter Hub</title>
+  <title>Plotterosaurus</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__" />
 </head>
 <body>
   <header>
-    <h1><img class="app-logo" src="/static/plotter_hub_logo.svg" alt="Plotter Hub" /> <span class="version" id="app-version"></span></h1>
+    <h1><span class="app-logo">Plotterosaurus</span> <span class="version" id="app-version"></span></h1>
     <div class="header-right">
       <div id="status" class="status idle" data-i18n="status.idle">Idle</div>
+      <button id="camera-settings-btn" class="icon-btn" title="Camera" aria-label="Camera settings" data-i18n-title="a11y.camera_settings" data-i18n-aria-label="a11y.camera_settings" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+      </button>
       <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings" data-i18n-title="a11y.settings" data-i18n-aria-label="a11y.settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"></circle>
@@ -25,6 +31,25 @@
     </div>
   </header>
 
+  <div id="pen-controls" class="pen-controls">
+    <span class="pen-controls-label" data-i18n="controls.pen_label">Manual pen control:</span>
+    <button id="pen-up-btn" class="neutral" type="button" data-i18n="controls.pen_up">Pen Up</button>
+    <button id="pen-down-btn" class="neutral" type="button" data-i18n="controls.pen_down">Pen Down</button>
+    <button id="motors-enable-btn" class="neutral" type="button" data-i18n="controls.motors_enable">Enable Motors</button>
+    <button id="motors-disable-btn" class="neutral" type="button" data-i18n="controls.motors_disable">Disable Motors</button>
+    <span id="pen-controls-message" class="muted"></span>
+  </div>
+
+  <div id="camera-controls" class="pen-controls" hidden>
+    <span class="pen-controls-label" data-i18n="controls.recording_label">Recording:</span>
+    <button id="camera-start-btn" class="neutral" type="button" data-i18n="controls.recording_start">Start</button>
+    <button id="camera-pause-btn" class="neutral" type="button" hidden data-i18n="controls.recording_pause">Pause</button>
+    <button id="camera-resume-btn" class="neutral" type="button" hidden data-i18n="controls.recording_resume">Resume</button>
+    <button id="camera-stop-btn" class="danger" type="button" hidden data-i18n="controls.recording_stop">Stop</button>
+    <span id="camera-recording-indicator" class="recording-indicator" hidden></span>
+    <span id="camera-controls-message" class="muted"></span>
+  </div>
+
   <div id="update-banner" class="update-banner" hidden>
     <div class="update-banner-main">
       <span class="update-banner-text">
@@ -39,7 +64,7 @@
 
   <div id="update-progress-modal" class="modal" hidden>
     <div class="modal-card scrollable">
-      <h2 id="update-progress-title" data-i18n="update.progress_title">Updating Plotter Hub…</h2>
+      <h2 id="update-progress-title" data-i18n="update.progress_title">Updating Plotterosaurus…</h2>
       <p class="muted" data-i18n="update.progress_note">The service will restart and this page will reconnect automatically — please don't close this tab.</p>
       <pre id="update-progress-log" class="update-log"></pre>
       <div id="update-progress-status" class="muted"></div>
@@ -64,7 +89,7 @@
   <div id="shutdown-modal" class="modal" hidden>
     <div class="modal-card">
       <h2 data-i18n="shutdown.title">Shut down Raspberry Pi?</h2>
-      <p class="muted" data-i18n="shutdown.note">The Plotter Hub service will stop and the Pi will power off. You'll need physical access to turn it back on.</p>
+      <p class="muted" data-i18n="shutdown.note">The Plotterosaurus service will stop and the Pi will power off. You'll need physical access to turn it back on.</p>
       <div class="actions">
         <button id="shutdown-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
         <button id="shutdown-confirm" class="danger" data-i18n="shutdown.confirm">Shut down</button>
@@ -131,6 +156,28 @@
             </select>
           </label>
           <p class="muted" data-i18n="settings.plotter_model.note">Match this to your AxiDraw hardware — not your paper size.</p>
+          <label class="inline-check">
+            <input type="checkbox" id="settings-machine-custom-enabled" />
+            <span data-i18n="settings.machine.custom_label">Use a custom bed size (also clips the plotter's real travel to this area, never beyond the hardware's own limits)</span>
+          </label>
+          <div id="settings-machine-custom-fields" class="form-row" hidden>
+            <label class="field">
+              <span class="field-label" data-i18n="card.width_mm">Width (mm)</span>
+              <input type="number" id="settings-machine-width" min="10" step="0.1" value="297" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="card.height_mm">Height (mm)</span>
+              <input type="number" id="settings-machine-height" min="10" step="0.1" value="420" />
+            </label>
+            <div class="field">
+              <span class="field-label" data-i18n="settings.machine.auto_rotate_label">Auto-rotate paper to</span>
+              <div class="segmented" id="settings-machine-auto-rotate">
+                <button type="button" data-val="off" class="active" data-i18n="settings.machine.auto_rotate_off">Off</button>
+                <button type="button" data-val="portrait" data-i18n="paper.portrait">Portrait</button>
+                <button type="button" data-val="landscape" data-i18n="paper.landscape">Landscape</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -162,6 +209,33 @@
               <div class="slider-row">
                 <input type="range" id="settings-accel-slider" min="1" max="100" step="1" value="75" />
                 <input type="number" id="settings-accel" min="1" max="100" step="1" value="75" />
+              </div>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="pen-height">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="settings.pen_height.title">Pen Height</span>
+          <button class="icon-btn card-section-reset" data-reset="settings-pen-height" title="Restore defaults" aria-label="Restore default pen height" data-i18n-title="a11y.restore_defaults" data-i18n-aria-label="a11y.restore_default_pen_height">↺</button>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
+          <div class="slider-stack">
+            <label class="field slider">
+              <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (0–100)</span>
+              <div class="slider-row">
+                <input type="range" id="settings-pen-pos-up-slider" min="0" max="100" step="1" value="60" />
+                <input type="number" id="settings-pen-pos-up" min="0" max="100" step="1" value="60" />
+              </div>
+            </label>
+            <label class="field slider">
+              <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (0–100)</span>
+              <div class="slider-row">
+                <input type="range" id="settings-pen-pos-down-slider" min="0" max="100" step="1" value="30" />
+                <input type="number" id="settings-pen-pos-down" min="0" max="100" step="1" value="30" />
               </div>
             </label>
           </div>
@@ -215,7 +289,7 @@
           <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
           <label class="inline-check">
             <input type="checkbox" id="settings-pause-between-layers" />
-            <span data-i18n="job.pause_between_layers">Pause between layers for pen changes</span>
+            <span data-i18n="job.pause_between_layers">Pause between layers for pen changes (resume manually from the app)</span>
           </label>
           <label class="inline-check">
             <input type="checkbox" id="settings-pause-after-job" />
@@ -225,6 +299,32 @@
             <input type="checkbox" id="settings-delete-on-complete" />
             <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
           </label>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="notifications">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="settings.notifications.title">Notifications</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="settings.notifications.note">POSTs a JSON payload to this URL when a layer and/or a job finishes — point it at a service like ntfy, Home Assistant, or a Slack/Discord incoming webhook to get a push, text, or email from there.</p>
+          <label class="field">
+            <span class="field-label" data-i18n="settings.notifications.url_label">Webhook URL</span>
+            <input type="url" id="settings-webhook-url" placeholder="https://example.com/webhook" />
+          </label>
+          <label class="inline-check">
+            <input type="checkbox" id="settings-webhook-on-layer-complete" />
+            <span data-i18n="settings.notifications.on_layer_complete">Notify when a layer finishes</span>
+          </label>
+          <label class="inline-check">
+            <input type="checkbox" id="settings-webhook-on-job-complete" />
+            <span data-i18n="settings.notifications.on_job_complete">Notify when a job finishes</span>
+          </label>
+          <div class="actions">
+            <button id="settings-webhook-test" class="neutral" type="button" data-i18n="settings.notifications.send_test">Send test webhook</button>
+          </div>
+          <div id="settings-webhook-message" class="muted"></div>
         </div>
       </section>
 
@@ -239,7 +339,7 @@
             <input id="settings-api-key" type="text" readonly />
             <button id="settings-api-key-copy" class="neutral" type="button" data-i18n="common.copy">Copy</button>
           </div>
-          <p class="muted" data-i18n-html="settings.api_key.hint_html">Auto-generated on first boot. See <a href="https://github.com/Synendo/PlotterHub/blob/main/API.md" target="_blank" rel="noopener">API.md</a> for the full reference.</p>
+          <p class="muted" data-i18n-html="settings.api_key.hint_html">Auto-generated on first boot. See <a href="https://github.com/Tonino-RB/Plotterosaurus/blob/main/API.md" target="_blank" rel="noopener">API.md</a> for the full reference.</p>
         </div>
       </section>
 
@@ -250,7 +350,7 @@
         </header>
         <div class="card-section-body">
           <div class="settings-update-head">
-            <p class="settings-update-name"><a href="https://github.com/Synendo/PlotterHub" target="_blank" rel="noopener">Plotter Hub</a></p>
+            <p class="settings-update-name"><a href="https://github.com/Tonino-RB/Plotterosaurus" target="_blank" rel="noopener">Plotterosaurus</a></p>
             <span id="settings-update-pill" class="update-pill"></span>
           </div>
           <div class="settings-update-row">
@@ -272,6 +372,236 @@
     </div>
   </div>
 
+  <div id="camera-settings-modal" class="modal" hidden>
+    <div class="modal-card scrollable">
+      <h2 data-i18n="camera.title">Camera</h2>
+      <div class="modal-body">
+
+      <section class="card-section" data-section="camera-focus">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.focus.title">Live Preview &amp; Focus</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="camera.focus.note">Use this live view to check framing and dial in focus before starting a plot.</p>
+          <div class="camera-preview-wrap">
+            <iframe id="camera-preview-frame" class="camera-preview-frame" title="Camera live preview" loading="lazy"></iframe>
+            <div id="camera-preview-paused-overlay" class="camera-preview-paused-overlay" hidden data-i18n="camera.recording_paused">Recording Paused</div>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <span class="field-label" data-i18n="camera.focus.af_mode_label">Autofocus</span>
+              <div class="segmented" id="camera-af-mode">
+                <button type="button" data-val="continuous" class="active" data-i18n="camera.focus.af_continuous">Continuous</button>
+                <button type="button" data-val="auto" data-i18n="camera.focus.af_auto">Auto (one-shot)</button>
+                <button type="button" data-val="manual" data-i18n="camera.focus.af_manual">Manual</button>
+              </div>
+            </div>
+            <div class="field">
+              <span class="field-label" data-i18n="camera.focus.af_speed_label">Autofocus speed</span>
+              <div class="segmented" id="camera-af-speed">
+                <button type="button" data-val="normal" class="active" data-i18n="camera.focus.af_speed_normal">Normal</button>
+                <button type="button" data-val="fast" data-i18n="camera.focus.af_speed_fast">Fast</button>
+              </div>
+            </div>
+          </div>
+          <label class="field slider" id="camera-lens-position-field" hidden>
+            <span class="field-label" data-i18n="camera.focus.lens_position_label">Focus distance (near ↔ far)</span>
+            <div class="slider-row">
+              <input type="range" id="camera-lens-position-slider" min="0" max="15" step="0.1" value="0" />
+              <input type="number" id="camera-lens-position" min="0" max="32" step="0.1" value="0" />
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="camera-image">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.image.title">Resolution &amp; Bitrate</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="card.width_mm">Width (px)</span>
+              <input type="number" id="camera-resolution-width" min="1" step="1" value="1920" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="card.height_mm">Height (px)</span>
+              <input type="number" id="camera-resolution-height" min="1" step="1" value="1080" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.image.fps_label">Frames per second</span>
+              <input type="number" id="camera-fps" min="1" max="120" step="1" value="30" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.image.bitrate_label">Bitrate (bps)</span>
+              <input type="number" id="camera-bitrate" min="1" step="100000" value="5000000" />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="camera-picture">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.picture.title">Image Quality</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <div class="form-row">
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.brightness_label">Brightness</span>
+              <div class="slider-row">
+                <input type="range" id="camera-brightness-slider" min="-1" max="1" step="0.05" value="0" />
+                <input type="number" id="camera-brightness" min="-1" max="1" step="0.05" value="0" />
+              </div>
+            </label>
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.contrast_label">Contrast</span>
+              <div class="slider-row">
+                <input type="range" id="camera-contrast-slider" min="0" max="16" step="0.1" value="1" />
+                <input type="number" id="camera-contrast" min="0" max="16" step="0.1" value="1" />
+              </div>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.saturation_label">Saturation</span>
+              <div class="slider-row">
+                <input type="range" id="camera-saturation-slider" min="0" max="16" step="0.1" value="1" />
+                <input type="number" id="camera-saturation" min="0" max="16" step="0.1" value="1" />
+              </div>
+            </label>
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.sharpness_label">Sharpness</span>
+              <div class="slider-row">
+                <input type="range" id="camera-sharpness-slider" min="0" max="16" step="0.1" value="1" />
+                <input type="number" id="camera-sharpness" min="0" max="16" step="0.1" value="1" />
+              </div>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.ev_label">Exposure compensation (EV)</span>
+              <div class="slider-row">
+                <input type="range" id="camera-ev-slider" min="-10" max="10" step="0.5" value="0" />
+                <input type="number" id="camera-ev" min="-10" max="10" step="0.5" value="0" />
+              </div>
+            </label>
+            <label class="field slider">
+              <span class="field-label" data-i18n="camera.picture.gain_label">Gain / ISO (0 = auto)</span>
+              <div class="slider-row">
+                <input type="range" id="camera-gain-slider" min="0" max="16" step="0.1" value="0" />
+                <input type="number" id="camera-gain" min="0" max="64" step="0.1" value="0" />
+              </div>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.picture.awb_label">White balance</span>
+              <select id="camera-awb-mode">
+                <option value="auto" data-i18n="camera.picture.awb_auto">Auto</option>
+                <option value="incandescent" data-i18n="camera.picture.awb_incandescent">Incandescent</option>
+                <option value="tungsten" data-i18n="camera.picture.awb_tungsten">Tungsten</option>
+                <option value="fluorescent" data-i18n="camera.picture.awb_fluorescent">Fluorescent</option>
+                <option value="indoor" data-i18n="camera.picture.awb_indoor">Indoor</option>
+                <option value="daylight" data-i18n="camera.picture.awb_daylight">Daylight</option>
+                <option value="cloudy" data-i18n="camera.picture.awb_cloudy">Cloudy</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.picture.denoise_label">Denoise</span>
+              <select id="camera-denoise">
+                <option value="off" data-i18n="camera.picture.denoise_off">Off</option>
+                <option value="cdn_off" data-i18n="camera.picture.denoise_cdn_off">Color denoise off</option>
+                <option value="cdn_fast" data-i18n="camera.picture.denoise_cdn_fast">Fast</option>
+                <option value="cdn_hq" data-i18n="camera.picture.denoise_cdn_hq">High quality</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="inline-check">
+              <input type="checkbox" id="camera-hflip" />
+              <span data-i18n="camera.picture.hflip">Flip horizontally</span>
+            </label>
+            <label class="inline-check">
+              <input type="checkbox" id="camera-vflip" />
+              <span data-i18n="camera.picture.vflip">Flip vertically</span>
+            </label>
+          </div>
+          <p class="muted" data-i18n="camera.picture.flip_note">If the camera is mounted upside down, check both to rotate the image 180°.</p>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="camera-recording">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.recording.title">Recording</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
+          <label class="inline-check">
+            <input type="checkbox" id="camera-record-plot-default" />
+            <span data-i18n="camera.recording.record_plot_default">Record plots by default</span>
+          </label>
+          <label class="field">
+            <span class="field-label" data-i18n="camera.recording.mode_label">Recording mode</span>
+            <select id="camera-recording-mode">
+              <option value="realtime" data-i18n="camera.recording.mode_realtime">Realtime</option>
+              <option value="timelapse" data-i18n="camera.recording.mode_timelapse">Timelapse</option>
+              <option value="sped_up" data-i18n="camera.recording.mode_sped_up">Sped up</option>
+            </select>
+          </label>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.recording.timelapse_interval_label">Timelapse interval (s)</span>
+              <input type="number" id="camera-timelapse-interval" min="0.5" step="0.5" value="5" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.recording.speed_multiplier_label">Speed multiplier</span>
+              <input type="number" id="camera-speed-multiplier" min="1.1" step="0.5" value="4" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label" data-i18n="camera.recording.output_folder_label">Output folder (local, on the Pi)</span>
+            <input type="text" id="camera-output-folder" value="recordings" />
+          </label>
+          <label class="field">
+            <span class="field-label" data-i18n="camera.recording.rclone_target_label">rclone target (optional — e.g. gdrive:Plotterosaurus/Recordings)</span>
+            <input type="text" id="camera-rclone-target" placeholder="remote:path" />
+          </label>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="camera-stream">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.stream.title">Livestream Address</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="camera.stream.note">Open these in VLC, OBS, Home Assistant, or any RTSP/HLS-capable client.</p>
+          <div class="api-key-row">
+            <input id="camera-rtsp-url" type="text" readonly />
+            <button id="camera-rtsp-url-copy" class="neutral" type="button" data-i18n="common.copy">Copy</button>
+          </div>
+          <div class="api-key-row">
+            <input id="camera-hls-url" type="text" readonly />
+            <button id="camera-hls-url-copy" class="neutral" type="button" data-i18n="common.copy">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      </div>
+      <div class="actions">
+        <button id="camera-settings-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
+        <button id="camera-settings-save" class="primary" data-i18n="common.save">Save</button>
+      </div>
+      <div id="camera-settings-message" class="muted"></div>
+    </div>
+  </div>
+
   <main>
     <section id="upload-section">
       <label class="drop-zone" id="drop-zone" for="file-input">
@@ -290,6 +620,29 @@
         <button id="continue-btn" class="primary" hidden data-i18n="controls.continue">Continue</button>
         <button id="calibrate-btn" class="secondary" hidden data-i18n="controls.calibrate">Plot Calibration Layer</button>
         <button id="cancel-btn" class="danger" hidden data-i18n="common.cancel">Cancel</button>
+      </div>
+      <div id="calibration-file-row" class="calibration-file-row" hidden>
+        <select id="calibration-file-select"></select>
+        <button id="calibration-file-run-btn" class="secondary" data-i18n="controls.calibrate_file_run">Run Test</button>
+      </div>
+      <div id="origin-nudge" class="origin-nudge" hidden>
+        <span class="field-label" data-i18n="controls.nudge_origin_label">Fine-tune origin (mm)</span>
+        <div class="nudge-axis">
+          <span class="nudge-axis-label">X</span>
+          <button type="button" class="nudge-btn" data-axis="x" data-step="-1">−1</button>
+          <button type="button" class="nudge-btn" data-axis="x" data-step="-0.1">−0.1</button>
+          <span class="nudge-readout" id="nudge-x-readout">0.0</span>
+          <button type="button" class="nudge-btn" data-axis="x" data-step="0.1">+0.1</button>
+          <button type="button" class="nudge-btn" data-axis="x" data-step="1">+1</button>
+        </div>
+        <div class="nudge-axis">
+          <span class="nudge-axis-label">Y</span>
+          <button type="button" class="nudge-btn" data-axis="y" data-step="-1">−1</button>
+          <button type="button" class="nudge-btn" data-axis="y" data-step="-0.1">−0.1</button>
+          <span class="nudge-readout" id="nudge-y-readout">0.0</span>
+          <button type="button" class="nudge-btn" data-axis="y" data-step="0.1">+0.1</button>
+          <button type="button" class="nudge-btn" data-axis="y" data-step="1">+1</button>
+        </div>
       </div>
       <div id="queue-progress" hidden>
         <div class="progress-bar"><div class="progress-fill"></div></div>
@@ -330,6 +683,7 @@
               <span class="svg-dims"></span>
               <span class="preview-paper-name"></span>
             </div>
+            <div class="machine-bounds-warning muted" hidden></div>
             <div class="plot-info" hidden>
               <div><span data-i18n="plotinfo.est_time">Estimated time</span><strong class="est-time">—</strong></div>
               <div><span data-i18n="plotinfo.pendown_dist">Pen-down distance</span><strong class="pendown-dist">—</strong></div>
@@ -338,7 +692,7 @@
             </div>
             <section class="card-section collapsed" data-section="parameters">
               <header class="card-section-head">
-                <span class="card-section-title" data-i18n="settings.speed.title">Plotter Speed</span>
+                <span class="card-section-title" data-i18n="card.speed_and_pen_height">Plotter Speed &amp; Pen Height</span>
                 <button class="icon-btn card-section-reset" data-reset="parameters" title="Restore defaults" aria-label="Restore parameter defaults" data-i18n-title="a11y.restore_defaults" data-i18n-aria-label="a11y.restore_parameter_defaults">↺</button>
                 <span class="card-section-caret" aria-hidden="true">▼</span>
               </header>
@@ -363,6 +717,20 @@
                     <div class="slider-row">
                       <input type="range" class="accel-slider" min="1" max="100" step="1" value="75" />
                       <input type="number" class="accel" value="75" min="1" max="100" step="1" />
+                    </div>
+                  </label>
+                  <label class="field slider">
+                    <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (0–100)</span>
+                    <div class="slider-row">
+                      <input type="range" class="pen-pos-up-slider" min="0" max="100" step="1" value="60" />
+                      <input type="number" class="pen-pos-up" value="60" min="0" max="100" step="1" />
+                    </div>
+                  </label>
+                  <label class="field slider">
+                    <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (0–100)</span>
+                    <div class="slider-row">
+                      <input type="range" class="pen-pos-down-slider" min="0" max="100" step="1" value="30" />
+                      <input type="number" class="pen-pos-down" value="30" min="0" max="100" step="1" />
                     </div>
                   </label>
                 </div>
@@ -542,8 +910,9 @@
                 <div class="multi-layer-options" hidden>
                   <label class="inline-check">
                     <input type="checkbox" class="pause-between-layers" checked />
-                    <span data-i18n="job.pause_between_layers">Pause between layers for pen changes</span>
+                    <span data-i18n="job.pause_between_layers">Pause between layers for pen changes (resume manually from the app)</span>
                   </label>
+                  <p class="muted" data-i18n="job.pause_between_layers_note">While paused, use the calibration plot, pen up/down, and fine origin adjust (below the queue controls) to line up the next layer.</p>
                 </div>
                 <label class="inline-check">
                   <input type="checkbox" class="pause-after-job" checked />
@@ -553,6 +922,32 @@
                   <input type="checkbox" class="delete-on-complete" />
                   <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
                 </label>
+                <div class="camera-job-options" hidden>
+                  <label class="inline-check">
+                    <input type="checkbox" class="record-plot" />
+                    <span data-i18n="job.record_plot">Record this plot</span>
+                  </label>
+                  <div class="record-plot-options" hidden>
+                    <label class="field">
+                      <span class="field-label" data-i18n="camera.recording.mode_label">Recording mode</span>
+                      <select class="record-mode">
+                        <option value="realtime" data-i18n="camera.recording.mode_realtime">Realtime</option>
+                        <option value="timelapse" data-i18n="camera.recording.mode_timelapse">Timelapse</option>
+                        <option value="sped_up" data-i18n="camera.recording.mode_sped_up">Sped up</option>
+                      </select>
+                    </label>
+                    <div class="form-row">
+                      <label class="field">
+                        <span class="field-label" data-i18n="camera.recording.timelapse_interval_label">Timelapse interval (s)</span>
+                        <input type="number" class="record-timelapse-interval" min="0.5" step="0.5" value="5" />
+                      </label>
+                      <label class="field">
+                        <span class="field-label" data-i18n="camera.recording.speed_multiplier_label">Speed multiplier</span>
+                        <input type="number" class="record-speed-multiplier" min="1.1" step="0.5" value="4" />
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
             </section>
           </div>

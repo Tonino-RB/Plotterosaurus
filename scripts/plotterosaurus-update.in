@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Plotter Hub self-update wrapper.
+# Plotterosaurus self-update wrapper.
 #
 # install.sh fills in the placeholders below and installs the result to
-# /usr/local/sbin/plotterhub-update (root-owned, 0755) together with a sudoers
+# /usr/local/sbin/plotterosaurus-update (root-owned, 0755) together with a sudoers
 # rule that lets the service user run *this exact path* without a password.
 # The app launches it as:
-#     sudo -n /usr/local/sbin/plotterhub-update [--dry-run]
+#     sudo -n /usr/local/sbin/plotterosaurus-update [--dry-run]
 #
-# Why the self re-exec via systemd-run: install.sh restarts the plotterhub
+# Why the self re-exec via systemd-run: install.sh restarts the plotterosaurus
 # service, which would kill any child still living in the service's cgroup.
 # Re-launching inside a transient systemd unit moves the update into its own
 # cgroup so it survives the restart. All output is written to update.log, which
@@ -23,15 +23,15 @@ LOG="$PROJECT_DIR/update.log"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-if [ "${PLOTTERHUB_UPDATE_DETACHED:-}" != "1" ]; then
+if [ "${PLOTTEROSAURUS_UPDATE_DETACHED:-}" != "1" ]; then
     # First entry (still in the service cgroup): detach into a transient unit.
     exec systemd-run --collect --no-block \
-        --setenv=PLOTTERHUB_UPDATE_DETACHED=1 \
-        --setenv=PLOTTERHUB_UPDATE_DRY_RUN="$DRY_RUN" \
-        /usr/local/sbin/plotterhub-update
+        --setenv=PLOTTEROSAURUS_UPDATE_DETACHED=1 \
+        --setenv=PLOTTEROSAURUS_UPDATE_DRY_RUN="$DRY_RUN" \
+        /usr/local/sbin/plotterosaurus-update
 fi
 
-DRY_RUN="${PLOTTERHUB_UPDATE_DRY_RUN:-0}"
+DRY_RUN="${PLOTTEROSAURUS_UPDATE_DRY_RUN:-0}"
 
 # --- detached context: runs as root in its own cgroup ---------------------
 exec >"$LOG" 2>&1
@@ -41,7 +41,7 @@ exec >"$LOG" 2>&1
 LOCK="$PROJECT_DIR/update.lock"
 trap 'rm -f "$LOCK"' EXIT
 : > "$LOCK"
-echo "=== plotterhub update $(date -u +%FT%TZ) (dry_run=$DRY_RUN) ==="
+echo "=== plotterosaurus update $(date -u +%FT%TZ) (dry_run=$DRY_RUN) ==="
 
 run_user() { runuser -u "$SERVICE_USER" -- "$@"; }
 

@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 uploads/*
 !uploads/.gitkeep
+calibration/*
+!calibration/.gitkeep
+recordings/
 .DS_Store
 .claude/
 config.json

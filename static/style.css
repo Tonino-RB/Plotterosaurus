@@ -16,7 +16,7 @@ body > header {
   border-bottom: 1px solid #1a1a1a;
 }
 body > header h1 { margin: 0; font-size: 1.25rem; font-weight: 500; color: #f4f4f4; display: flex; align-items: center; gap: 0.4rem; }
-.app-logo { height: 1.9rem; width: auto; display: block; }
+.app-logo { font-weight: 700; }
 .header-right .icon-btn { color: #f4f4f4; }
 .version { opacity: 0.5; font-size: 0.8em; margin-left: 0.25rem; }
 .header-right { display: flex; align-items: center; gap: 0.6rem; }
@@ -284,10 +284,12 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: #666; }
 }
 
 .layers { list-style: none; padding: 0; margin: 0 0 1rem 0; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
-.layers li { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; }
+.layers li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; }
 .layers li:last-child { border-bottom: none; }
-.layers label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.layers label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; flex: 1; min-width: 0; }
 .layer-label { flex: 1; }
+.layer-move { display: flex; gap: 0.15rem; flex: 0 0 auto; }
+.layer-move .icon-btn { font-size: 1rem; min-width: 1.6rem; height: 1.6rem; padding: 0; }
 /* Optional pen name, trailing the layer name in the same grey as .muted. */
 .layer-pen { color: #777; font-size: 0.85rem; margin-left: 0.6em; }
 .layer-swatch {
@@ -588,6 +590,83 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
 .update-banner-main { display: flex; align-items: center; gap: 0.6rem; flex: 1 1 auto; }
 .update-banner-text { font-weight: 500; }
 .update-banner-actions { display: flex; gap: 0.5rem; }
+
+.pen-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1.5rem;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+  font-size: 0.9rem;
+}
+.pen-controls-label { color: #555; }
+.pen-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.recording-indicator { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: #555; }
+.recording-indicator::before {
+  content: "";
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #CC4D4D;
+}
+.recording-indicator.paused::before { background: #F28C33; }
+.recording-indicator.paused { color: #F28C33; }
+.recording-indicator.recording { color: #CC4D4D; }
+
+.camera-preview-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #111;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 0.75rem;
+}
+.camera-preview-frame { width: 100%; height: 100%; border: 0; }
+.camera-preview-paused-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.camera-preview-paused-overlay[hidden] { display: none; }
+
+.camera-job-options { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e5e7eb; }
+.record-plot-options { margin-top: 0.5rem; padding-left: 1.6rem; }
+
+.origin-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.origin-nudge[hidden] { display: none; }
+.nudge-axis { display: flex; align-items: center; gap: 0.35rem; }
+.nudge-axis-label { font-weight: 600; width: 1em; text-align: center; }
+.nudge-readout { min-width: 3.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.nudge-btn { padding: 0.25rem 0.5rem; background: #e5e7eb; border: 0; border-radius: 4px; cursor: pointer; }
+.nudge-btn:hover { background: #d1d5db; }
+
+.calibration-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.calibration-file-row[hidden] { display: none; }
 
 /* ───── Settings: About & Updates ───── */
 .settings-update-row {

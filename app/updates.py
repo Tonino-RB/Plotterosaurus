@@ -19,13 +19,16 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-REPO_HTTPS_URL = "https://github.com/Synendo/PlotterHub.git"
+# This checkout is a personal fork with local changes; see fetch_remote_version.
+_UPDATES_DISABLED = True
+
+REPO_HTTPS_URL = "https://github.com/Tonino-RB/Plotterosaurus.git"
 REMOTE_BRANCH = "main"
 CACHE_TTL_S = 3600  # don't hammer GitHub on every page poll
 
 # Root-owned wrapper installed by install.sh; the service user may run exactly
 # this path (and `--dry-run`) via passwordless sudo.
-WRAPPER_PATH = "/usr/local/sbin/plotterhub-update"
+WRAPPER_PATH = "/usr/local/sbin/plotterosaurus-update"
 UPDATE_LOG = config.BASE_DIR / "update.log"
 # The wrapper holds this lock for the duration of an update (it survives the
 # service restart). A crashed wrapper could leave it behind, so it's only
@@ -60,7 +63,16 @@ def semver_gt(a: str | None, b: str | None) -> bool:
 
 
 def fetch_remote_version(timeout: float = 8.0) -> str | None:
-    """Return the VERSION file content on origin/main, or None on any error."""
+    """Return the VERSION file content on origin/main, or None on any error.
+
+    Gated by _UPDATES_DISABLED: this checkout is a personal fork with local
+    changes that diverge from Tonino-RB/Plotterosaurus, and /update/apply's
+    `git reset --hard` would wipe them out. Reporting "no update" unconditionally
+    keeps the banner off and makes /update/apply refuse (it checks
+    update_available first) without touching that logic.
+    """
+    if _UPDATES_DISABLED:
+        return None
     base = str(config.BASE_DIR)
     try:
         subprocess.run(
@@ -88,6 +100,13 @@ def _git(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
 def get_status(force: bool = False) -> dict:
     """Cached update status. ``force=True`` (the "Check now" button) bypasses
     the TTL and re-fetches immediately."""
+    if _UPDATES_DISABLED:
+        # error=False deliberately: this is a disabled feature, not a failed
+        # check, so the UI shouldn't show a "check failed" indicator for it.
+        return {
+            "current": config.APP_VERSION, "latest": None, "update_available": False,
+            "skipped": False, "checked_at": time.time(), "error": False,
+        }
     global _cache_latest, _cache_error, _cache_at
     now = time.time()
     if force or _cache_at == 0.0 or (now - _cache_at) >= CACHE_TTL_S:

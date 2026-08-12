@@ -1,0 +1,17 @@
+[Unit]
+Description=MediaMTX (camera stream + recording for Plotterosaurus)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/mediamtx/mediamtx /opt/mediamtx/mediamtx.yml
+WorkingDirectory=/opt/mediamtx
+# Runs as the same user as plotterosaurus.service: it needs camera access (the
+# 'video' group, checked by install.sh) and write access to the Plotterosaurus
+# project's recordings/ folder, which recordPath is pointed at per-recording.
+User=__SERVICE_USER__
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

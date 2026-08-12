@@ -11,7 +11,7 @@ from pathlib import Path
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import config, optimize_queue, state, svg_optimize, svg_utils
+from . import camera, config, notify, optimize_queue, state, svg_optimize, svg_utils
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ _preview_proc: subprocess.Popen | None = None
 _cancel_flag = threading.Event()           # cancel the active job
 _continue_event = threading.Event()        # continue: pen change within a job, or next job
 _calibrate_event = threading.Event()       # set alongside _continue_event to request a calibration plot from the awaiting_pen_change pause
+_calibration_filename: str | None = None   # set alongside _calibrate_event to request a calibration/ library file instead of the job's own calibration layers
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
@@ -156,7 +157,10 @@ def _stop_position_poll() -> None:
     state.set_pause_at_pen_up_pending(False)
 
 
-_BUTTON_ACTIVE_STATUSES = ("paused", "awaiting_pen_change")
+# Pen-change pauses (awaiting_pen_change) are deliberately excluded: they
+# only resume via the UI/API Continue action, never the physical button, so
+# the user has a chance to calibrate / jog the pen / nudge the origin first.
+_BUTTON_ACTIVE_STATUSES = ("paused",)
 
 
 def _button_poll_loop(job_id: str) -> None:
@@ -196,8 +200,6 @@ def _button_poll_loop(job_id: str) -> None:
         return
     if pressed_status == "paused":
         threading.Thread(target=_safe_resume, daemon=True).start()
-    elif pressed_status == "awaiting_pen_change":
-        threading.Thread(target=_safe_continue, daemon=True).start()
 
 
 def _safe_resume() -> None:
@@ -205,13 +207,6 @@ def _safe_resume() -> None:
         resume_active()
     except Exception:
         log.exception("auto-resume via button press failed")
-
-
-def _safe_continue() -> None:
-    try:
-        continue_next()
-    except Exception:
-        log.exception("auto-continue via button press failed")
 
 
 def _start_button_poll(job_id: str) -> None:
@@ -232,6 +227,39 @@ def _stop_button_poll() -> None:
 
 # pyaxidraw wrappers -------------------------------------------------------
 
+# Maps PLOTTER_MODEL to the axidrawinternal.axidraw_conf attribute pair its
+# driver reads for real travel bounds (see AxiDraw.update_options()). Models
+# not listed (1, 8, and anything unrecognized) fall back to x/y_travel_default.
+_MODEL_TRAVEL_PARAMS = {
+    2: ("x_travel_V3A3", "y_travel_V3A3"),
+    3: ("x_travel_V3XLX", "y_travel_V3XLX"),
+    4: ("x_travel_MiniKit", "y_travel_MiniKit"),
+    5: ("x_travel_SEA1", "y_travel_SEA1"),
+    6: ("x_travel_SEA2", "y_travel_SEA2"),
+    7: ("x_travel_V3B6", "y_travel_V3B6"),
+}
+
+
+def _apply_custom_bed_size(ad: axidraw.AxiDraw) -> None:
+    """Make the custom bed size (config.MACHINE_*_MM) a real travel-bounds
+    limit, not just a UI paper-fit warning: override the driver's own
+    per-model params.x_travel_*/y_travel_* (read by AxiDraw.update_options()
+    to build self.bounds, which clips out-of-bounds pen-down moves).
+
+    Only ever shrinks the working area, never grows it past the model's real
+    hardware travel — a custom size larger than the actual machine would let
+    the carriage be driven into its physical end stops.
+    """
+    if not config.MACHINE_CUSTOM_ENABLED:
+        return
+    x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
+        config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
+    hw_x_in = getattr(ad.params, x_attr)
+    hw_y_in = getattr(ad.params, y_attr)
+    setattr(ad.params, x_attr, min(config.MACHINE_WIDTH_MM / 25.4, hw_x_in))
+    setattr(ad.params, y_attr, min(config.MACHINE_HEIGHT_MM / 25.4, hw_y_in))
+
+
 def _run_stage(current_svg: Path, mode: str, job: dict,
                stage: dict | None = None) -> tuple[int, str]:
     global _current_ad
@@ -240,6 +268,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         ad.plot_setup(str(current_svg))
         ad.options.mode = mode
         ad.options.model = config.PLOTTER_MODEL
+        _apply_custom_bed_size(ad)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -247,6 +276,8 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         ad.options.speed_pendown = speeds.get("speed_pendown", job["speed_pendown"])
         ad.options.speed_penup = speeds.get("speed_penup", job["speed_penup"])
         ad.options.accel = speeds.get("acceleration", job["acceleration"])
+        ad.options.pen_pos_up = job.get("pen_pos_up", config.PEN_POS_UP_DEFAULT)
+        ad.options.pen_pos_down = job.get("pen_pos_down", config.PEN_POS_DOWN_DEFAULT)
         _current_ad = ad
         _start_position_poll()
         output_svg = ad.plot_run(output=True)
@@ -358,6 +389,60 @@ def compute_preview(job: dict, svg_path: Path,
     return estimate
 
 
+def _active_pen_heights() -> tuple[int, int]:
+    """Pen up/down height (0-100) to use for a standalone manual pen command:
+    the active job's own setting while one is loaded (e.g. mid pen-change
+    pause, so a manual check uses the height that job actually plots at),
+    falling back to the system default otherwise."""
+    job = state.active_job()
+    if job is not None:
+        return (job.get("pen_pos_up", config.PEN_POS_UP_DEFAULT),
+                job.get("pen_pos_down", config.PEN_POS_DOWN_DEFAULT))
+    return config.PEN_POS_UP_DEFAULT, config.PEN_POS_DOWN_DEFAULT
+
+
+def manual_pen(raise_pen: bool) -> None:
+    """Raise or lower the pen outside of a plot, via the AxiDraw Python
+    interactive API (no SVG / plot_run involved). Refuses while a real plot
+    is actively driving the pen (_current_ad set) since only one process can
+    hold the serial port."""
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        ad.penup() if raise_pen else ad.pendown()
+    finally:
+        ad.disconnect()
+
+
+def manual_motors(enable: bool) -> None:
+    """Enable or disable the XY stepper motors outside of a plot. Disabling
+    lets the carriage be moved by hand (e.g. to home it manually or clear a
+    jam); connect() re-enables motors as a side effect, so raise the pen
+    first and only then explicitly disable, mirroring the AxiDraw driver's
+    own "align" mode. Refuses while a real plot is actively driving the pen,
+    same as manual_pen."""
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        if not enable:
+            ad.penup()
+            ebb_motion.sendDisableMotors(ad.plot_status.port, False)
+    finally:
+        ad.disconnect()
+
+
 # Public control API -------------------------------------------------------
 
 def start_queue() -> None:
@@ -429,6 +514,73 @@ def continue_next() -> None:
     raise RuntimeError("Nothing to continue")
 
 
+def nudge_origin(dx_mm: float, dy_mm: float) -> None:
+    """Shift the origin of the remaining (not-yet-plotted) stages by a small
+    delta, to compensate for paper drift between layers during a pen-change
+    pause. Session-only: added on top of the job's own transform offset when
+    rendering each remaining stage (see _run_staged_loop /
+    _run_calibration_phase), never written back to the job record, and reset
+    at the start of the next run.
+
+    Also physically jogs the carriage by the same delta (pen-up, relative),
+    the same way manual_pen/manual_motors do, so the user sees/feels the
+    correction against the paper before continuing."""
+    job = state.active_job()
+    if job is None or job["status"] != "awaiting_pen_change":
+        raise RuntimeError("Origin nudge only available at a pen-change pause")
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+    x, y = state.origin_nudge()
+    bound = max(job.get("paper_width_mm", 0), job.get("paper_height_mm", 0), 1.0)
+    x = max(-bound, min(bound, x + dx_mm))
+    y = max(-bound, min(bound, y + dy_mm))
+    state.set_origin_nudge(x, y)
+
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.units = 2  # millimeters
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        ad.move(dx_mm, dy_mm)
+    finally:
+        ad.disconnect()
+
+
+def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
+                         test: str) -> None:
+    """Live-adjust pen up/down height during a pen-change pause: persists the
+    new height(s) onto the active job and immediately moves the pen so the
+    user can see/feel the result, mirroring the camera settings' live-preview
+    behaviour. Refuses while a real plot is actively driving the pen, same as
+    manual_pen/manual_motors."""
+    job = state.active_job()
+    if job is None or job["status"] != "awaiting_pen_change":
+        raise RuntimeError("Pen height can only be live-adjusted at a pen-change pause")
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+    updates = {}
+    if pen_pos_up is not None:
+        updates["pen_pos_up"] = pen_pos_up
+    if pen_pos_down is not None:
+        updates["pen_pos_down"] = pen_pos_down
+    if updates:
+        state.update_job(job["job_id"], **updates)
+
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        ad.pendown() if test == "down" else ad.penup()
+    finally:
+        ad.disconnect()
+
+
 def trigger_calibration() -> None:
     """Run a one-shot plot of every layer with type='calibration', then return
     to the awaiting_pen_change pause. Only valid while the active job is
@@ -442,6 +594,34 @@ def trigger_calibration() -> None:
         raise RuntimeError("This job has no calibration layers")
     # Set _calibrate_event first; the wait loop checks it after waking on
     # _continue_event, so order matters.
+    _calibrate_event.set()
+    _continue_event.set()
+
+
+def list_calibration_files() -> list[str]:
+    """Filenames (not paths) of standalone calibration SVGs in config.CALIBRATION_DIR,
+    sorted for a stable UI listing."""
+    try:
+        return sorted(p.name for p in config.CALIBRATION_DIR.glob("*.svg") if p.is_file())
+    except OSError:
+        return []
+
+
+def trigger_calibration_file(filename: str) -> None:
+    """Run a one-shot plot of a standalone SVG from the calibration/ library,
+    then return to the awaiting_pen_change pause. Same mechanics as
+    trigger_calibration(), but for a file that isn't part of the job."""
+    job = state.active_job()
+    if job is None or job["status"] != "awaiting_pen_change":
+        raise RuntimeError("Calibration plot only available at a pen-change pause")
+    # Reject path separators outright rather than silently stripping them —
+    # a stripped name could collide with an unrelated file.
+    if filename != Path(filename).name:
+        raise RuntimeError("Invalid calibration filename")
+    if not (config.CALIBRATION_DIR / filename).is_file():
+        raise RuntimeError("Calibration file not found")
+    global _calibration_filename
+    _calibration_filename = filename
     _calibrate_event.set()
     _continue_event.set()
 
@@ -686,6 +866,9 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
     stopped = STOPPED_COMPLETED
     try:
         svg_utils.filter_to_layers(svg_path, cal_indices, filt)
+        # Reflect any pending origin nudge so the calibration plot shows the
+        # alignment the user is about to commit the next stage to.
+        nudge_x, nudge_y = state.origin_nudge()
         svg_utils.transform_to_paper(
             filt, cal_svg,
             job["paper_width_mm"], job["paper_height_mm"],
@@ -694,8 +877,8 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             job["fit_content"],
             transform_scale=job.get("transform_scale", 1.0),
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
-            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
+            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
@@ -724,6 +907,61 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
         # Treat anything other than success/cancel as an unhelpful warning —
         # the user is right there, can re-run calibration or continue.
         log.warning("calibration plot ended with stopped=%s", stopped)
+
+
+def _run_calibration_file_phase(job_id: str, filename: str) -> None:
+    """Plot a standalone SVG from the calibration/ library, transformed onto
+    the job's current paper/margins/origin-nudge. Same self-contained side-plot
+    shape as _run_calibration_phase, for a file that isn't part of the job."""
+    job = state.get_job(job_id)
+    if job is None:
+        return
+    src = config.CALIBRATION_DIR / filename
+    if not src.is_file():
+        log.warning("calibration file vanished: %s", filename)
+        return
+
+    state.update_job(job_id, status="plotting_calibration", plotting_started_at=time.time())
+
+    scratch = _uploads() / f"_calfile_{job['svg_id']}.svg"
+    output_svg = ""
+    stopped = STOPPED_COMPLETED
+    try:
+        nudge_x, nudge_y = state.origin_nudge()
+        svg_utils.transform_to_paper(
+            src, scratch,
+            job["paper_width_mm"], job["paper_height_mm"],
+            job["margin_top_mm"], job["margin_right_mm"],
+            job["margin_bottom_mm"], job["margin_left_mm"],
+            job["fit_content"],
+            transform_scale=job.get("transform_scale", 1.0),
+            transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
+            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
+            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+        )
+        stopped, output_svg = _run_stage(scratch, "plot", job)
+    except IndexError:
+        log.warning("plotink IndexError during calibration-file plot")
+        return
+    except Exception:
+        log.exception("calibration-file plot setup failed")
+        return
+    finally:
+        scratch.unlink(missing_ok=True)
+
+    if stopped in _PAUSED_CODES and _cancel_flag.is_set():
+        resume_path = _uploads() / f"_calfile_{job['svg_id']}.resume.svg"
+        try:
+            resume_path.write_text(output_svg, encoding="utf-8")
+            _run_stage(resume_path, "res_home", job)
+        except Exception:
+            log.exception("calibration-file cancel: res_home failed")
+        finally:
+            resume_path.unlink(missing_ok=True)
+        return
+
+    if stopped != STOPPED_COMPLETED:
+        log.warning("calibration-file plot ended with stopped=%s", stopped)
 
 
 def _resume_job(job_id: str) -> None:
@@ -841,6 +1079,34 @@ def _run_job(job_id: str) -> None:
 
 
 def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
+    # Start a plot recording at the genuine beginning of a fresh run only
+    # (not a res_plot resume, and not a mid-job stage past the first). A
+    # camera problem should never block a plot, so failures here are logged,
+    # not raised.
+    job = state.get_job(job_id)
+    if (job and job.get("record_plot") and first_mode == "plot"
+            and job.get("current_stage_index", 0) == 0):
+        try:
+            camera.start_recording(
+                job_id, mode=job.get("record_mode"),
+                timelapse_interval_s=job.get("record_timelapse_interval_s"),
+                speed_multiplier=job.get("record_speed_multiplier"),
+            )
+        except RuntimeError:
+            log.warning("camera: could not start recording for job %s", job_id, exc_info=True)
+
+    # Origin nudge is session-only: whatever the pen-change pauses in this run
+    # accumulated, it's gone as soon as the run ends (completed/cancelled/
+    # failed) so the next run starts from the job's own saved offset again.
+    try:
+        _run_staged_loop_impl(job_id, svg_path, first_mode)
+    finally:
+        state.set_origin_nudge(0.0, 0.0)
+        if camera.is_recording_job(job_id):
+            camera.stop_recording()
+
+
+def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
     mode = first_mode
     while True:
         job = state.get_job(job_id)
@@ -859,6 +1125,11 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
             filtered = svg_path.with_name(f"{job['svg_id']}.s{i}.filt.svg")
             svg_utils.filter_to_layers(svg_path, stage["layer_indices"], filtered)
             current_svg = svg_path.with_name(f"{job['svg_id']}.s{i}.svg")
+            # A fine origin nudge dialed in at a pen-change pause (see
+            # nudge_origin) shifts every subsequently-rendered stage on top of
+            # the job's own offset — but never a res_plot resume, which
+            # continues a partial SVG mid-stroke at its existing coordinates.
+            nudge_x, nudge_y = state.origin_nudge()
             svg_utils.transform_to_paper(
                 filtered, current_svg,
                 job["paper_width_mm"], job["paper_height_mm"],
@@ -867,8 +1138,8 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
                 job["fit_content"],
                 transform_scale=job.get("transform_scale", 1.0),
                 transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-                transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
-                transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+                transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
+                transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
             )
 
         # Flag this stage as current on the job's stages list
@@ -901,6 +1172,8 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
                 return
             state.update_job(job_id, status="paused", resume_path=str(resume_path))
             _start_button_poll(job_id)
+            if camera.is_recording_job(job_id):
+                camera.pause_recording()
             # Wait for either resume or cancel via /resume or /cancel
             # We poll the status: when it flips to plotting, continue the loop.
             # When it flips to homing/cancelled, exit.
@@ -911,6 +1184,8 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
                 st = current["status"]
                 if st == "plotting":
                     _stop_button_poll()
+                    if camera.is_recording_job(job_id):
+                        camera.resume_recording()
                     mode = "res_plot"
                     break
                 if st in ("cancelled", "homing"):
@@ -936,40 +1211,56 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
         new_stages[i] = dict(new_stages[i], status="done")
         next_i = i + 1
         state.update_job(job_id, stages=new_stages, current_stage_index=next_i, resume_path=None)
+        if config.WEBHOOK_ON_LAYER_COMPLETE:
+            notify.fire("layer_complete", job,
+                        stage_label=", ".join(new_stages[i].get("labels", [])),
+                        stage_index=i, stage_count=len(new_stages))
 
         if next_i < len(new_stages):
             if job.get("pause_between_layers", True) and len(new_stages) > 1:
+                # Manual-only pause: no button polling here (see
+                # _BUTTON_ACTIVE_STATUSES) — only /queue/continue (UI/API)
+                # resumes it, giving the user a chance to calibrate, jog the
+                # pen, and nudge the origin first.
                 state.update_job(job_id, status="awaiting_pen_change")
-                _start_button_poll(job_id)
+                if camera.is_recording_job(job_id):
+                    camera.pause_recording()
                 while True:
                     _continue_event.wait()
                     _continue_event.clear()
                     if _cancel_flag.is_set():
-                        _stop_button_poll()
                         _cancel_flag.clear()
                         state.update_job(job_id, status="cancelled")
                         return
                     if _calibrate_event.is_set():
-                        _stop_button_poll()
                         _calibrate_event.clear()
-                        _run_calibration_phase(job_id, svg_path)
+                        global _calibration_filename
+                        filename, _calibration_filename = _calibration_filename, None
+                        if filename:
+                            _run_calibration_file_phase(job_id, filename)
+                        else:
+                            _run_calibration_phase(job_id, svg_path)
                         if _cancel_flag.is_set():
                             _cancel_flag.clear()
                             state.update_job(job_id, status="cancelled",
                                              resume_path=None)
                             return
                         # Back to the pause point; loop and wait for the next
-                        # continue / calibrate / cancel.
+                        # continue / calibrate / cancel. Recording (if this
+                        # job owns it) stays paused throughout — the
+                        # calibration side-plot isn't part of the deliverable.
                         state.update_job(job_id, status="awaiting_pen_change")
-                        _start_button_poll(job_id)
                         continue
                     # Plain continue → break out and run the next stage.
-                    _stop_button_poll()
+                    if camera.is_recording_job(job_id):
+                        camera.resume_recording()
                     break
             mode = "plot"
             continue
         # No more stages
         state.update_job(job_id, status="completed", resume_path=None)
+        if config.WEBHOOK_ON_JOB_COMPLETE:
+            notify.fire("job_complete", job)
         if job.get("delete_on_complete", False):
             from .main import delete_svg_files
             svg_id = job.get("svg_id")

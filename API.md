@@ -1,6 +1,6 @@
-# Plotter Hub API
+# Plotterosaurus API
 
-This document describes the public HTTP API exposed by Plotter Hub for external clients (companion apps, CLI tools, scripts). All public endpoints live under the `/api/v1/` prefix and require an API key.
+This document describes the public HTTP API exposed by Plotterosaurus for external clients (companion apps, CLI tools, scripts). All public endpoints live under the `/api/v1/` prefix and require an API key.
 
 The web UI uses a separate, unauthenticated set of routes (e.g. `/jobs`, `/upload`, `/queue/*`). Those are an internal contract between the bundled HTML and the server — they may change without notice. **Build against `/api/v1/*` only.**
 
@@ -23,9 +23,9 @@ X-API-Key: <your-key>
 The key is generated automatically the first time the service starts and is persisted in `config.json`. To find it:
 
 - **From the UI** — gear icon → Settings → "API Key" section (last item, collapsed by default). Use the *Copy* button.
-- **From the host directly** — read the `api_key` field in `~/PlotterHub/config.json` on the Pi.
+- **From the host directly** — read the `api_key` field in `~/Plotterosaurus/config.json` on the Pi.
 
-To rotate the key, edit `config.json` on the Pi (or delete the `api_key` line so a new key is generated on next start) and restart `plotterhub.service`.
+To rotate the key, edit `config.json` on the Pi (or delete the `api_key` line so a new key is generated on next start) and restart `plotterosaurus.service`.
 
 ### Errors
 
@@ -89,6 +89,19 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   "speed_pendown": 30,                // 1–110
   "speed_penup":   80,                // 1–110
   "acceleration":  50,                // 1–100
+
+  // Pen height (servo position) — omit any field to inherit the server
+  // default. Out-of-range values are silently clamped to the bounds.
+  "pen_pos_up":   60,                 // 0–100
+  "pen_pos_down": 30,                 // 0–100
+
+  // Plot recording via a Camera Module 3 (only meaningful when the server
+  // was installed with ENABLE_CAMERA=1 — see "Camera / plot recording"
+  // below). Omit any field to inherit the server default.
+  "record_plot":                  false,   // Start/stop recording with this job.
+  "record_mode": "realtime" | "timelapse" | "sped_up",
+  "record_timelapse_interval_s":  5.0,     // Used only when record_mode is "timelapse".
+  "record_speed_multiplier":      4.0,     // Used only when record_mode is "sped_up".
 
   // SVG optimization (vpype). Omit any field to inherit the server default.
   // The optimized SVG is cached per job and reused across re-plots; changing
@@ -179,7 +192,11 @@ Layer types are decorative — the icon is shown in the layer list:
   "delete_on_complete": false,
   "speed_pendown": 25,
   "speed_penup": 75,
-  "acceleration": 75
+  "acceleration": 75,
+  "pen_pos_up": 60,
+  "pen_pos_down": 30,
+  "record_plot": false,
+  "record_mode": "realtime"
   // ... margins, transforms, timing fields, etc.
 }
 ```
@@ -187,8 +204,8 @@ Layer types are decorative — the icon is shown in the layer list:
 #### Example
 
 ```bash
-curl -X POST http://plotterhub.local/api/v1/jobs \
-  -H "X-API-Key: $PLOTTERHUB_API_KEY" \
+curl -X POST http://plotterosaurus.local/api/v1/jobs \
+  -H "X-API-Key: $PLOTTEROSAURUS_API_KEY" \
   -F "file=@/path/to/drawing.svg" \
   -F 'metadata={"name":"Nightly run","paper_size":{"name":"A3","orientation":"landscape"},"paper":{"name":"FABRIANO Black Black 300g"},"layers":[{"index":0,"name":"Outline","type":"pattern","pen":{"name":"Uni Posca PC-5M White"}},{"index":1,"name":"Title","type":"text"}]}'
 ```
@@ -196,8 +213,8 @@ curl -X POST http://plotterhub.local/api/v1/jobs \
 If your shell mangles the inline JSON (extra spaces, broken backslash continuations), put the JSON in a file and reference it:
 
 ```bash
-curl -X POST http://plotterhub.local/api/v1/jobs \
-  -H "X-API-Key: $PLOTTERHUB_API_KEY" \
+curl -X POST http://plotterosaurus.local/api/v1/jobs \
+  -H "X-API-Key: $PLOTTEROSAURUS_API_KEY" \
   -F "file=@/path/to/drawing.svg" \
   -F "metadata=<./metadata.json"
 ```
@@ -214,7 +231,46 @@ All endpoints take no body, return `{"ok": true}` on success, and respond `409 C
 | `POST` | `/api/v1/queue/resume` | Resume a paused plot. | No paused job; missing resume data. |
 | `POST` | `/api/v1/queue/continue` | Advance past a pen-change pause, or accept the next job after `awaiting_next_job`. | Nothing waiting on a continue. |
 | `POST` | `/api/v1/queue/calibrate` | At a pen-change pause, plot every layer with `type: "calibration"` (regardless of `selected`) as a one-shot side plot, then return to `awaiting_pen_change`. Lets the user verify pen alignment between layers without advancing the main plot. | Active job is not in `awaiting_pen_change`; job has no calibration-typed layers. |
+| `POST` | `/api/v1/queue/nudge-origin` | At a pen-change pause, shift the origin of the remaining (not-yet-plotted) stages by `{"dx_mm": 0.1, "dy_mm": 0.0}` (either field optional, default `0.0`) — for compensating small paper drift between layers. Session-only: not written back to the job's `transform_offset_*_mm`, and resets when the run ends. | Active job is not in `awaiting_pen_change`. |
 | `POST` | `/api/v1/queue/cancel` | Cancel the active job (or the awaiting-next-job state). The plotter homes if it can. | No active job. |
+
+Note: a pen-change pause (`awaiting_pen_change`) only resumes via `/api/v1/queue/continue` — the plotter's physical pause button does **not** auto-continue it (unlike a plain `paused` state, which the button does resume). This is intentional, so there's always a chance to calibrate / jog the pen / nudge the origin first.
+
+### Manual pen control
+
+| Method | Path | What it does | 409 conditions |
+|---|---|---|---|
+| `POST` | `/api/v1/pen/up` | Raise the pen outside of a plot (no SVG involved), using the active job's pen height if one is loaded, otherwise the system default. | The plotter is actively driving a real plot (`plotting` / `homing` / `plotting_calibration`); connection failure. |
+| `POST` | `/api/v1/pen/down` | Lower the pen outside of a plot, same height rules as above. | Same as above. |
+
+### Camera / plot recording
+
+Only available when the server was installed with `ENABLE_CAMERA=1` (`camera_enabled: true` in
+`GET /api/v1/settings`) — a Pi Camera Module 3 plus a separate [MediaMTX](https://mediamtx.org)
+service the installer sets up. Plotterosaurus drives MediaMTX locally; there's no camera-specific
+credential to manage. See `camera_*` / `record_plot*` fields under Settings above for the
+configurable defaults (resolution, FPS, bitrate, autofocus, output folder, rclone target,
+recording mode).
+
+A recording can be started automatically by a job (`record_plot: true` in its metadata — see
+`POST /api/v1/jobs`) or manually via the endpoints below, independent of any job. Automatic
+recordings pause whenever the job pauses (a pen-change pause or a plain mid-stroke pause) and
+resume when it does; the live stream itself is never interrupted by this, only the on-disk
+recording. Only one recording (manual or job-driven) can be active at a time.
+
+| Method | Path | What it does | 409 conditions |
+|---|---|---|---|
+| `POST` | `/api/v1/camera/recording/start` | Start a manual recording (not tied to any job). Body: `{"mode": "realtime"\|"timelapse"\|"sped_up", "timelapse_interval_s": 5.0, "speed_multiplier": 4.0}` — all fields optional, falling back to the configured defaults. | Camera not enabled; a recording is already in progress; MediaMTX unreachable. |
+| `POST` | `/api/v1/camera/recording/pause` | Pause the active recording (no-op if not recording). | — |
+| `POST` | `/api/v1/camera/recording/resume` | Resume a paused recording (no-op if not paused). | — |
+| `POST` | `/api/v1/camera/recording/stop` | Stop and finalize the active recording (no-op if idle). Finalization (segment concatenation, speed post-processing, optional `rclone copy`) runs in the background after this returns. | — |
+| `POST` | `/api/v1/camera/focus` | Live autofocus control. Body: `{"af_mode": "auto"\|"manual"\|"continuous", "lens_position": 0.0}` (`lens_position` only applies in `"manual"` mode; distance (m) = 1/value, 0 = infinity). Applied immediately and persisted to settings. | Camera not enabled; MediaMTX unreachable; invalid `af_mode`. |
+| `GET` | `/api/v1/camera/status` | Returns `{"camera_enabled", "recording_status": "idle"\|"recording"\|"paused", "recording_job_id", "rtsp_url", "hls_url", "webrtc_view_url"}`. The stream URLs are always derived from the request's own host, so they're correct for whatever hostname/IP you reached the server on. | — |
+
+Finished recordings land in `camera_output_folder` as `<job_id>.mp4` (or `manual-<timestamp>.mp4`
+for a manual recording), and are additionally copied via `rclone copy <file>
+<camera_rclone_target>` in the background if a target is configured — `rclone` itself must
+already be installed and authenticated on the Pi; Plotterosaurus never stores cloud credentials.
 
 #### Lifecycle cheat sheet
 
@@ -240,8 +296,8 @@ goes straight to `planning`.
 #### Example
 
 ```bash
-curl -X POST http://plotterhub.local/api/v1/queue/plot \
-  -H "X-API-Key: $PLOTTERHUB_API_KEY"
+curl -X POST http://plotterosaurus.local/api/v1/queue/plot \
+  -H "X-API-Key: $PLOTTEROSAURUS_API_KEY"
 ```
 
 ### Per-job CRUD
@@ -286,7 +342,12 @@ Editable fields:
 | `transform_offset_x_mm`, `transform_offset_y_mm` | number | |
 | `speed_pendown`, `speed_penup` | int | 1–110 |
 | `acceleration` | int | 1–100 |
-| `pause_between_layers`, `pause_after_job`, `delete_on_complete` | bool | |
+| `pen_pos_up`, `pen_pos_down` | int | 0–100 |
+| `record_plot` | bool | Record this job via the camera — see "Camera / plot recording" below. Only meaningful when the server has `camera_enabled`. |
+| `record_mode` | `"realtime"` \| `"timelapse"` \| `"sped_up"` | |
+| `record_timelapse_interval_s` | number | 0.5–3600 |
+| `record_speed_multiplier` | number | 1.1–60 |
+| `pause_between_layers`, `pause_after_job`, `delete_on_complete` | bool | `pause_between_layers` pauses only resume via `/queue/continue`, never the physical button — see the note under Queue control. |
 | `optimize_svg` | bool | Run the vpype optimization pipeline before planning. |
 | `optimize_svg_tolerance_mm` | number | 0.01–10.0 |
 | `optimize_svg_linemerge`, `optimize_svg_linesimplify`, `optimize_svg_linesort`, `optimize_svg_reloop` | bool | Per-step toggles for the vpype pipeline. |
@@ -346,7 +407,7 @@ Clients should switch on `type` and treat unknown types as forward-compat noise.
 
 #### Example (CLI)
 
-`~/Desktop/Examples/plotterhub-api-test-ws.sh` — pure-stdlib Python wrapped in a shell launcher; streams every frame to stdout, pretty-printed. Honors `PLOTTERHUB_HOST` / `PLOTTERHUB_API_KEY` env overrides.
+`~/Desktop/Examples/plotterosaurus-api-test-ws.sh` — pure-stdlib Python wrapped in a shell launcher; streams every frame to stdout, pretty-printed. Honors `PLOTTEROSAURUS_HOST` / `PLOTTEROSAURUS_API_KEY` env overrides.
 
 ### Settings
 
@@ -365,17 +426,41 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "speed_pendown_default": 25,                  // 1–110
   "speed_penup_default": 75,                    // 1–110
   "acceleration_default": 75,                   // 1–100
+  "pen_pos_up_default": 60,                     // 0–100
+  "pen_pos_down_default": 30,                   // 0–100
   "optimize_svg_default": true,                 // Run vpype before plotting on new jobs
   "optimize_svg_tolerance_default_mm": 0.10,    // 0.01–10.0
   "optimize_svg_linemerge_default": true,
   "optimize_svg_linesimplify_default": true,
   "optimize_svg_linesort_default": true,
   "optimize_svg_reloop_default": true,
-  "display_unit": null                          // null | "mm" | "cm" | "in" — UI labels only
+  "display_unit": null,                         // null | "mm" | "cm" | "in" — UI labels only
+  "machine_custom_enabled": false,              // Custom bed-size profile layered on plotter_model (UI/bounds only)
+  "machine_width_mm": 297.0,
+  "machine_height_mm": 420.0,
+  "machine_auto_rotate": "off",                 // "off" | "portrait" | "landscape"
+  "webhook_url": null,                          // POSTed a JSON payload on layer/job completion — see below
+  "webhook_on_layer_complete": false,
+  "webhook_on_job_complete": false,
+  "camera_enabled": false,                      // true only if the server was installed with ENABLE_CAMERA=1
+  "camera_resolution_width": 1920,
+  "camera_resolution_height": 1080,
+  "camera_fps": 30,
+  "camera_bitrate": 5000000,
+  "camera_af_mode": "continuous",               // "auto" | "manual" | "continuous"
+  "camera_lens_position": 0.0,                  // used only when camera_af_mode is "manual"; distance (m) = 1/value, 0 = infinity
+  "camera_output_folder": "recordings",         // local path on the Pi, relative to the install dir unless absolute
+  "camera_rclone_target": null,                 // e.g. "gdrive:Plotterosaurus/Recordings" — see "Camera / plot recording" below
+  "camera_recording_mode_default": "realtime",  // "realtime" | "timelapse" | "sped_up"
+  "camera_timelapse_interval_s_default": 5.0,
+  "camera_speed_multiplier_default": 4.0,
+  "record_plot_default": false
 }
 ```
 
 `display_unit` only affects how the web UI renders paper-size and SVG-dimension labels. Internal storage and inputs always stay in mm. When the field is `null` (no preference saved yet), the browser picks an initial value from `navigator.language` (en-US → in, otherwise mm); once the user saves a choice it overrides the locale fallback on every subsequent load.
+
+`machine_width_mm`/`machine_height_mm`/`machine_auto_rotate` only take effect when `machine_custom_enabled` is `true`. They don't change `pyaxidraw`'s real travel bounds (still governed entirely by `plotter_model`) — they're a software bed-size profile the web UI uses for paper-fit bounds warnings and for auto-rotating a job's paper to match the bed's preferred orientation.
 
 #### `PATCH /api/v1/settings`
 
@@ -384,6 +469,24 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | Field | Range / Type |
 |---|---|
 | `plotter_model` | int 1–8 |
+| `pen_pos_up_default`, `pen_pos_down_default` | int 0–100 |
+| `machine_custom_enabled` | bool |
+| `machine_width_mm`, `machine_height_mm` | number > 0 |
+| `machine_auto_rotate` | `"off"` \| `"portrait"` \| `"landscape"` |
+| `webhook_url` | string. PATCH cannot clear it back to `null` — same limitation as `display_unit`. |
+| `webhook_on_layer_complete`, `webhook_on_job_complete` | bool |
+| `camera_enabled` | bool. Set at install time via `ENABLE_CAMERA=1`; can be toggled here too, but the MediaMTX service itself is only installed when the installer flag was used. |
+| `camera_resolution_width`, `camera_resolution_height` | int > 0 |
+| `camera_fps` | int 1–120 |
+| `camera_bitrate` | int > 0 (bits/sec) |
+| `camera_af_mode` | `"auto"` \| `"manual"` \| `"continuous"` |
+| `camera_lens_position` | number 0–32 |
+| `camera_output_folder` | string (local path) |
+| `camera_rclone_target` | string, e.g. `"gdrive:Plotterosaurus/Recordings"`. Empty disables cloud sync. |
+| `camera_recording_mode_default` | `"realtime"` \| `"timelapse"` \| `"sped_up"` |
+| `camera_timelapse_interval_s_default` | number > 0 |
+| `camera_speed_multiplier_default` | number > 1.0 |
+| `record_plot_default` | bool |
 | `pause_between_layers_default` | bool |
 | `pause_after_job_default` | bool |
 | `delete_on_complete_default` | bool |
@@ -398,17 +501,46 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 Out-of-range values return `400`. The API key cannot be set through this endpoint — to rotate it, edit `config.json` on the Pi and restart the service.
 
 ```bash
-curl -X PATCH http://plotterhub.local/api/v1/settings \
-  -H "X-API-Key: $PLOTTERHUB_API_KEY" \
+curl -X PATCH http://plotterosaurus.local/api/v1/settings \
+  -H "X-API-Key: $PLOTTEROSAURUS_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"speed_pendown_default": 30, "delete_on_complete_default": true}'
 ```
+
+### Outgoing webhooks
+
+When `webhook_url` is set, Plotterosaurus POSTs a JSON payload to it — fire-and-forget from a background thread, with a 5s timeout; delivery failures are logged locally and never affect the plot. Independently toggled per event via `webhook_on_layer_complete` / `webhook_on_job_complete`:
+
+```jsonc
+// event: "layer_complete" — one selected layer (a stage) just finished plotting.
+{
+  "event": "layer_complete",
+  "timestamp": 1777212168.88,
+  "job_id": "abc12345",
+  "job_name": "Nightly run",
+  "stage_label": "Outline",
+  "stage_index": 0,
+  "stage_count": 3
+}
+```
+
+```jsonc
+// event: "job_complete" — every stage of the job finished.
+{
+  "event": "job_complete",
+  "timestamp": 1777212500.12,
+  "job_id": "abc12345",
+  "job_name": "Nightly run"
+}
+```
+
+There's no dedicated `/api/v1/*` endpoint for this — it's an outbound integration, not something a client calls. Point it at something that can turn a POST into a push/text/email (ntfy, Home Assistant, a Slack/Discord incoming webhook, etc.) if that's the end goal.
 
 ### System
 
 #### `GET /api/v1/version`
 
-Returns the running Plotter Hub version (read from the `VERSION` file at install time):
+Returns the running Plotterosaurus version (read from the `VERSION` file at install time):
 
 ```json
 { "version": "1.0.2" }
@@ -423,6 +555,6 @@ Powers off the Raspberry Pi. The HTTP response is flushed first, then the system
 **Be careful** — there's no abort once the request is accepted. The web UI guards this behind a confirmation modal; an external client should do the same. Don't issue a shutdown while a plot is running: the plotter is left wherever the pen happens to be, and on next boot the queue rehydrates with a paused job whose pen is no longer in a known position.
 
 ```bash
-curl -X POST http://plotterhub.local/api/v1/system/shutdown \
-  -H "X-API-Key: $PLOTTERHUB_API_KEY"
+curl -X POST http://plotterosaurus.local/api/v1/system/shutdown \
+  -H "X-API-Key: $PLOTTEROSAURUS_API_KEY"
 ```

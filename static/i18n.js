@@ -1,4 +1,4 @@
-// Lightweight i18n for the Plotter Hub static UI. No build step, no deps.
+// Lightweight i18n for the Plotterosaurus static UI. No build step, no deps.
 //
 // Strings live in /static/i18n/<lang>.json as flat "dotted.key": "text" pairs.
 // Static markup is translated via data-i18n* attributes (see applyStatic);

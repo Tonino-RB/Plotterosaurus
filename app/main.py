@@ -11,13 +11,13 @@ from typing import Literal
 
 from fastapi import (
     Depends, FastAPI, File, Form, Header, HTTPException,
-    UploadFile, WebSocket, WebSocketDisconnect,
+    Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import config, optimize_queue, plan_queue, plot_worker, state, svg_utils, updates
+from . import camera, config, notify, optimize_queue, plan_queue, plot_worker, state, svg_utils, updates
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -56,8 +56,19 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "No resume data": "no_resume_data",
     "Nothing to continue": "nothing_to_continue",
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
+    "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
     "This job has no calibration layers": "no_calibration_layers",
+    "Invalid calibration filename": "invalid_calibration_filename",
+    "Calibration file not found": "calibration_file_not_found",
+    "Pen height can only be live-adjusted at a pen-change pause": "pen_height_not_at_pause",
     "No active job": "no_active_job",
+    "Plotter busy": "plotter_busy",
+    "Could not connect to the plotter. Check that it is powered on and plugged in.": "cannot_connect",
+    "Camera is not enabled": "camera_not_enabled",
+    "A recording is already in progress": "recording_in_progress",
+    "Could not start recording (MediaMTX unreachable)": "camera_unreachable",
+    "Could not reach the camera service (MediaMTX)": "camera_unreachable",
+    "Invalid autofocus mode": "invalid_af_mode",
 }
 
 
@@ -75,6 +86,7 @@ async def lifespan(_app: FastAPI):
     plan_queue.start()
     optimize_queue.bootstrap_from_disk()
     plan_queue.bootstrap_from_state()
+    camera.apply_camera_settings()
     drain_task = asyncio.create_task(state.drain_events())
     try:
         yield
@@ -182,6 +194,12 @@ class JobCreate(_OptimizeCreateFields):
     speed_pendown: int = 25
     speed_penup: int = 75
     acceleration: int = 75
+    pen_pos_up: int = 60
+    pen_pos_down: int = 30
+    record_plot: bool = False
+    record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
+    record_timelapse_interval_s: float | None = None
+    record_speed_multiplier: float | None = None
 
 
 class MoveRequest(BaseModel):
@@ -196,6 +214,8 @@ class SettingsUpdate(BaseModel):
     speed_pendown_default: int | None = Field(None, ge=1, le=110)
     speed_penup_default: int | None = Field(None, ge=1, le=110)
     acceleration_default: int | None = Field(None, ge=1, le=100)
+    pen_pos_up_default: int | None = Field(None, ge=0, le=100)
+    pen_pos_down_default: int | None = Field(None, ge=0, le=100)
     optimize_svg_default: bool | None = None
     optimize_svg_tolerance_default_mm: float | None = Field(None, ge=0.01, le=10.0)
     optimize_svg_linemerge_default: bool | None = None
@@ -203,6 +223,38 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
     display_unit: Literal["mm", "cm", "in"] | None = None
+    machine_custom_enabled: bool | None = None
+    machine_width_mm: float | None = Field(None, gt=0)
+    machine_height_mm: float | None = Field(None, gt=0)
+    machine_auto_rotate: Literal["off", "portrait", "landscape"] | None = None
+    webhook_url: str | None = None
+    webhook_on_layer_complete: bool | None = None
+    webhook_on_job_complete: bool | None = None
+    camera_enabled: bool | None = None
+    camera_resolution_width: int | None = Field(None, gt=0)
+    camera_resolution_height: int | None = Field(None, gt=0)
+    camera_fps: int | None = Field(None, ge=1, le=120)
+    camera_bitrate: int | None = Field(None, gt=0)
+    camera_af_mode: Literal["auto", "manual", "continuous"] | None = None
+    camera_lens_position: float | None = Field(None, ge=0.0, le=32.0)
+    camera_af_speed: Literal["normal", "fast"] | None = None
+    camera_brightness: float | None = Field(None, ge=-1.0, le=1.0)
+    camera_contrast: float | None = Field(None, ge=0.0, le=16.0)
+    camera_saturation: float | None = Field(None, ge=0.0, le=16.0)
+    camera_sharpness: float | None = Field(None, ge=0.0, le=16.0)
+    camera_ev: float | None = Field(None, ge=-10.0, le=10.0)
+    camera_awb_mode: Literal["auto", "incandescent", "tungsten", "fluorescent",
+                             "indoor", "daylight", "cloudy"] | None = None
+    camera_gain: float | None = Field(None, ge=0.0)
+    camera_denoise: Literal["off", "cdn_off", "cdn_fast", "cdn_hq"] | None = None
+    camera_hflip: bool | None = None
+    camera_vflip: bool | None = None
+    camera_output_folder: str | None = None
+    camera_rclone_target: str | None = None
+    camera_recording_mode_default: Literal["realtime", "timelapse", "sped_up"] | None = None
+    camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
+    camera_speed_multiplier_default: float | None = Field(None, gt=1.0)
+    record_plot_default: bool | None = None
 
 
 # Numeric job fields that get clamped on create/update. Out-of-range values
@@ -213,6 +265,10 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "speed_pendown": (1, 110),
     "speed_penup": (1, 110),
     "acceleration": (1, 100),
+    "pen_pos_up": (0, 100),
+    "pen_pos_down": (0, 100),
+    "record_timelapse_interval_s": (0.5, 3600.0),
+    "record_speed_multiplier": (1.1, 60.0),
     "transform_scale": (0.01, 5.0),
     "transform_rotation_deg": (0.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
@@ -267,6 +323,12 @@ class JobUpdate(_OptimizeOptionalFields):
     speed_pendown: int | None = None
     speed_penup: int | None = None
     acceleration: int | None = None
+    pen_pos_up: int | None = None
+    pen_pos_down: int | None = None
+    record_plot: bool | None = None
+    record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
+    record_timelapse_interval_s: float | None = None
+    record_speed_multiplier: float | None = None
 
 
 @app.post("/jobs")
@@ -425,6 +487,12 @@ class ApiJobMetadata(_OptimizeOptionalFields):
     speed_pendown: int | None = None
     speed_penup: int | None = None
     acceleration: int | None = None
+    pen_pos_up: int | None = None
+    pen_pos_down: int | None = None
+    record_plot: bool | None = None
+    record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
+    record_timelapse_interval_s: float | None = None
+    record_speed_multiplier: float | None = None
     # Request-only directive: when true AND the queue is empty at the moment of
     # the POST, kick off the worker so this job plots immediately. Not stored
     # on the job record.
@@ -552,6 +620,14 @@ async def api_create_job(file: UploadFile = File(...),
         "speed_pendown": pick(meta.speed_pendown, config.SPEED_PENDOWN_DEFAULT),
         "speed_penup": pick(meta.speed_penup, config.SPEED_PENUP_DEFAULT),
         "acceleration": pick(meta.acceleration, config.ACCELERATION_DEFAULT),
+        "pen_pos_up": pick(meta.pen_pos_up, config.PEN_POS_UP_DEFAULT),
+        "pen_pos_down": pick(meta.pen_pos_down, config.PEN_POS_DOWN_DEFAULT),
+        "record_plot": pick(meta.record_plot, config.RECORD_PLOT_DEFAULT),
+        "record_mode": pick(meta.record_mode, config.CAMERA_RECORDING_MODE_DEFAULT),
+        "record_timelapse_interval_s": pick(meta.record_timelapse_interval_s,
+                                           config.CAMERA_TIMELAPSE_INTERVAL_S_DEFAULT),
+        "record_speed_multiplier": pick(meta.record_speed_multiplier,
+                                       config.CAMERA_SPEED_MULTIPLIER_DEFAULT),
         "optimize_svg": pick(meta.optimize_svg, config.OPTIMIZE_SVG_DEFAULT),
         "optimize_svg_tolerance_mm": pick(meta.optimize_svg_tolerance_mm, config.OPTIMIZE_SVG_TOLERANCE_DEFAULT_MM),
         "optimize_svg_linemerge": pick(meta.optimize_svg_linemerge, config.OPTIMIZE_SVG_LINEMERGE_DEFAULT),
@@ -799,6 +875,236 @@ def calibrate_queue():
     return {"ok": True}
 
 
+@app.get("/calibration/files")
+def list_calibration_files():
+    return {"files": plot_worker.list_calibration_files()}
+
+
+class CalibrateFileRequest(BaseModel):
+    filename: str
+
+
+@app.post("/queue/calibrate-file")
+def calibrate_file_queue(req: CalibrateFileRequest):
+    try:
+        plot_worker.trigger_calibration_file(req.filename)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.get("/api/v1/calibration/files", dependencies=[Depends(require_api_key)])
+def api_list_calibration_files():
+    return list_calibration_files()
+
+
+@app.post("/api/v1/queue/calibrate-file", dependencies=[Depends(require_api_key)])
+def api_calibrate_file_queue(req: CalibrateFileRequest):
+    return calibrate_file_queue(req)
+
+
+class NudgeOriginRequest(BaseModel):
+    dx_mm: float = 0.0
+    dy_mm: float = 0.0
+
+
+@app.post("/queue/nudge-origin")
+def nudge_origin_queue(req: NudgeOriginRequest):
+    try:
+        plot_worker.nudge_origin(req.dx_mm, req.dy_mm)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/queue/nudge-origin", dependencies=[Depends(require_api_key)])
+def api_nudge_origin_queue(req: NudgeOriginRequest):
+    return nudge_origin_queue(req)
+
+
+class LivePenHeightRequest(BaseModel):
+    pen_pos_up: int | None = Field(None, ge=0, le=100)
+    pen_pos_down: int | None = Field(None, ge=0, le=100)
+    test: Literal["up", "down"]
+
+
+@app.post("/queue/pen-height")
+def live_pen_height_queue(req: LivePenHeightRequest):
+    try:
+        plot_worker.set_live_pen_heights(req.pen_pos_up, req.pen_pos_down, req.test)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/queue/pen-height", dependencies=[Depends(require_api_key)])
+def api_live_pen_height_queue(req: LivePenHeightRequest):
+    return live_pen_height_queue(req)
+
+
+# Manual pen control -------------------------------------------------------
+# Standalone pen up/down, usable any time the plotter isn't actively driving a
+# real plot (idle, or paused / awaiting_pen_change) — no job or SVG involved.
+
+@app.post("/pen/up")
+def pen_up():
+    try:
+        plot_worker.manual_pen(raise_pen=True)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/pen/down")
+def pen_down():
+    try:
+        plot_worker.manual_pen(raise_pen=False)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/pen/up", dependencies=[Depends(require_api_key)])
+def api_pen_up():
+    return pen_up()
+
+
+@app.post("/api/v1/pen/down", dependencies=[Depends(require_api_key)])
+def api_pen_down():
+    return pen_down()
+
+
+# Manual motor control -------------------------------------------------------
+# Standalone motor enable/disable, usable any time the plotter isn't actively
+# driving a real plot — lets the carriage be moved by hand while disabled.
+
+@app.post("/motors/enable")
+def motors_enable():
+    try:
+        plot_worker.manual_motors(enable=True)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/motors/disable")
+def motors_disable():
+    try:
+        plot_worker.manual_motors(enable=False)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/motors/enable", dependencies=[Depends(require_api_key)])
+def api_motors_enable():
+    return motors_enable()
+
+
+@app.post("/api/v1/motors/disable", dependencies=[Depends(require_api_key)])
+def api_motors_disable():
+    return motors_disable()
+
+
+# Webhook notifications ----------------------------------------------------
+
+@app.post("/webhook/test")
+def webhook_test():
+    if not config.WEBHOOK_URL:
+        raise _coded(409, "webhook_not_configured")
+    notify.fire("test", None)
+    return {"ok": True}
+
+
+# Camera / plot recording ---------------------------------------------------
+# Manual controls, independent of any job's `record_plot` flag — a manual
+# recording isn't tied to a job_id and is finalized under a timestamp-based
+# filename. See app/camera.py for the MediaMTX-driving implementation.
+
+class CameraRecordingStart(BaseModel):
+    mode: Literal["realtime", "timelapse", "sped_up"] | None = None
+    timelapse_interval_s: float | None = Field(None, gt=0)
+    speed_multiplier: float | None = Field(None, gt=1.0)
+
+
+@app.post("/camera/recording/start")
+def camera_recording_start(req: CameraRecordingStart):
+    try:
+        camera.start_recording(None, mode=req.mode,
+                               timelapse_interval_s=req.timelapse_interval_s,
+                               speed_multiplier=req.speed_multiplier)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/camera/recording/pause")
+def camera_recording_pause():
+    camera.pause_recording()
+    return {"ok": True}
+
+
+@app.post("/camera/recording/resume")
+def camera_recording_resume():
+    camera.resume_recording()
+    return {"ok": True}
+
+
+@app.post("/camera/recording/stop")
+def camera_recording_stop():
+    camera.stop_recording()
+    return {"ok": True}
+
+
+class CameraFocusRequest(BaseModel):
+    af_mode: Literal["auto", "manual", "continuous"]
+    lens_position: float = Field(0.0, ge=0.0, le=32.0)
+
+
+@app.post("/camera/focus")
+def camera_focus(req: CameraFocusRequest):
+    try:
+        camera.set_focus(req.af_mode, req.lens_position)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.get("/camera/status")
+def camera_status(request: Request):
+    return camera.status(request.url.hostname or "localhost")
+
+
+@app.post("/api/v1/camera/recording/start", dependencies=[Depends(require_api_key)])
+def api_camera_recording_start(req: CameraRecordingStart):
+    return camera_recording_start(req)
+
+
+@app.post("/api/v1/camera/recording/pause", dependencies=[Depends(require_api_key)])
+def api_camera_recording_pause():
+    return camera_recording_pause()
+
+
+@app.post("/api/v1/camera/recording/resume", dependencies=[Depends(require_api_key)])
+def api_camera_recording_resume():
+    return camera_recording_resume()
+
+
+@app.post("/api/v1/camera/recording/stop", dependencies=[Depends(require_api_key)])
+def api_camera_recording_stop():
+    return camera_recording_stop()
+
+
+@app.post("/api/v1/camera/focus", dependencies=[Depends(require_api_key)])
+def api_camera_focus(req: CameraFocusRequest):
+    return camera_focus(req)
+
+
+@app.get("/api/v1/camera/status", dependencies=[Depends(require_api_key)])
+def api_camera_status(request: Request):
+    return camera_status(request)
+
+
 # Settings ---------------------------------------------------------------
 
 @app.get("/settings")
@@ -812,6 +1118,8 @@ def patch_settings(req: SettingsUpdate):
     if not updates:
         raise _coded(400, "no_settings")
     config.update(**updates)
+    if any(k.startswith("camera_") for k in updates):
+        camera.apply_camera_settings()
     return config.snapshot()
 
 
