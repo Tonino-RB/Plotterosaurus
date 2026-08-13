@@ -101,6 +101,31 @@ def optimize_svg(
         raise OptimizeError(first_line)
 
 
+def normalize_layers(src: Path, dst: Path) -> None:
+    """Write ``dst`` from ``src`` via a bare vpype read/write round-trip.
+
+    vpype's ``read`` imports any top-level SVG content that isn't already
+    inside an Inkscape layer group into layer 1 (see its own docs), and
+    ``write`` re-emits it as a proper ``inkscape:groupmode="layer"`` group.
+    Used to repair SVGs that have elements sitting outside any layer, which
+    ``svg_utils.parse_layers`` otherwise reports as having no layers at all.
+    Raises ``OptimizeError`` on vpype failure.
+    """
+    cmd = _vpype_cmd() + [
+        "read", str(src),
+        "name", "--layer", "1", "Vpype Auto Layer",
+        "write", str(dst),
+    ]
+    log.info("normalize_layers: %s", " ".join(cmd))
+    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        msg = (proc.stderr.strip() or proc.stdout.strip() or
+               f"vpype exited with code {proc.returncode}")
+        first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
+        raise OptimizeError(first_line)
+
+
 def cancel_current() -> None:
     """Kill the in-flight vpype subprocess, if any. Called from the cancel path."""
     with _proc_lock:

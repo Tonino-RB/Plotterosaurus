@@ -24,6 +24,10 @@
   "a11y.remove": "Remove",
   "a11y.collapse": "Collapse",
   "a11y.expand": "Expand",
+  "a11y.jog_up": "Jog +Y",
+  "a11y.jog_down": "Jog −Y",
+  "a11y.jog_left": "Jog −X",
+  "a11y.jog_right": "Jog +X",
 
   "status.idle": "Idle",
   "status.queued": "Queued",
@@ -103,6 +107,8 @@
   "controls.continue": "Continue",
   "controls.calibrate": "Plot Calibration Layer",
   "controls.calibrate_plural": "Plot Calibration Layers",
+  "controls.set_origin": "Set Origin Here",
+  "controls.origin_set": "Origin set for new jobs.",
 
   "upload.drop_hint": "Drop SVGs here (or click) to add to the queue",
   "upload.processing": "Processing {name}…",
@@ -213,6 +219,7 @@
   "apierror.no_resume_data": "No resume data.",
   "apierror.nothing_to_continue": "Nothing to continue.",
   "apierror.calibrate_not_at_pause": "Calibration is only available at a pen-change pause.",
+  "apierror.jog_not_idle": "Jogging and setting the origin are only available while idle.",
   "apierror.no_calibration_layers": "This job has no calibration layers.",
   "apierror.no_active_job": "No active job.",
   "apierror.worker_error": "{detail}",

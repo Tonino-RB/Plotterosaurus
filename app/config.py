@@ -58,6 +58,12 @@ _SETTINGS: list[_Setting] = [
     _Setting("acceleration_default", int, 75, lambda v: 1 <= v <= 100),
     _Setting("pen_pos_up_default", int, 60, lambda v: 29 <= v <= 85),
     _Setting("pen_pos_down_default", int, 30, lambda v: 29 <= v <= 85),
+    # Default XY origin offset for newly-created jobs, captured by jogging the
+    # pen while idle and clicking "Set origin here" (see plot_worker.manual_jog
+    # / set_manual_origin) — distinct from a job's own transform_offset_x/y_mm,
+    # which this only seeds at job-creation time.
+    _Setting("origin_offset_x_mm_default", float, 0.0, lambda v: -2000 <= v <= 2000),
+    _Setting("origin_offset_y_mm_default", float, 0.0, lambda v: -2000 <= v <= 2000),
     _Setting("optimize_svg_default", bool, True),
     _Setting("optimize_svg_tolerance_default_mm", float, 0.10,
              lambda v: 0.01 <= v <= 10.0),

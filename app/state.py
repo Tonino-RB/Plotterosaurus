@@ -79,6 +79,11 @@ _error: str | None = None
 # plot_worker.nudge_origin). Session-only: applies to the remaining stages of
 # the current run, reset at the start of each run and when it ends.
 _origin_nudge: dict = {"x_mm": 0.0, "y_mm": 0.0}
+# Net displacement accumulated by idle-only manual jogging (see
+# plot_worker.manual_jog), before it's captured as the app's default origin
+# offset for new jobs (see plot_worker.set_manual_origin). Session-only,
+# unrelated to _origin_nudge above (that one corrects an active job mid-plot).
+_manual_origin_offset: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.
 _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
@@ -224,6 +229,8 @@ def snapshot() -> dict:
         "last_pen_position": dict(_last_pen_position) if _last_pen_position else None,
         "origin_nudge_x_mm": _origin_nudge["x_mm"],
         "origin_nudge_y_mm": _origin_nudge["y_mm"],
+        "manual_origin_offset_x_mm": _manual_origin_offset["x_mm"],
+        "manual_origin_offset_y_mm": _manual_origin_offset["y_mm"],
         "recording_status": _recording["status"],
         "recording_job_id": _recording["job_id"],
         "status": _derive_top_status(),
@@ -365,6 +372,19 @@ def set_origin_nudge(x_mm: float, y_mm: float) -> None:
 
 def origin_nudge() -> tuple[float, float]:
     return _origin_nudge["x_mm"], _origin_nudge["y_mm"]
+
+
+def set_manual_origin_offset(x_mm: float, y_mm: float) -> None:
+    global _manual_origin_offset
+    if (_manual_origin_offset["x_mm"] == x_mm
+            and _manual_origin_offset["y_mm"] == y_mm):
+        return
+    _manual_origin_offset = {"x_mm": x_mm, "y_mm": y_mm}
+    _broadcast()
+
+
+def manual_origin_offset() -> tuple[float, float]:
+    return _manual_origin_offset["x_mm"], _manual_origin_offset["y_mm"]
 
 
 def set_recording(status: str, job_id: str | None) -> None:

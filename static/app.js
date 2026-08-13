@@ -23,6 +23,11 @@ const penControlsMessage = $("pen-controls-message");
 const originNudge = $("origin-nudge");
 const nudgeXReadout = $("nudge-x-readout");
 const nudgeYReadout = $("nudge-y-readout");
+const manualJogRow = $("jog-controls");
+const jogXReadout = $("jog-x-readout");
+const jogYReadout = $("jog-y-readout");
+const setOriginBtn = $("set-origin-btn");
+const jogControlsMessage = $("jog-controls-message");
 const calibrationFileRow = $("calibration-file-row");
 const calibrationFileSelect = $("calibration-file-select");
 const calibrationFileRunBtn = $("calibration-file-run-btn");
@@ -81,6 +86,8 @@ let appSettings = {
   speed_pendown_default: 25,
   speed_penup_default: 75,
   acceleration_default: 75,
+  origin_offset_x_mm_default: 0.0,
+  origin_offset_y_mm_default: 0.0,
   optimize_svg_default: false,
   optimize_svg_tolerance_default_mm: 0.10,
   optimize_svg_linemerge_default: true,
@@ -260,8 +267,8 @@ async function uploadAndQueue(file) {
       fit_content: false,
       transform_scale: 1.0,
       transform_rotation_deg: 0,
-      transform_offset_x_mm: 0,
-      transform_offset_y_mm: 0,
+      transform_offset_x_mm: appSettings.origin_offset_x_mm_default,
+      transform_offset_y_mm: appSettings.origin_offset_y_mm_default,
       speed_pendown: appSettings.speed_pendown_default,
       speed_penup: appSettings.speed_penup_default,
       acceleration: appSettings.acceleration_default,
@@ -1634,6 +1641,43 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
   });
 });
 
+// Manual jog / set-origin — idle-only (see applyTopControls, which
+// enables/disables #jog-controls and updates the readouts from the
+// broadcast state). Distinct from the fine origin nudge above, which only
+// applies mid-plot to the active job's remaining stages.
+manualJogRow.querySelectorAll(".jog-btn").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const step = parseFloat(btn.dataset.step);
+    const body = btn.dataset.axis === "x" ? { dx_mm: step, dy_mm: 0 } : { dx_mm: 0, dy_mm: step };
+    jogControlsMessage.textContent = "";
+    jogControlsMessage.className = "muted";
+    try {
+      const res = await fetch("/pen/jog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await readErr(res));
+    } catch (e) {
+      jogControlsMessage.textContent = t("error.request_failed", { message: e.message });
+      jogControlsMessage.className = "error";
+    }
+  });
+});
+
+setOriginBtn.addEventListener("click", async () => {
+  jogControlsMessage.textContent = "";
+  jogControlsMessage.className = "muted";
+  try {
+    const res = await fetch("/pen/set-origin", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    jogControlsMessage.textContent = t("controls.origin_set");
+  } catch (e) {
+    jogControlsMessage.textContent = t("error.request_failed", { message: e.message });
+    jogControlsMessage.className = "error";
+  }
+});
+
 // Pen height live test — only takes effect while this card's job is the
 // active one and paused at a pen-change (see set_live_pen_heights); harmless
 // no-op otherwise (server rejects with 409, silently ignored here since the
@@ -1757,6 +1801,14 @@ function applyTopControls() {
   originNudge.hidden = !(active && status === "awaiting_pen_change");
   nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
   nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
+
+  // Manual jog / set origin: idle-only (s.status, not the locally-shadowed
+  // `status` above, since that reads "idle" during awaiting_next_job too).
+  const jogDisabled = s.status !== "idle";
+  manualJogRow.querySelectorAll(".jog-btn").forEach((btn) => { btn.disabled = jogDisabled; });
+  setOriginBtn.disabled = jogDisabled;
+  jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
+  jogYReadout.textContent = (s.manual_origin_offset_y_mm ?? 0).toFixed(1);
 
   // Pen up/down: only refused while a real plot_run is actively driving the
   // pen (mirrors plot_worker's _current_ad guard) — enabled otherwise,
@@ -2061,6 +2113,8 @@ function applyAppSettings(data) {
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
     acceleration_default: data.acceleration_default ?? appSettings.acceleration_default,
+    origin_offset_x_mm_default: data.origin_offset_x_mm_default ?? appSettings.origin_offset_x_mm_default,
+    origin_offset_y_mm_default: data.origin_offset_y_mm_default ?? appSettings.origin_offset_y_mm_default,
     pen_pos_up_default: data.pen_pos_up_default ?? appSettings.pen_pos_up_default,
     pen_pos_down_default: data.pen_pos_down_default ?? appSettings.pen_pos_down_default,
     optimize_svg_default: data.optimize_svg_default ?? appSettings.optimize_svg_default,

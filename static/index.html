@@ -49,23 +49,37 @@
   </header>
 
   <div class="controls-bar">
-    <div id="pen-controls" class="pen-controls">
-      <span class="pen-controls-label" data-i18n="controls.pen_label">Manual pen control:</span>
-      <button id="pen-up-btn" class="neutral" type="button" data-i18n="controls.pen_up">Pen Up</button>
-      <button id="pen-down-btn" class="neutral" type="button" data-i18n="controls.pen_down">Pen Down</button>
-      <button id="motors-enable-btn" class="neutral" type="button" data-i18n="controls.motors_enable">Enable Motors</button>
-      <button id="motors-disable-btn" class="neutral" type="button" data-i18n="controls.motors_disable">Disable Motors</button>
-      <span id="pen-controls-message" class="muted"></span>
-    </div>
+    <div class="controls-columns">
 
-    <div id="camera-controls" class="pen-controls" hidden>
-      <span class="pen-controls-label" data-i18n="controls.recording_label">Recording:</span>
-      <button id="camera-start-btn" class="neutral" type="button" data-i18n="controls.recording_start">Start</button>
-      <button id="camera-pause-btn" class="neutral" type="button" hidden data-i18n="controls.recording_pause">Pause</button>
-      <button id="camera-resume-btn" class="neutral" type="button" hidden data-i18n="controls.recording_resume">Resume</button>
-      <button id="camera-stop-btn" class="danger" type="button" hidden data-i18n="controls.recording_stop">Stop</button>
-      <span id="camera-recording-indicator" class="recording-indicator" hidden></span>
-      <span id="camera-controls-message" class="muted"></span>
+      <div id="jog-controls" class="control-col jog-col" role="group" aria-label="Jog pen and set origin">
+        <span class="jog-readout muted">Δ <span id="jog-x-readout">0.0</span>, <span id="jog-y-readout">0.0</span> mm</span>
+        <div class="dpad">
+          <button type="button" class="dpad-btn dpad-up jog-btn" data-axis="y" data-step="1" title="Jog +Y" aria-label="Jog +Y" data-i18n-title="a11y.jog_up" data-i18n-aria-label="a11y.jog_up">▲</button>
+          <button type="button" class="dpad-btn dpad-left jog-btn" data-axis="x" data-step="-1" title="Jog −X" aria-label="Jog −X" data-i18n-title="a11y.jog_left" data-i18n-aria-label="a11y.jog_left">◀</button>
+          <button id="set-origin-btn" type="button" class="dpad-btn dpad-center" title="Set Origin Here" aria-label="Set Origin Here" data-i18n-title="controls.set_origin" data-i18n-aria-label="controls.set_origin">⌖</button>
+          <button type="button" class="dpad-btn dpad-right jog-btn" data-axis="x" data-step="1" title="Jog +X" aria-label="Jog +X" data-i18n-title="a11y.jog_right" data-i18n-aria-label="a11y.jog_right">▶</button>
+          <button type="button" class="dpad-btn dpad-down jog-btn" data-axis="y" data-step="-1" title="Jog −Y" aria-label="Jog −Y" data-i18n-title="a11y.jog_down" data-i18n-aria-label="a11y.jog_down">▼</button>
+        </div>
+        <span id="jog-controls-message" class="muted"></span>
+      </div>
+
+      <div id="pen-controls" class="control-col" role="group" aria-label="Pen and motors">
+        <button id="pen-up-btn" class="neutral" type="button" data-i18n="controls.pen_up">Pen Up</button>
+        <button id="pen-down-btn" class="neutral" type="button" data-i18n="controls.pen_down">Pen Down</button>
+        <button id="motors-enable-btn" class="neutral" type="button" data-i18n="controls.motors_enable">Enable Motors</button>
+        <button id="motors-disable-btn" class="neutral" type="button" data-i18n="controls.motors_disable">Disable Motors</button>
+        <span id="pen-controls-message" class="muted"></span>
+      </div>
+
+      <div id="camera-controls" class="control-col" role="group" aria-label="Recording" hidden>
+        <button id="camera-start-btn" class="neutral" type="button" data-i18n="controls.recording_start">Start</button>
+        <button id="camera-pause-btn" class="neutral" type="button" hidden data-i18n="controls.recording_pause">Pause</button>
+        <button id="camera-resume-btn" class="neutral" type="button" hidden data-i18n="controls.recording_resume">Resume</button>
+        <button id="camera-stop-btn" class="danger" type="button" hidden data-i18n="controls.recording_stop">Stop</button>
+        <span id="camera-recording-indicator" class="recording-indicator" hidden></span>
+        <span id="camera-controls-message" class="muted"></span>
+      </div>
+
     </div>
   </div>
 

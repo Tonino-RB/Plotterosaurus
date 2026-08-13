@@ -597,9 +597,64 @@ def nudge_origin(dx_mm: float, dy_mm: float) -> None:
     if not ad.connect():
         raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
     try:
+        # connect() resets the AxiDraw driver's internal "turtle" position
+        # tracker to (0, 0), which coincides with its software travel-bounds
+        # minimum. ad.move() clips any relative move whose target falls
+        # outside those bounds, so a move away from (0, 0) is accepted while
+        # a move toward negative coordinates is silently clipped to zero -
+        # regardless of where the carriage physically already is. Re-center
+        # the turtle first so a nudge in either direction has room to move.
+        ad.pen.turtle.xpos = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
+        ad.pen.turtle.ypos = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
         ad.move(dx_mm, dy_mm)
     finally:
         ad.disconnect()
+
+
+def manual_jog(dx_mm: float, dy_mm: float) -> None:
+    """Physically move the pen carriage by a small relative amount (pen-up),
+    for aligning it to the paper before a plot starts. Idle-only — unlike
+    nudge_origin, which corrects an active job's remaining stages mid-plot,
+    this has no job to apply to; it just walks the carriage and accumulates
+    the net displacement in session state so set_manual_origin can capture it
+    as the default offset for jobs created from now on."""
+    if state.snapshot()["status"] != "idle":
+        raise RuntimeError("Manual jog only available while idle")
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+    x, y = state.manual_origin_offset()
+    x = max(-config.MACHINE_WIDTH_MM, min(config.MACHINE_WIDTH_MM, x + dx_mm))
+    y = max(-config.MACHINE_HEIGHT_MM, min(config.MACHINE_HEIGHT_MM, y + dy_mm))
+    state.set_manual_origin_offset(x, y)
+
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.units = 2  # millimeters
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        # See nudge_origin: re-center the turtle so a move in either direction
+        # has room, regardless of where the carriage physically already is.
+        ad.pen.turtle.xpos = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
+        ad.pen.turtle.ypos = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        ad.move(dx_mm, dy_mm)
+    finally:
+        ad.disconnect()
+
+
+def set_manual_origin() -> tuple[float, float]:
+    """Capture the net displacement accumulated by manual_jog as the app's
+    default origin offset, seeded onto jobs created from now on (see
+    config.ORIGIN_OFFSET_X_MM_DEFAULT), then reset the running total so the
+    next jog session starts from zero again."""
+    if state.snapshot()["status"] != "idle":
+        raise RuntimeError("Manual jog only available while idle")
+    x, y = state.manual_origin_offset()
+    config.update(origin_offset_x_mm_default=x, origin_offset_y_mm_default=y)
+    state.set_manual_origin_offset(0.0, 0.0)
+    return x, y
 
 
 def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,

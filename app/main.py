@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import camera, config, notify, optimize_queue, plan_queue, plot_worker, state, svg_utils, updates
+from . import camera, config, notify, optimize_queue, plan_queue, plot_worker, state, svg_optimize, svg_utils, updates
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -48,6 +48,29 @@ def _coded(status: int, code: str, **params) -> HTTPException:
     return HTTPException(status, detail=detail)
 
 
+def _repair_missing_layers(path: Path, info: dict) -> dict:
+    """If the SVG has no Inkscape layers, some content is likely sitting
+    outside any layer group. Fold it into one via a bare vpype read/write
+    round-trip and re-parse. Best-effort: on vpype failure, the original
+    (empty-layers) info is returned unchanged so the caller's existing
+    no-layers handling still applies."""
+    if info["layers"]:
+        return info
+    # vpype's `write` infers the output format from the file extension, so
+    # the temp file must still end in .svg.
+    tmp = path.with_name(f"{path.stem}.tmp.svg")
+    try:
+        svg_optimize.normalize_layers(path, tmp)
+        tmp.replace(path)
+    except svg_optimize.OptimizeError:
+        tmp.unlink(missing_ok=True)
+        return info
+    try:
+        return svg_utils.parse_layers(path)
+    except Exception:
+        return info
+
+
 # The plot worker raises RuntimeError with a stable message; map the known ones
 # to codes, and fall back to a generic code that carries the raw text.
 _WORKER_ERROR_CODES: dict[str, str] = {
@@ -57,6 +80,7 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Nothing to continue": "nothing_to_continue",
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
     "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
+    "Manual jog only available while idle": "jog_not_idle",
     "This job has no calibration layers": "no_calibration_layers",
     "Invalid calibration filename": "invalid_calibration_filename",
     "Calibration file not found": "calibration_file_not_found",
@@ -133,6 +157,7 @@ async def upload(file: UploadFile = File(...)):
     except Exception:
         path.unlink(missing_ok=True)
         raise _coded(400, "invalid_svg")
+    info = _repair_missing_layers(path, info)
     optimize_queue.enqueue_for_upload(svg_id)
     return {"id": svg_id, "filename": file.filename or "upload.svg", **info}
 
@@ -562,6 +587,7 @@ async def api_create_job(file: UploadFile = File(...),
     except Exception as e:
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"invalid SVG: {e}")
+    info = _repair_missing_layers(path, info)
     optimize_queue.enqueue_for_upload(svg_id)
 
     paper_width_mm, paper_height_mm, paper_name = _resolve_paper(
@@ -1037,6 +1063,45 @@ def api_motors_enable():
 @app.post("/api/v1/motors/disable", dependencies=[Depends(require_api_key)])
 def api_motors_disable():
     return motors_disable()
+
+
+# Manual jog / set-origin ----------------------------------------------------
+# Idle-only: walk the pen carriage into position over the paper before a plot
+# starts, then capture that position as the default origin offset seeded onto
+# jobs created from now on. Distinct from /queue/nudge-origin above, which
+# corrects an active job's remaining stages mid-plot.
+
+class ManualJogRequest(BaseModel):
+    dx_mm: float = 0.0
+    dy_mm: float = 0.0
+
+
+@app.post("/pen/jog")
+def pen_jog(req: ManualJogRequest):
+    try:
+        plot_worker.manual_jog(req.dx_mm, req.dy_mm)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/pen/jog", dependencies=[Depends(require_api_key)])
+def api_pen_jog(req: ManualJogRequest):
+    return pen_jog(req)
+
+
+@app.post("/pen/set-origin")
+def pen_set_origin():
+    try:
+        x, y = plot_worker.set_manual_origin()
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True, "origin_offset_x_mm": x, "origin_offset_y_mm": y}
+
+
+@app.post("/api/v1/pen/set-origin", dependencies=[Depends(require_api_key)])
+def api_pen_set_origin():
+    return pen_set_origin()
 
 
 # Webhook notifications ----------------------------------------------------

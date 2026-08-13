@@ -616,24 +616,113 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
 .update-banner-actions { display: flex; gap: 0.5rem; }
 
 .controls-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  row-gap: 0.4rem;
-  column-gap: 1.5rem;
-  padding: 0.5rem 1.5rem;
+  padding: 0.6rem 1.5rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
 }
-.pen-controls {
+/* Jog/origin and pen/motors always sit side by side (jog sized to its own
+   compact content, motors taking the rest of the row); recording spans the
+   full width of both, underneath, so its status text has room while
+   recording. Fixed across every viewport, including phone. */
+.controls-columns {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+}
+#camera-controls { grid-column: 1 / -1; }
+
+/* On large screens, all three cards fit in one line: recording rejoins the
+   row instead of spanning underneath, and the motors column is capped at a
+   width that still fits its 4 buttons in one line (rather than stretching
+   edge-to-edge across all the leftover space) and centered in the row. */
+@media (min-width: 900px) {
+  .controls-columns { grid-template-columns: auto 1fr auto; }
+  #camera-controls { grid-column: auto; }
+  #pen-controls { max-width: 700px; justify-self: center; }
+}
+.control-col {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
 }
-.pen-controls-label { color: var(--text-soft); }
-.pen-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+.control-col[hidden] { display: none; }
+.control-col button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* A real flex-column stack (readout, then dpad, in that DOM order) instead
+   of an absolutely-positioned readout with hand-guessed offsets — the
+   browser lays out the actual spacing, so it's exact regardless of font
+   metrics, instead of us estimating line-height/box height by hand. */
+.jog-col {
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.2rem;
+  padding-top: 0.3rem;
+  padding-bottom: 0.3rem;
+}
+.jog-col #jog-controls-message { flex-basis: 100%; text-align: center; }
+/* Empty (the common case) still occupies its reserved full-width row via
+   flex-basis above unless collapsed — this is what left a dead gap under
+   the cross. */
+.jog-col #jog-controls-message:empty { display: none; }
+
+/* Pen/motors buttons: same size when several fit per row, full-width and
+   centered when there's only room for one — auto-fit recomputes the column
+   count from the card's width, same technique as .controls-columns above. */
+#pen-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-content: center;
+  width: 100%;
+}
+#pen-controls button { width: 100%; }
+#pen-controls-message { grid-column: 1 / -1; text-align: center; }
+#pen-controls-message:empty { display: none; }
+
+.jog-readout {
+  font-size: 0.65rem;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dpad {
+  display: grid;
+  grid-template-areas:
+    ".    up     ."
+    "left center right"
+    ".    down   .";
+  grid-template-columns: repeat(3, 1.75rem);
+  grid-template-rows: repeat(3, 1.75rem);
+  gap: 0.15rem;
+}
+.dpad-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 5px;
+  font-size: 0.85rem;
+  line-height: 1;
+  background: var(--border);
+  color: var(--text);
+}
+.dpad-btn:hover:not(:disabled) { background: var(--border-dark); }
+.dpad-up { grid-area: up; }
+.dpad-down { grid-area: down; }
+.dpad-left { grid-area: left; }
+.dpad-right { grid-area: right; }
+.dpad-center {
+  grid-area: center;
+  background: var(--accent);
+  font-size: 0.95rem;
+}
+.dpad-center:hover:not(:disabled) { background: var(--accent-dark); }
 
 .recording-indicator { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-soft); }
 .recording-indicator::before {
