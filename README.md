@@ -18,12 +18,14 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 
 **Plotting**
 
-- Drag-and-drop SVG upload; Inkscape layers parsed and selectable
+- Drag-and-drop SVG upload; Inkscape layers parsed and selectable, each shown with an icon inferred from its type (pattern, text, svg, calibration, image, map, 3D model)
+- SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
 - Staged plotting: optional pause between layers for pen changes
 - Paper presets (A0–A5, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
-- 4-sided margins and fit-content-to-page
-- Configurable pen-down / pen-up speed and acceleration
-- Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop) before plotting; cached per job and reused across re-plots
+- 4-sided margins, fit-content-to-page, and a per-job scale / rotation / X-Y offset transform
+- Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
+- Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
+- Background pre-optimization and pre-planning queues: uploads are vpype-optimized and time/distance-estimated ahead of time (on upload and on job create/edit), so clicking Plot is usually an instant cache hit rather than a 20–30s wait
 
 **During the plot**
 
@@ -31,25 +33,50 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Progress bar with remaining-time based on the estimate
 - Live pen cursor on the preview (blue while drawing, grey while traveling)
 - UI Pause / Resume / Cancel — cancel returns to origin via `res_home`
+- "Pause at Pen Lift" — a deferred pause that waits for the next pen-up so pump-action pens don't leave a dot mid-stroke
+- Live speed / acceleration / pen-height adjustment while a stage is actively plotting, applied at the next motion checkpoint
 - Physical pause button toggles: press to pause, press again to resume
+
+**Calibration & alignment**
+
+- Per-job calibration layers (layer type `calibration`) plottable on demand from a pen-change pause without advancing the job — for pressure/alignment tests on the actual document
+- A standalone calibration-file library (the gitignored `calibration/` folder) of reusable test SVGs, runnable the same way independent of any job
+- Fine origin nudge (X/Y, in mm) during a pen-change pause to correct for paper drift between layers — also physically jogs the carriage so you see/feel the correction
+- Manual jog d-pad + "Set Origin Here" to walk the carriage over the paper while idle and capture that position as the default offset for new jobs
+- Manual pen up/down and motor enable/disable, usable any time the plotter isn't actively driving a plot (e.g. to move the carriage by hand)
+
+**Plot recording (optional — camera)**
+
+- Records a plot via a Raspberry Pi Camera Module 3, driven through [MediaMTX](https://mediamtx.org) as a separate systemd service
+- Three modes: realtime, timelapse (periodic JPEG grabs, assembled into video), and sped-up (ffmpeg `setpts` after the fact)
+- Live preview with autofocus/exposure/white-balance/denoise/brightness/contrast/saturation/sharpness controls and resolution/bitrate settings, all in Settings → Camera
+- A job can request recording itself (`record_plot`); it pauses/resumes automatically with the job. Recording can also be started/stopped manually, independent of any job
+- Live RTSP / HLS / WebRTC stream URLs for viewing in VLC, OBS, or Home Assistant while a plot runs
+- Finished recordings are saved locally under `camera_output_folder` and optionally pushed to cloud storage via `rclone copy` (bring your own installed + authenticated `rclone`)
+- Opt-in at install time (`ENABLE_CAMERA=1`) — everything above is skipped entirely on installs without a camera. See [Install options](#install-options) and [API.md](API.md#camera--plot-recording)
 
 **Operational**
 
 - Runs as a systemd service under the user who invoked `install.sh`
-- In-app self-update: checks GitHub for new releases and updates with one click (Settings → About & Updates), guarded so it never runs mid-plot or over local changes
-- Plot worker runs in a thread; preview runs in a subprocess (cancel-killable)
+- In-app self-update (opt-in, see [Updating](#updating)): checks GitHub for new releases and updates with one click (Settings → About & Updates), guarded so it never runs mid-plot or over local changes
+- Outgoing webhook notifications on layer/job completion — point it at ntfy, Home Assistant, or a Slack/Discord incoming webhook for a push/text/email
+- Multi-language UI (English, German, Spanish, French, Italian, Japanese, Korean, Dutch, Portuguese, Simplified Chinese), auto-detected from the browser, switchable in Settings
+- Configurable display unit (mm / cm / in) for the whole UI
+- Custom plotter bed size with optional paper auto-rotate, layered on top of the selected AxiDraw model — clips real travel to the custom size, never beyond the hardware's own limits
+- Plot worker runs in a thread; preview and vpype optimization run in cancel-killable subprocesses, each behind their own single-worker queue so they never fight each other for CPU on the Pi
 - In-memory preview cache — same SVG + same params skips the ~20–30s planning pass
 - Graceful shutdown on service stop: pauses any in-flight plot so the pen is raised and the resume SVG is flushed
 
 **API**
 
-- HTTP API for companion apps and scripts under `/api/v1/*`, secured with an auto-generated `X-API-Key`
+- HTTP API for companion apps and scripts under `/api/v1/*`, secured with an auto-generated `X-API-Key`, plus a live-state WebSocket (`/api/v1/ws/state`)
 - See [API.md](API.md) for the endpoint reference and `multipart/form-data` schema
 
 ## Requirements
 
 - Raspberry Pi Zero 2 W, 3B+, or newer running Raspberry Pi OS Trixie (Debian 13) or Bookworm (Debian 12)
 - An iDraw H SE A3, AxiDraw, or compatible EBB-based plotter on USB
+- A Raspberry Pi Camera Module 3 — optional, only needed for [plot recording](#plot-recording-optional--camera) (`ENABLE_CAMERA=1`)
 
 Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Raspberry Pi OS Lite (64-bit) — a port of Debian Trixie with no desktop environment (released 2026-04-21).
 
@@ -59,6 +86,7 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 
 - Python ≥ 3.11 (default on Bookworm and newer)
 - Service user is a member of the `dialout` group (for `/dev/ttyACM0`)
+- Service user is a member of the `video` group — only checked when installing with `ENABLE_CAMERA=1` (needed for camera access)
 - `avahi-daemon` is running (warning only — needed for `.local` hostname)
 
 ### Dependencies installed by the script
@@ -77,12 +105,18 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 - [`pyaxidraw`](https://axidraw.com/doc/py_api/) (from the Evil Mad Scientist [AxiDraw API zip](https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip))
 - [`vpype`](https://vpype.readthedocs.io/) — invoked as a subprocess for optional pre-plot optimization
 
+**Camera dependencies** (opt-in, only installed with `ENABLE_CAMERA=1`):
+
+- `rpicam-apps`, `libfreetype6`, `ffmpeg` (apt)
+- [MediaMTX](https://mediamtx.org) — downloaded as a prebuilt arm64 binary to `/opt/mediamtx` on first install and run as its own systemd service, reading the camera directly via its native `rpiCamera` source and serving the RTSP/HLS/WebRTC stream plus on-disk recording segments; `app/camera.py` only drives its local Control API and post-processes with ffmpeg
+- `rclone` is **not** installed by the script — install and authenticate it yourself if you want finished recordings pushed to cloud storage; Plotterosaurus only shells out to `rclone copy` and never stores cloud credentials
+
 **System files** (written / overwritten on every run):
 
 - `/etc/systemd/system/plotterosaurus.service` — templated from `systemd/plotterosaurus.service` with the invoking user and the repo path
 - `/etc/sudoers.d/plotterosaurus-shutdown` — grants the service user NOPASSWD on `/sbin/shutdown` so the UI's shutdown button works
-- `/usr/local/sbin/plotterosaurus-update` — root-owned self-update helper invoked by the UI's "Update now" button (templated from `scripts/plotterosaurus-update.in`)
-- `/etc/sudoers.d/plotterosaurus-update` — grants the service user NOPASSWD on just that helper
+- `/etc/systemd/system/mediamtx.service` and `/opt/mediamtx/mediamtx.yml` — installed and enabled only with `ENABLE_CAMERA=1`; the config is templated from MediaMTX's own defaults with the Control API bound to loopback (127.0.0.1:9997) and a single `cam` path added for the Camera Module 3
+- `/usr/local/sbin/plotterosaurus-update` and `/etc/sudoers.d/plotterosaurus-update` — root-owned self-update helper and its NOPASSWD sudo rule, installed only with `ENABLE_SELF_UPDATE=1` (off by default — see [Updating](#updating))
 
 ### Assumed already present on Raspberry Pi OS
 
@@ -127,6 +161,15 @@ SUDO_PW='your-password' ./install.sh
 
 # Set a different plotter model at install (default is 2, AxiDraw SE/A3):
 PLOTTER_MODEL=1 ./install.sh
+
+# Enable plot recording via a Pi Camera Module 3 + MediaMTX (off by default):
+ENABLE_CAMERA=1 ./install.sh
+
+# Enable the in-app "Update now" self-update path (off by default — see Updating below):
+ENABLE_SELF_UPDATE=1 ./install.sh
+
+# Options can be combined:
+SUDO_PW='your-password' PLOTTER_MODEL=2 ENABLE_CAMERA=1 ./install.sh
 ```
 
 After install, the plotter model can also be changed from the UI (gear icon → Settings) and is persisted to `config.json`.
@@ -137,7 +180,7 @@ Plotterosaurus has no built-in login — anyone who can reach its web port can u
 
 ## Updating
 
-Plotterosaurus can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed.
+Plotterosaurus can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed, but it's opt-in: it does a `git reset --hard`, which would silently discard any local changes on a modified checkout, so `install.sh` only sets it up when run with `ENABLE_SELF_UPDATE=1` (see [Install options](#install-options)). Without that flag, the update banner and "Update now" stay inert and the manual path below is the only way to update.
 
 ### From the UI (recommended)
 
@@ -173,32 +216,43 @@ Before upgrading (either way), it's cleanest to wait until the queue is idle (or
 |---|---|
 | Backend | Python 3.13, FastAPI, Uvicorn (uvloop + httptools) |
 | Plotter control | `pyaxidraw` Python API (not the `axicli` CLI) |
-| Optimization | `vpype` CLI invoked as a subprocess (cancel-killable) for optional pre-plot path optimization; per-job cache reused across re-plots |
-| Frontend | Vanilla HTML + CSS + JavaScript, no build step |
+| Optimization | `vpype` CLI invoked as a subprocess (cancel-killable) for optional pre-plot path optimization; run ahead of time by a background queue and cached per job, reused across re-plots |
+| Camera (optional) | [MediaMTX](https://mediamtx.org), its own systemd service, reads a Pi Camera Module 3 directly and serves RTSP/HLS/WebRTC + recording segments; `app/camera.py` drives its local Control API and post-processes segments with ffmpeg (optional `rclone copy` afterward) |
+| Frontend | Vanilla HTML + CSS + JavaScript, no build step; `static/i18n.js` + `static/i18n/*.json` for the 10-language UI |
 | Transport | HTTP + WebSocket |
 | State | In-memory, broadcast via `asyncio.Queue` |
-| Process mgmt | systemd (`plotterosaurus.service`) |
-| Persistence | Uploaded SVGs + resume SVGs on disk; `config.json` for plotter model; `state.json` for the job queue (so a paused plot survives a service restart) |
+| Process mgmt | systemd (`plotterosaurus.service`, plus `mediamtx.service` when the camera is enabled) |
+| Persistence | Uploaded SVGs + resume SVGs on disk; `config.json` for settings; `state.json` for the job queue (so a paused plot survives a service restart); finished recordings under `recordings/` |
 
 Key module layout:
 
 ```
 app/
-  main.py           # FastAPI routes, /upload, /plot, /pause, /resume, /continue,
-                    # /cancel, /settings, /ws/state
-  plot_worker.py    # plot + resume + homing worker thread,
-                    # button-poll and position-poll threads, preview cache
+  main.py           # FastAPI routes: /upload, /jobs, /queue/*, /pen/*, /motors/*,
+                    # /camera/*, /webhook/*, /settings, /update/*, /ws/state,
+                    # plus the auth-gated /api/v1/* public API
+  plot_worker.py    # plot + resume + homing worker thread, staged-loop /
+                    # pen-change-pause / calibration logic, manual jog & pen
+                    # control, button-poll and position-poll threads, preview cache
   preview_runner.py # subprocess entry point for pyaxidraw preview mode
+  optimize_queue.py # single-worker FIFO queue that runs vpype ahead of time
+                    # (on upload and on job create/edit), shared with plot_worker
+  plan_queue.py     # single-worker FIFO queue that pre-computes each queued
+                    # job's time/distance estimate in the background
   svg_optimize.py   # vpype subprocess wrapper for optional pre-plot optimization
   svg_utils.py      # Inkscape-layer parsing, filter, paper transform
+  camera.py         # plot recording via a Camera Module 3 + MediaMTX (opt-in)
+  notify.py         # outgoing webhook delivery on layer/job completion
   state.py          # in-memory state + WebSocket broadcast
-  config.py         # plotter model config, persisted to config.json
-  updates.py        # self-update: remote version check + guarded apply
-static/             # index.html, app.js, style.css
-systemd/            # plotterosaurus.service (template)
+  config.py         # plotter / camera / webhook / display settings, persisted to config.json
+  updates.py        # self-update: remote version check + guarded apply (opt-in)
+static/             # index.html, app.js, style.css, i18n.js + i18n/ (10 languages)
+systemd/            # plotterosaurus.service + mediamtx.service (templates)
 scripts/            # plotterosaurus-update.in (self-update helper template)
 install.sh          # idempotent installer
 uploads/            # gitignored; uploaded SVGs and per-stage filtered / resume files
+calibration/        # gitignored; user-maintained library of standalone calibration SVGs
+recordings/         # gitignored; finished plot recordings (created when the camera is enabled)
 ```
 
 ## Development
@@ -220,6 +274,7 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 ## Known limitations
 
 - No live progress while `plot_run` is in its ~18s pre-motion setup phase (EBB version query, servo init, path planning) — pyaxidraw doesn't expose progress events until motion starts.
+- Remote update checks are hardcoded off in `app/updates.py` (`_UPDATES_DISABLED = True`) on this checkout, since it's an actively-changing personal fork — the update banner never appears regardless of `ENABLE_SELF_UPDATE`. `git pull && ./install.sh` always works as the manual update path.
 
 ## License
 

@@ -254,6 +254,32 @@ PYEOF
 
     echo ">>> Enabling camera recording in plotterosaurus.service"
     run_sudo sed -i "s/^Environment=ENABLE_CAMERA=.*/Environment=ENABLE_CAMERA=1/" "$UNIT_DST"
+
+    # app/config.py only applies the ENABLE_CAMERA env var as camera_enabled's
+    # default the very first time config.json is created; once that file
+    # exists (e.g. from an earlier install run without the camera), its
+    # persisted value permanently wins over the env var on every later boot.
+    # There's no UI toggle to flip it back on (the camera settings button is
+    # itself hidden while camera_enabled is false), so patch it here directly
+    # whenever the user explicitly asks for the camera via ENABLE_CAMERA=1.
+    if [ -f "$PROJECT_DIR/config.json" ]; then
+        echo "    enabling camera_enabled in existing config.json"
+        ENABLE_CAMERA_PY="$(mktemp --suffix=.py)"
+        cat > "$ENABLE_CAMERA_PY" <<'PYEOF'
+import json, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+data["camera_enabled"] = True
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+        chmod 644 "$ENABLE_CAMERA_PY"
+        as_user python3 "$ENABLE_CAMERA_PY" "$PROJECT_DIR/config.json"
+        rm -f "$ENABLE_CAMERA_PY"
+    fi
 fi
 
 echo ">>> Installing sudoers rule for shutdown button"
