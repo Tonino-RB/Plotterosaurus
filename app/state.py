@@ -80,9 +80,9 @@ _error: str | None = None
 # the current run, reset at the start of each run and when it ends.
 _origin_nudge: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Net displacement accumulated by idle-only manual jogging (see
-# plot_worker.manual_jog), before it's captured as the app's default origin
-# offset for new jobs (see plot_worker.set_manual_origin). Session-only,
-# unrelated to _origin_nudge above (that one corrects an active job mid-plot).
+# plot_worker.manual_jog), so manual_jog_home knows how far to walk back.
+# Session-only, unrelated to _origin_nudge above (that one corrects an active
+# job mid-plot).
 _manual_origin_offset: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.

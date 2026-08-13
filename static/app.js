@@ -23,11 +23,12 @@ const penControlsMessage = $("pen-controls-message");
 const originNudge = $("origin-nudge");
 const nudgeXReadout = $("nudge-x-readout");
 const nudgeYReadout = $("nudge-y-readout");
-const manualJogRow = $("jog-controls");
 const jogXReadout = $("jog-x-readout");
 const jogYReadout = $("jog-y-readout");
-const setOriginBtn = $("set-origin-btn");
-const jogControlsMessage = $("jog-controls-message");
+const jogXInput = $("jog-x-input");
+const jogYInput = $("jog-y-input");
+const jogMoveBtn = $("jog-move-btn");
+const jogHomeBtn = $("jog-home-btn");
 const calibrationFileRow = $("calibration-file-row");
 const calibrationFileSelect = $("calibration-file-select");
 const calibrationFileRunBtn = $("calibration-file-run-btn");
@@ -86,8 +87,6 @@ let appSettings = {
   speed_pendown_default: 25,
   speed_penup_default: 75,
   acceleration_default: 75,
-  origin_offset_x_mm_default: 0.0,
-  origin_offset_y_mm_default: 0.0,
   optimize_svg_default: false,
   optimize_svg_tolerance_default_mm: 0.10,
   optimize_svg_linemerge_default: true,
@@ -267,8 +266,8 @@ async function uploadAndQueue(file) {
       fit_content: false,
       transform_scale: 1.0,
       transform_rotation_deg: 0,
-      transform_offset_x_mm: appSettings.origin_offset_x_mm_default,
-      transform_offset_y_mm: appSettings.origin_offset_y_mm_default,
+      transform_offset_x_mm: 0,
+      transform_offset_y_mm: 0,
       speed_pendown: appSettings.speed_pendown_default,
       speed_penup: appSettings.speed_penup_default,
       acceleration: appSettings.acceleration_default,
@@ -409,6 +408,21 @@ function applyMachineAutoRotate({ w, h }) {
   if (rotate === "landscape" && h > w) return { w: h, h: w };
   if (rotate === "portrait" && w > h) return { w: h, h: w };
   return { w, h };
+}
+
+// Extra rotation (0 or 90) the machine's auto-rotate policy adds to the
+// artwork itself, on top of whatever the paper dims already are. Auto-rotate
+// forces the *page* into a fixed orientation; without this, the content keeps
+// its own orientation and just sits undersized in the swapped page instead of
+// turning with it. Mirrors the equivalent decision in svg_utils.transform_to_paper
+// so the preview and the actual plotted output always agree.
+function computeAutoRotateDeg(paperW, paperH, contentW, contentH) {
+  if (!appSettings.machine_custom_enabled) return 0;
+  if (appSettings.machine_auto_rotate === "off") return 0;
+  if (!contentW || !contentH) return 0;
+  const pageLandscape = paperW > paperH;
+  const contentLandscape = contentW > contentH;
+  return pageLandscape !== contentLandscape ? 90 : 0;
 }
 
 // ───── Queue rendering ───────────────────────────────────────────────────
@@ -660,7 +674,7 @@ function createCardForJob(job) {
   const ctx = cardCtx.get(job.job_id) || { svg: null, fitLocked: false };
   cardCtx.set(job.job_id, ctx);
   if (!ctx.svg || !ctx.svg.text) {
-    fetchSvgMeta(job.svg_id).then((meta) => {
+    fetchSvgMeta(job.job_id, job.svg_id).then((meta) => {
       if (meta) {
         ctx.svg = meta;
         renderPreview(card, job);
@@ -683,9 +697,12 @@ function createCardForJob(job) {
   return card;
 }
 
-async function fetchSvgMeta(svg_id) {
+// Fetches the SVG the job would actually plot right now (the optimized
+// .opt.svg once "Optimize SVG" has finished, otherwise the raw upload) so the
+// on-screen preview matches what gets sent to the machine.
+async function fetchSvgMeta(job_id, svg_id) {
   try {
-    const res = await fetch(`/svg/${svg_id}`);
+    const res = await fetch(`/jobs/${job_id}/svg`);
     if (!res.ok) return null;
     const text = await res.text();
     const parser = new DOMParser();
@@ -782,14 +799,18 @@ function setSegmentedValue(seg, val) {
 
 // When a custom machine profile has auto-rotate on, force the card's
 // orientation toggle to match it and disable the buttons (the policy always
-// wins) rather than just leaving it as a one-time default.
-function applyMachineAutoRotateToCard(card) {
+// wins) rather than just leaving it as a one-time default. `forceDisabled`
+// additionally disables regardless of policy — used by updateCard's active-job
+// readonly pass, which would otherwise re-enable these buttons on every state
+// broadcast (its blanket ".col-form button" selector includes them) and undo
+// the lock a moment after it was applied.
+function applyMachineAutoRotateToCard(card, forceDisabled = false) {
   const seg = card.querySelector(".orientation");
   const rotate = appSettings.machine_custom_enabled ? appSettings.machine_auto_rotate : "off";
   const locked = rotate !== "off";
   if (locked) setSegmentedValue(seg, rotate);
   seg.querySelectorAll("button").forEach((b) => {
-    b.disabled = locked;
+    b.disabled = locked || forceDisabled;
     b.title = locked ? t("settings.machine.auto_rotate_locked_title") : "";
   });
 }
@@ -846,6 +867,34 @@ function updateCard(card, job) {
     if (svgInfo && svgInfo.status === "optimizing") subParts.push(t("job.optimizing_svg"));
     else if (svgInfo && svgInfo.status === "pending") subParts.push(t("job.waiting_optimize_svg"));
   }
+  // The preview is fetched once (see createCardForJob) and reflects whatever
+  // was effective at that moment. Refetch whenever the *effective* SVG the
+  // machine would plot changes: a still-running background optimize
+  // finishes (raw -> .opt.svg), or "Optimize SVG" gets toggled off/on
+  // (.opt.svg <-> raw). "settled" means the background optimize (if any)
+  // isn't still in flight, so GET /jobs/{id}/svg would resolve to its final
+  // answer rather than a mid-flight raw fallback.
+  if (ctx.svg) {
+    const svgInfo = (serverState.svgs || {})[job.svg_id];
+    const settled = !job.optimize_svg || !svgInfo || svgInfo.status === "ready" || svgInfo.status === "failed";
+    const effectiveKind = job.optimize_svg && settled ? "optimized" : "raw";
+    if (settled && ctx.previewEffectiveKind !== effectiveKind) {
+      ctx.previewEffectiveKind = effectiveKind;
+      fetchSvgMeta(job.job_id, job.svg_id).then((meta) => {
+        if (!meta) return;
+        ctx.svg = meta;
+        // renderPreview only injects ctx.svg.text into the DOM once (guarded
+        // by data-rendered); clear that so the upgraded content actually
+        // replaces the stale markup instead of being ignored.
+        const previewEl = card.querySelector(".svg-preview");
+        if (previewEl) delete previewEl.dataset.rendered;
+        renderPreview(card, job);
+        renderLayers(card, job);
+      });
+    } else if (!settled) {
+      ctx.previewEffectiveKind = null;
+    }
+  }
   // And the background-planning state, so the user knows whether the plot
   // click will be instant or still has to compute the estimate.
   if (job.status === "queued" &&
@@ -874,6 +923,10 @@ function updateCard(card, job) {
   card.classList.toggle("readonly", activeBlocks);
   card.querySelectorAll(".col-form input, .col-form select, .col-form button")
     .forEach((el) => { el.disabled = activeBlocks; });
+  // The blanket pass above also re-enables the orientation buttons that the
+  // machine auto-rotate policy locks (its selector doesn't know about that
+  // lock); reassert it here so it isn't undone on every broadcast.
+  applyMachineAutoRotateToCard(card, activeBlocks);
 
   // Auto-expand active card
   if (job.job_id === serverState.active_id && card.querySelector(".job-body").hidden) {
@@ -1157,25 +1210,36 @@ function updatePreviewTransform(card, job) {
   const mt = job.margin_top_mm, mr = job.margin_right_mm, mb = job.margin_bottom_mm, ml = job.margin_left_mm;
   const aW = Math.max(0, w - ml - mr);
   const aH = Math.max(0, h - mt - mb);
-  const fitScale = job.fit_content && aW > 0 && aH > 0 ? Math.min(aW / svgW, aH / svgH) : 1;
+  const autoRotDeg = computeAutoRotateDeg(w, h, svgW, svgH);
+  const rotDeg = (job.transform_rotation_deg ?? 0) + autoRotDeg;
+  const rad = (rotDeg * Math.PI) / 180;
+  const cosA = Math.abs(Math.cos(rad));
+  const sinA = Math.abs(Math.sin(rad));
+  // fit_content sizes content against its *rotated* bounding box (at the
+  // combined auto + manual rotation), so "Fit to page" keeps the content
+  // within the page at any rotation angle instead of only the unrotated one.
+  const bboxWPerUnit = svgW * cosA + svgH * sinA;
+  const bboxHPerUnit = svgW * sinA + svgH * cosA;
+  const fitScale = job.fit_content && aW > 0 && aH > 0 && bboxWPerUnit > 0 && bboxHPerUnit > 0
+    ? Math.min(aW / bboxWPerUnit, aH / bboxHPerUnit) : 1;
   const fW = svgW * fitScale, fH = svgH * fitScale;
-  const offX = ml + (aW - fW) / 2;
-  const offY = mt + (aH - fH) / 2;
+  // Anchor the content's own *rotated* top-left corner (at its rendered,
+  // fit-scaled size) to the margin box's top-left corner rather than
+  // centering it — see transform_to_paper() in svg_utils.py for why the
+  // anchor point must use the rotated bbox, not the unrotated one.
+  const offX = ml;
+  const offY = mt;
 
   const userScale = Math.max(0.01, Math.min(5, job.transform_scale ?? 1));
-  const rotDeg = job.transform_rotation_deg ?? 0;
   const offX_user = job.transform_offset_x_mm ?? 0;
   const offY_user = job.transform_offset_y_mm ?? 0;
 
   // Rotated bounding box of the user-scaled content (for extent calc)
-  const rad = (rotDeg * Math.PI) / 180;
-  const cosA = Math.abs(Math.cos(rad));
-  const sinA = Math.abs(Math.sin(rad));
   const sW = fW * userScale, sH = fH * userScale;
   const bboxW = sW * cosA + sH * sinA;
   const bboxH = sW * sinA + sH * cosA;
-  const cX = offX + fW / 2 + offX_user;
-  const cY = offY + fH / 2 + offY_user;
+  const cX = offX + bboxW / 2 + offX_user;
+  const cY = offY + bboxH / 2 + offY_user;
   const contentLeft = cX - bboxW / 2;
   const contentTop = cY - bboxH / 2;
   const contentRight = cX + bboxW / 2;
@@ -1199,8 +1263,15 @@ function updatePreviewTransform(card, job) {
   content.style.width = `${(fW / w) * 100}%`;
   content.style.height = `${(fH / h) * 100}%`;
   content.style.transformOrigin = "center center";
+  // content's own untransformed box (left/top/width/height above) is laid
+  // out at its unrotated fit-scaled size, so its CSS transform-origin sits
+  // at (offX + fW/2, offY + fH/2) — not the corrected anchor cX/cY. Fold in
+  // the difference here since translate() is the only part of this
+  // transform applied in unrotated screen space.
+  const anchorCorrectionX = (bboxW - fW) / 2 + offX_user;
+  const anchorCorrectionY = (bboxH - fH) / 2 + offY_user;
   content.style.transform =
-    `translate(${offX_user * mmToPx}px, ${offY_user * mmToPx}px) ` +
+    `translate(${anchorCorrectionX * mmToPx}px, ${anchorCorrectionY * mmToPx}px) ` +
     `rotate(${rotDeg}deg) scale(${userScale})`;
 
   const anyM = mt > 0 || mr > 0 || mb > 0 || ml > 0;
@@ -1641,40 +1712,48 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
   });
 });
 
-// Manual jog / set-origin — idle-only (see applyTopControls, which
-// enables/disables #jog-controls and updates the readouts from the
-// broadcast state). Distinct from the fine origin nudge above, which only
-// applies mid-plot to the active job's remaining stages.
-manualJogRow.querySelectorAll(".jog-btn").forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    const step = parseFloat(btn.dataset.step);
-    const body = btn.dataset.axis === "x" ? { dx_mm: step, dy_mm: 0 } : { dx_mm: 0, dy_mm: step };
-    jogControlsMessage.textContent = "";
-    jogControlsMessage.className = "muted";
-    try {
-      const res = await fetch("/pen/jog", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await readErr(res));
-    } catch (e) {
-      jogControlsMessage.textContent = t("error.request_failed", { message: e.message });
-      jogControlsMessage.className = "error";
-    }
-  });
+// Manual jog — idle-only (see applyTopControls, which enables/disables
+// #jog-controls and updates the readouts from the broadcast state).
+// Distinct from the fine origin nudge above, which only applies mid-plot
+// to the active job's remaining stages.
+//
+// Success/failure is shown by flashing the clicked button green/red for 2s,
+// instead of a persistent confirmation message.
+function flashJogResult(btn, ok) {
+  btn.classList.remove("jog-flash-ok", "jog-flash-err");
+  void btn.offsetWidth; // restart the flash if the same button is clicked again quickly
+  btn.classList.add(ok ? "jog-flash-ok" : "jog-flash-err");
+  clearTimeout(btn._jogFlashTimer);
+  btn._jogFlashTimer = setTimeout(() => {
+    btn.classList.remove("jog-flash-ok", "jog-flash-err");
+  }, 2000);
+}
+
+jogMoveBtn.addEventListener("click", async () => {
+  const dx = parseFloat(jogXInput.value) || 0;
+  const dy = parseFloat(jogYInput.value) || 0;
+  try {
+    const res = await fetch("/pen/jog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+    flashJogResult(jogMoveBtn, true);
+    jogXInput.value = "";
+    jogYInput.value = "";
+  } catch (e) {
+    flashJogResult(jogMoveBtn, false);
+  }
 });
 
-setOriginBtn.addEventListener("click", async () => {
-  jogControlsMessage.textContent = "";
-  jogControlsMessage.className = "muted";
+jogHomeBtn.addEventListener("click", async () => {
   try {
-    const res = await fetch("/pen/set-origin", { method: "POST" });
+    const res = await fetch("/pen/jog-home", { method: "POST" });
     if (!res.ok) throw new Error(await readErr(res));
-    jogControlsMessage.textContent = t("controls.origin_set");
+    flashJogResult(jogHomeBtn, true);
   } catch (e) {
-    jogControlsMessage.textContent = t("error.request_failed", { message: e.message });
-    jogControlsMessage.className = "error";
+    flashJogResult(jogHomeBtn, false);
   }
 });
 
@@ -1802,11 +1881,13 @@ function applyTopControls() {
   nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
   nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
 
-  // Manual jog / set origin: idle-only (s.status, not the locally-shadowed
-  // `status` above, since that reads "idle" during awaiting_next_job too).
+  // Manual jog: idle-only (s.status, not the locally-shadowed `status`
+  // above, since that reads "idle" during awaiting_next_job too).
   const jogDisabled = s.status !== "idle";
-  manualJogRow.querySelectorAll(".jog-btn").forEach((btn) => { btn.disabled = jogDisabled; });
-  setOriginBtn.disabled = jogDisabled;
+  jogXInput.disabled = jogDisabled;
+  jogYInput.disabled = jogDisabled;
+  jogMoveBtn.disabled = jogDisabled;
+  jogHomeBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
   jogYReadout.textContent = (s.manual_origin_offset_y_mm ?? 0).toFixed(1);
 
@@ -2113,8 +2194,6 @@ function applyAppSettings(data) {
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
     acceleration_default: data.acceleration_default ?? appSettings.acceleration_default,
-    origin_offset_x_mm_default: data.origin_offset_x_mm_default ?? appSettings.origin_offset_x_mm_default,
-    origin_offset_y_mm_default: data.origin_offset_y_mm_default ?? appSettings.origin_offset_y_mm_default,
     pen_pos_up_default: data.pen_pos_up_default ?? appSettings.pen_pos_up_default,
     pen_pos_down_default: data.pen_pos_down_default ?? appSettings.pen_pos_down_default,
     optimize_svg_default: data.optimize_svg_default ?? appSettings.optimize_svg_default,
@@ -2159,7 +2238,22 @@ function applyAppSettings(data) {
     record_plot_default: data.record_plot_default ?? appSettings.record_plot_default,
   };
   if (effectiveDisplayUnit() !== prevUnit) refreshUnitDependentDisplays();
-  cardEls.forEach((card) => applyMachineAutoRotateToCard(card));
+  // applyMachineAutoRotateToCard only locks the orientation *button* visually;
+  // without also re-running onPaperChange, a job's stored paper_width_mm/
+  // paper_height_mm keeps whatever it was before this settings change, so the
+  // UI can show e.g. "Landscape" locked in while the job would actually still
+  // plot at its old portrait dimensions. Only do the full resync for jobs
+  // still "queued" (editable) — anything else, PATCHing paper dims would
+  // re-queue a finished job or fight an active plot, so just update the
+  // visual lock there.
+  cardEls.forEach((card, id) => {
+    const job = serverState.queue.find((j) => j.job_id === id);
+    if (job && job.status === "queued") {
+      onPaperChange(card);
+    } else {
+      applyMachineAutoRotateToCard(card);
+    }
+  });
   cameraSettingsBtn.hidden = !appSettings.camera_enabled;
   applyCameraControls();
   document.querySelectorAll(".camera-job-options").forEach((el) => {

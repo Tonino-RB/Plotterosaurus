@@ -1,3 +1,4 @@
+import math
 import re
 
 from lxml import etree
@@ -105,6 +106,8 @@ def transform_to_paper(
     transform_rotation_deg: float = 0.0,
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
+    machine_custom_enabled: bool = False,
+    machine_auto_rotate: str = "off",
 ) -> None:
     """Write a new SVG sized to the paper, with the source SVG's content wrapped in
     a <g transform="..."> that centers it within the margin box, optionally scales
@@ -128,11 +131,31 @@ def transform_to_paper(
         vb_x, vb_y = 0.0, 0.0
         vb_w, vb_h = orig_w_mm, orig_h_mm
 
+    # A custom machine bed with auto-rotate forces the paper into a fixed
+    # orientation (see caller); the artwork must turn with it too, or it just
+    # sits undersized/sideways on the swapped page. Add 90 deg whenever the
+    # content's own natural orientation doesn't match the paper's — mirrors
+    # the same decision made client-side for the preview (app.js).
+    auto_rotate_deg = 0.0
+    if machine_custom_enabled and machine_auto_rotate != "off":
+        page_landscape = paper_width_mm > paper_height_mm
+        content_landscape = orig_w_mm > orig_h_mm
+        if page_landscape != content_landscape:
+            auto_rotate_deg = 90.0
+    total_rotation_deg = transform_rotation_deg + auto_rotate_deg
+
     available_w = max(0.0, paper_width_mm - margin_left_mm - margin_right_mm)
     available_h = max(0.0, paper_height_mm - margin_top_mm - margin_bottom_mm)
 
-    if fit_content and orig_w_mm > 0 and orig_h_mm > 0 and available_w > 0 and available_h > 0:
-        fit_scale = min(available_w / orig_w_mm, available_h / orig_h_mm)
+    # fit_content sizes content against its *rotated* bounding box (at the
+    # combined auto + manual rotation), so "Fit to page" keeps the content
+    # within the page at any rotation angle instead of only the unrotated one.
+    rot_rad = math.radians(total_rotation_deg)
+    cos_r, sin_r = abs(math.cos(rot_rad)), abs(math.sin(rot_rad))
+    bbox_w_per_unit = orig_w_mm * cos_r + orig_h_mm * sin_r
+    bbox_h_per_unit = orig_w_mm * sin_r + orig_h_mm * cos_r
+    if fit_content and bbox_w_per_unit > 0 and bbox_h_per_unit > 0 and available_w > 0 and available_h > 0:
+        fit_scale = min(available_w / bbox_w_per_unit, available_h / bbox_h_per_unit)
     else:
         fit_scale = 1.0
 
@@ -141,10 +164,19 @@ def transform_to_paper(
     user_scale = total_mm_scale * (orig_w_mm / vb_w) if vb_w else total_mm_scale
 
     # Rotate/scale the content around its own center; that center lands at
-    # (center_x_mm, center_y_mm) on the paper (the middle of the available area,
-    # shifted by the user's offset).
-    center_x_mm = margin_left_mm + available_w / 2 + transform_offset_x_mm
-    center_y_mm = margin_top_mm + available_h / 2 + transform_offset_y_mm
+    # (center_x_mm, center_y_mm) on the paper, shifted by the user's offset.
+    # Anchor the content's own *rotated* top-left corner (at its rendered,
+    # fit_scale'd size) to the margin box's top-left corner rather than
+    # centering it — so a design's own (0,0) lines up with the page's origin
+    # by default, whether or not "Fit to page" scaled it down. Using the
+    # rotated bbox (bbox_w_per_unit/bbox_h_per_unit) instead of the raw
+    # orig_w_mm/orig_h_mm matters once total_rotation_deg != 0/180: for
+    # non-square content the rotated footprint is a different size than the
+    # unrotated one, so anchoring off the unrotated size drifts the content
+    # off the page edge. Mirrors offX/offY/cX/cY in updatePreviewTransform()
+    # (app.js).
+    center_x_mm = margin_left_mm + (bbox_w_per_unit * total_mm_scale) / 2 + transform_offset_x_mm
+    center_y_mm = margin_top_mm + (bbox_h_per_unit * total_mm_scale) / 2 + transform_offset_y_mm
     vb_center_x = vb_x + vb_w / 2
     vb_center_y = vb_y + vb_h / 2
 
@@ -159,7 +191,7 @@ def transform_to_paper(
     group.set(
         "transform",
         f"translate({center_x_mm},{center_y_mm}) "
-        f"rotate({transform_rotation_deg}) "
+        f"rotate({total_rotation_deg}) "
         f"scale({user_scale}) "
         f"translate({-vb_center_x},{-vb_center_y})",
     )

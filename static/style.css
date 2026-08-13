@@ -653,23 +653,18 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
 .control-col[hidden] { display: none; }
 .control-col button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* A real flex-column stack (readout, then dpad, in that DOM order) instead
-   of an absolutely-positioned readout with hand-guessed offsets — the
-   browser lays out the actual spacing, so it's exact regardless of font
+/* A real flex-column stack (readout, then inputs/actions, in that DOM order)
+   instead of an absolutely-positioned readout with hand-guessed offsets —
+   the browser lays out the actual spacing, so it's exact regardless of font
    metrics, instead of us estimating line-height/box height by hand. */
 .jog-col {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0.3rem;
   padding-top: 0.3rem;
   padding-bottom: 0.3rem;
 }
-.jog-col #jog-controls-message { flex-basis: 100%; text-align: center; }
-/* Empty (the common case) still occupies its reserved full-width row via
-   flex-basis above unless collapsed — this is what left a dead gap under
-   the cross. */
-.jog-col #jog-controls-message:empty { display: none; }
 
 /* Pen/motors buttons: same size when several fit per row, full-width and
    centered when there's only room for one — auto-fit recomputes the column
@@ -691,38 +686,44 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
   font-variant-numeric: tabular-nums;
 }
 
-.dpad {
-  display: grid;
-  grid-template-areas:
-    ".    up     ."
-    "left center right"
-    ".    down   .";
-  grid-template-columns: repeat(3, 1.75rem);
-  grid-template-rows: repeat(3, 1.75rem);
-  gap: 0.15rem;
+.jog-inputs {
+  display: flex;
+  gap: 0.4rem;
 }
-.dpad-btn {
+.jog-input-field {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 0;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+.jog-input {
+  width: 4.5rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border-dark);
   border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
   font-size: 0.85rem;
+}
+.jog-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+.jog-action-btn {
+  padding: 0.3rem 0.6rem;
+  border-radius: 5px;
+  font-size: 0.8rem;
   line-height: 1;
   background: var(--border);
   color: var(--text);
+  transition: background-color 0.2s ease;
 }
-.dpad-btn:hover:not(:disabled) { background: var(--border-dark); }
-.dpad-up { grid-area: up; }
-.dpad-down { grid-area: down; }
-.dpad-left { grid-area: left; }
-.dpad-right { grid-area: right; }
-.dpad-center {
-  grid-area: center;
-  background: var(--accent);
-  font-size: 0.95rem;
-}
-.dpad-center:hover:not(:disabled) { background: var(--accent-dark); }
+.jog-action-btn:hover:not(:disabled) { background: var(--border-dark); }
+.jog-action-btn.jog-flash-ok { background: #4C8C4A; color: #fff; }
+.jog-action-btn.jog-flash-err { background: #FF4D4D; color: #fff; }
+
+.jog-home-btn { padding: 0.3rem 0.5rem; }
 
 .recording-indicator { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-soft); }
 .recording-indicator::before {

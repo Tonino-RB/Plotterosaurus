@@ -24,10 +24,9 @@
   "a11y.remove": "Remove",
   "a11y.collapse": "Collapse",
   "a11y.expand": "Expand",
-  "a11y.jog_up": "Jog +Y",
-  "a11y.jog_down": "Jog −Y",
-  "a11y.jog_left": "Jog −X",
-  "a11y.jog_right": "Jog +X",
+  "a11y.jog_x_input": "X move (mm)",
+  "a11y.jog_y_input": "Y move (mm)",
+  "a11y.jog_home": "Return to origin (does not set a new origin)",
 
   "status.idle": "Idle",
   "status.queued": "Queued",
@@ -107,8 +106,7 @@
   "controls.continue": "Continue",
   "controls.calibrate": "Plot Calibration Layer",
   "controls.calibrate_plural": "Plot Calibration Layers",
-  "controls.set_origin": "Set Origin Here",
-  "controls.origin_set": "Origin set for new jobs.",
+  "controls.move": "Move",
 
   "upload.drop_hint": "Drop SVGs here (or click) to add to the queue",
   "upload.processing": "Processing {name}…",

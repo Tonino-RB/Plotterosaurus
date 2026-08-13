@@ -1,6 +1,6 @@
 # Plotterosaurus
 
-> **Status: beta (v0.1.0-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
+> **Status: beta (v0.2.0-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
 
 A self-hosted plot server for the iDraw H SE A3 and AxiDraw-class pen plotters. Submit SVGs over the network and the Pi drives the plotter locally via the official AxiDraw Python API, so your workstation doesn't need to stay connected for the duration of the plot.
 

@@ -321,6 +321,14 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         ad.plot_setup(str(current_svg))
         ad.options.mode = mode
         ad.options.model = config.PLOTTER_MODEL
+        # pyaxidraw has its own independent auto-rotate (on by default, rotates
+        # 90 deg CCW whenever the doc is taller than wide) layered on top of
+        # whatever orientation transform_to_paper() already baked into the SVG
+        # — left enabled, it silently re-rotates an already-correctly-oriented
+        # portrait plot, so the preview (which only knows about our own
+        # rotation) and the physical plot disagree. We always hand pyaxidraw a
+        # document that's already in its final orientation, so disable this.
+        ad.options.no_rotate = True
         _apply_custom_bed_size(ad)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
@@ -431,6 +439,8 @@ def compute_preview(job: dict, svg_path: Path,
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+            machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
     except Exception:
         log.exception("compute_preview: filter/transform failed for job %s", job.get("job_id"))
@@ -604,8 +614,15 @@ def nudge_origin(dx_mm: float, dy_mm: float) -> None:
         # a move toward negative coordinates is silently clipped to zero -
         # regardless of where the carriage physically already is. Re-center
         # the turtle first so a nudge in either direction has room to move.
-        ad.pen.turtle.xpos = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
-        ad.pen.turtle.ypos = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        # ad.move()'s actual hardware move is computed from `pen.phys`, a
+        # *separate* position tracker from `pen.turtle` (used only for the
+        # target/bounds math) — recenter both together, or the carriage jumps
+        # to the recentered target instead of moving by (dx_mm, dy_mm) from
+        # wherever it actually is.
+        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
+        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
+        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
         ad.move(dx_mm, dy_mm)
     finally:
         ad.disconnect()
@@ -616,12 +633,14 @@ def manual_jog(dx_mm: float, dy_mm: float) -> None:
     for aligning it to the paper before a plot starts. Idle-only — unlike
     nudge_origin, which corrects an active job's remaining stages mid-plot,
     this has no job to apply to; it just walks the carriage and accumulates
-    the net displacement in session state so set_manual_origin can capture it
-    as the default offset for jobs created from now on."""
+    the net displacement in session state so manual_jog_home knows how far
+    to walk back."""
     if state.snapshot()["status"] != "idle":
         raise RuntimeError("Manual jog only available while idle")
     if _current_ad is not None:
         raise RuntimeError("Plotter busy")
+    if abs(dx_mm) > config.MACHINE_WIDTH_MM or abs(dy_mm) > config.MACHINE_HEIGHT_MM:
+        raise RuntimeError("Jog distance exceeds the machine bed size")
     x, y = state.manual_origin_offset()
     x = max(-config.MACHINE_WIDTH_MM, min(config.MACHINE_WIDTH_MM, x + dx_mm))
     y = max(-config.MACHINE_HEIGHT_MM, min(config.MACHINE_HEIGHT_MM, y + dy_mm))
@@ -635,26 +654,47 @@ def manual_jog(dx_mm: float, dy_mm: float) -> None:
     if not ad.connect():
         raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
     try:
-        # See nudge_origin: re-center the turtle so a move in either direction
-        # has room, regardless of where the carriage physically already is.
-        ad.pen.turtle.xpos = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
-        ad.pen.turtle.ypos = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        # See nudge_origin: re-center the turtle *and* phys together so a
+        # move in either direction has room and actually moves by the
+        # requested delta from the carriage's real current position.
+        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
+        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
+        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
         ad.move(dx_mm, dy_mm)
     finally:
         ad.disconnect()
 
 
-def set_manual_origin() -> tuple[float, float]:
-    """Capture the net displacement accumulated by manual_jog as the app's
-    default origin offset, seeded onto jobs created from now on (see
-    config.ORIGIN_OFFSET_X_MM_DEFAULT), then reset the running total so the
-    next jog session starts from zero again."""
+def manual_jog_home() -> None:
+    """Physically walk the pen carriage back to (0, 0) — undoing the net
+    displacement accumulated by manual_jog. Idle-only, same as manual_jog."""
     if state.snapshot()["status"] != "idle":
         raise RuntimeError("Manual jog only available while idle")
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
     x, y = state.manual_origin_offset()
-    config.update(origin_offset_x_mm_default=x, origin_offset_y_mm_default=y)
+    if x == 0.0 and y == 0.0:
+        return
+
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.units = 2  # millimeters
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        # See manual_jog: re-center the turtle *and* phys together so the
+        # move back to (0, 0) has room and actually covers the full distance.
+        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
+        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
+        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
+        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
+        ad.move(-x, -y)
+    finally:
+        ad.disconnect()
     state.set_manual_origin_offset(0.0, 0.0)
-    return x, y
 
 
 def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
@@ -1016,6 +1056,8 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+            machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
@@ -1075,6 +1117,8 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+            machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
@@ -1277,6 +1321,8 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                 transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
                 transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
                 transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+                machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+                machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
             )
 
         # Flag this stage as current on the job's stages list

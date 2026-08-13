@@ -51,16 +51,22 @@
   <div class="controls-bar">
     <div class="controls-columns">
 
-      <div id="jog-controls" class="control-col jog-col" role="group" aria-label="Jog pen and set origin">
+      <div id="jog-controls" class="control-col jog-col" role="group" aria-label="Jog pen">
         <span class="jog-readout muted">Δ <span id="jog-x-readout">0.0</span>, <span id="jog-y-readout">0.0</span> mm</span>
-        <div class="dpad">
-          <button type="button" class="dpad-btn dpad-up jog-btn" data-axis="y" data-step="1" title="Jog +Y" aria-label="Jog +Y" data-i18n-title="a11y.jog_up" data-i18n-aria-label="a11y.jog_up">▲</button>
-          <button type="button" class="dpad-btn dpad-left jog-btn" data-axis="x" data-step="-1" title="Jog −X" aria-label="Jog −X" data-i18n-title="a11y.jog_left" data-i18n-aria-label="a11y.jog_left">◀</button>
-          <button id="set-origin-btn" type="button" class="dpad-btn dpad-center" title="Set Origin Here" aria-label="Set Origin Here" data-i18n-title="controls.set_origin" data-i18n-aria-label="controls.set_origin">⌖</button>
-          <button type="button" class="dpad-btn dpad-right jog-btn" data-axis="x" data-step="1" title="Jog +X" aria-label="Jog +X" data-i18n-title="a11y.jog_right" data-i18n-aria-label="a11y.jog_right">▶</button>
-          <button type="button" class="dpad-btn dpad-down jog-btn" data-axis="y" data-step="-1" title="Jog −Y" aria-label="Jog −Y" data-i18n-title="a11y.jog_down" data-i18n-aria-label="a11y.jog_down">▼</button>
+        <div class="jog-inputs">
+          <label class="jog-input-field">
+            <span class="jog-input-label">X</span>
+            <input type="number" id="jog-x-input" class="jog-input" step="0.1" value="0" data-i18n-aria-label="a11y.jog_x_input" aria-label="X move (mm)">
+          </label>
+          <label class="jog-input-field">
+            <span class="jog-input-label">Y</span>
+            <input type="number" id="jog-y-input" class="jog-input" step="0.1" value="0" data-i18n-aria-label="a11y.jog_y_input" aria-label="Y move (mm)">
+          </label>
         </div>
-        <span id="jog-controls-message" class="muted"></span>
+        <div class="jog-actions">
+          <button id="jog-move-btn" type="button" class="jog-action-btn" data-i18n="controls.move" title="Move" aria-label="Move" data-i18n-title="controls.move" data-i18n-aria-label="controls.move">Move</button>
+          <button id="jog-home-btn" type="button" class="jog-action-btn jog-home-btn" title="Return to Origin" aria-label="Return to origin" data-i18n-title="a11y.jog_home" data-i18n-aria-label="a11y.jog_home">⌂</button>
+        </div>
       </div>
 
       <div id="pen-controls" class="control-col" role="group" aria-label="Pen and motors">

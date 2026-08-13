@@ -170,6 +170,21 @@ def get_svg(svg_id: str):
     return FileResponse(str(path), media_type="image/svg+xml")
 
 
+@app.get("/jobs/{job_id}/svg")
+def get_job_svg(job_id: str):
+    """The SVG the job would actually plot right now — the optimized .opt.svg
+    when "Optimize SVG" is on and its cache is ready, otherwise the raw
+    upload. Lets the on-screen preview show the same geometry that gets sent
+    to the machine instead of always the pre-optimization original."""
+    job = state.get_job(job_id)
+    if job is None:
+        raise HTTPException(404)
+    path = plot_worker._effective_svg_path(job)
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(str(path), media_type="image/svg+xml")
+
+
 # Jobs -------------------------------------------------------------------
 #
 # The optimize_svg_* fields appear in three shapes:
@@ -1065,11 +1080,10 @@ def api_motors_disable():
     return motors_disable()
 
 
-# Manual jog / set-origin ----------------------------------------------------
+# Manual jog -------------------------------------------------------------
 # Idle-only: walk the pen carriage into position over the paper before a plot
-# starts, then capture that position as the default origin offset seeded onto
-# jobs created from now on. Distinct from /queue/nudge-origin above, which
-# corrects an active job's remaining stages mid-plot.
+# starts, and walk it back home. Distinct from /queue/nudge-origin above,
+# which corrects an active job's remaining stages mid-plot.
 
 class ManualJogRequest(BaseModel):
     dx_mm: float = 0.0
@@ -1090,18 +1104,18 @@ def api_pen_jog(req: ManualJogRequest):
     return pen_jog(req)
 
 
-@app.post("/pen/set-origin")
-def pen_set_origin():
+@app.post("/pen/jog-home")
+def pen_jog_home():
     try:
-        x, y = plot_worker.set_manual_origin()
+        plot_worker.manual_jog_home()
     except RuntimeError as e:
         raise _worker_error(e)
-    return {"ok": True, "origin_offset_x_mm": x, "origin_offset_y_mm": y}
+    return {"ok": True}
 
 
-@app.post("/api/v1/pen/set-origin", dependencies=[Depends(require_api_key)])
-def api_pen_set_origin():
-    return pen_set_origin()
+@app.post("/api/v1/pen/jog-home", dependencies=[Depends(require_api_key)])
+def api_pen_jog_home():
+    return pen_jog_home()
 
 
 # Webhook notifications ----------------------------------------------------
