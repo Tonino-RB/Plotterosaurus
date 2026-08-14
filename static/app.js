@@ -161,6 +161,17 @@ const cardEls = new Map();                 // job_id → card DOM element
 const cardCtx = new Map();                 // job_id → per-card state (svg metadata, manual-fit flag, render timer)
 let sharedElapsedTimer = null;             // single interval for the sticky-bar progress
 
+// Offscreen but fully rendered SVG used to measure a job's actual ink
+// bounding box via getBBox() (see computeGeometryFootprint). getBBox() throws
+// or returns a zero rect on elements inside a display:none tree (e.g. a
+// collapsed job card's hidden preview panel) — positioning this off-screen
+// (rather than display:none/visibility:hidden/zero-size, all of which are
+// inconsistent across browsers for getBBox() purposes) keeps it painted and
+// measurable regardless of any card's collapsed state.
+const bboxMeasureSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+bboxMeasureSvg.style.cssText = "position:fixed; left:-99999px; top:-99999px; width:1px; height:1px; overflow:visible;";
+document.body.appendChild(bboxMeasureSvg);
+
 // Turn a FastAPI error `detail` into a display string. Coded errors arrive as
 // {code, params} and are localized via the apierror.* catalog; plain-string
 // and structured-message details fall through to their text.
@@ -545,6 +556,9 @@ function createCardForJob(job) {
   card.querySelector(".job-move-up").addEventListener("click", () => moveJob(job.job_id, -1));
   card.querySelector(".job-move-down").addEventListener("click", () => moveJob(job.job_id, +1));
   card.querySelector(".job-requeue").addEventListener("click", () => requeueJob(job.job_id));
+  card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
+    nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
+  );
 
   // Settings changes
   const paperInputs = [
@@ -679,6 +693,10 @@ function createCardForJob(job) {
         ctx.svg = meta;
         renderPreview(card, job);
         renderLayers(card, job);
+        // Geometry size (see computeGeometryFootprint) needs ctx.svg *and* the
+        // rendered preview DOM, both of which just became available —
+        // refresh the card now instead of waiting for the next broadcast.
+        updateCard(card, job);
       }
     });
   } else {
@@ -858,6 +876,12 @@ function updateCard(card, job) {
   if (layerCount) {
     subParts.push(tn("job.layers", layerCount));
   }
+  const geomFootprint = computeGeometryFootprint(card, job, ctx);
+  if (geomFootprint) {
+    const u = effectiveDisplayUnit();
+    subParts.push(`${formatLengthValue(geomFootprint.width, u)} × ${formatLengthValue(geomFootprint.height, u)} ${u}`);
+  }
+  renderDeltaOverlay(card, job, geomFootprint);
   if (job.estimated_total_seconds) subParts.push(formatDuration(Math.round(job.estimated_total_seconds)));
   // Surface the SVG-level pre-optimize state on queued cards so the user knows
   // a future "Plot" click won't be instant if their SVG is still in the
@@ -890,6 +914,7 @@ function updateCard(card, job) {
         if (previewEl) delete previewEl.dataset.rendered;
         renderPreview(card, job);
         renderLayers(card, job);
+        updateCard(card, job);
       });
     } else if (!settled) {
       ctx.previewEffectiveKind = null;
@@ -908,12 +933,25 @@ function updateCard(card, job) {
   pill.className = `job-status-pill status ${job.status}`;
 
   const errorEl = card.querySelector(".job-error");
+  const nudgeBtn = card.querySelector(".job-error-nudge-btn");
   if (job.error) {
-    errorEl.textContent = job.error;
+    card.querySelector(".job-error-text").textContent = job.error;
     errorEl.hidden = false;
+    const hasHint = job.jog_hint_dx_mm != null && job.jog_hint_dy_mm != null;
+    nudgeBtn.hidden = !hasHint;
+    if (hasHint) {
+      const u = effectiveDisplayUnit();
+      nudgeBtn.textContent = t("card.nudge_back_btn", {
+        dx: fmtLength(job.jog_hint_dx_mm, u),
+        dy: fmtLength(job.jog_hint_dy_mm, u),
+      });
+      nudgeBtn.dataset.dx = job.jog_hint_dx_mm;
+      nudgeBtn.dataset.dy = job.jog_hint_dy_mm;
+    }
   } else {
-    errorEl.textContent = "";
+    card.querySelector(".job-error-text").textContent = "";
     errorEl.hidden = true;
+    nudgeBtn.hidden = true;
   }
 
   // Disable editing when job is active
@@ -945,14 +983,18 @@ function updateCard(card, job) {
   }
   syncJobCardCaret(card);
 
-  // Re-queue button visible only when the job has actually been plotted at
-  // least once (started_at set) AND is now in a terminal state. This avoids
-  // the button flashing visible for freshly-uploaded or just-PATCH-requeued
-  // jobs in the brief window before the server broadcast lands.
+  // Re-queue button visible when the job is in a terminal state AND either
+  // it has actually been plotted before (started_at set) or it carries an
+  // error — the latter covers a job rejected by a pre-flight check (e.g. the
+  // artwork-bounds check in _run_job) before started_at is ever set, which
+  // otherwise left a failed job with no way to retry from the card. The
+  // started_at half of the condition still avoids the button flashing
+  // visible for freshly-uploaded or just-PATCH-requeued jobs in the brief
+  // window before the server broadcast lands.
   const requeueBtn = card.querySelector(".job-requeue");
   if (requeueBtn) {
     const isTerminal = ["completed", "failed", "cancelled"].includes(job.status);
-    requeueBtn.hidden = !(isTerminal && job.started_at);
+    requeueBtn.hidden = !(isTerminal && (job.started_at || job.error));
   }
 
   cardCtx.set(job.job_id, ctx);
@@ -965,6 +1007,163 @@ function updateCard(card, job) {
   renderStages(card, job);
   renderPlotInfo(card, job);
   renderMachineBoundsWarning(card, job);
+}
+
+// The actual drawn geometry's on-page footprint after rotation/scale/fit-to-
+// page — the *ink* bounding box (only selected layers, measured via
+// getBBox() on a clone of the live, layer-filtered preview — see
+// bboxMeasureSvg), not the SVG document's own canvas/page size, which is
+// often set to a round paper size in the authoring tool and can be much
+// bigger than what's actually drawn. fit_content's *scale factor* is still
+// driven by the canvas size, same as the server (svg_utils.py's
+// transform_to_paper / _content_footprint_mm) — only the displayed
+// footprint itself switches to the ink extent. Null until the preview SVG
+// is actually rendered in the card.
+// Where the *actual drawn geometry* (ink, only selected layers — see
+// bboxMeasureSvg) lands on the page after rotation/scale/fit-to-page, in mm:
+// {left, top, width, height}. Mirrors app/svg_utils.py's ink_bounds_mm
+// exactly (same corner-by-corner transform, not just a size formula) so
+// this and the server's bounds-check agree on where the geometry actually
+// is, not just how big it is. fit_content's *scale factor* is still driven
+// by the canvas size, same as the server. Null until the preview SVG is
+// actually rendered in the card.
+function computeGeometryFootprint(card, job, ctx) {
+  if (!ctx || !ctx.svg || !ctx.svg.width_mm || !ctx.svg.height_mm) return null;
+  const liveSvg = card.querySelector(".paper-content svg");
+  if (!liveSvg) return null;
+
+  let bbox;
+  try {
+    bboxMeasureSvg.replaceChildren(liveSvg.cloneNode(true));
+    bbox = bboxMeasureSvg.firstChild.getBBox();
+  } catch {
+    return null;
+  } finally {
+    bboxMeasureSvg.replaceChildren();
+  }
+  if (!bbox || bbox.width <= 0 || bbox.height <= 0) return null;
+
+  const svgW = ctx.svg.width_mm, svgH = ctx.svg.height_mm;
+  const vb = liveSvg.viewBox && liveSvg.viewBox.baseVal;
+  const vbW = vb && vb.width ? vb.width : svgW;
+  const vbH = vb && vb.height ? vb.height : svgH;
+  const vbX = vb ? vb.x : 0, vbY = vb ? vb.y : 0;
+  const mmPerUnit = svgW / vbW;
+
+  const autoRotDeg = computeAutoRotateDeg(job.paper_width_mm, job.paper_height_mm, svgW, svgH);
+  const rotDeg = (job.transform_rotation_deg ?? 0) + autoRotDeg;
+  const rad = (rotDeg * Math.PI) / 180;
+  const cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
+
+  // fit_content's scale is driven by the *canvas* footprint, not the ink's.
+  const canvasBboxWPerUnit = svgW * cosA + svgH * sinA;
+  const canvasBboxHPerUnit = svgW * sinA + svgH * cosA;
+  const aW = Math.max(0, job.paper_width_mm - job.margin_left_mm - job.margin_right_mm);
+  const aH = Math.max(0, job.paper_height_mm - job.margin_top_mm - job.margin_bottom_mm);
+  const fitScale = job.fit_content && aW > 0 && aH > 0 && canvasBboxWPerUnit > 0 && canvasBboxHPerUnit > 0
+    ? Math.min(aW / canvasBboxWPerUnit, aH / canvasBboxHPerUnit) : 1;
+  const userScale = Math.max(0.01, Math.min(5, job.transform_scale ?? 1));
+  const totalScale = fitScale * userScale;
+  const unitsToMm = totalScale * mmPerUnit;
+
+  const footprintW = canvasBboxWPerUnit * totalScale;
+  const footprintH = canvasBboxHPerUnit * totalScale;
+  const centerXmm = job.margin_left_mm + footprintW / 2 + (job.transform_offset_x_mm ?? 0);
+  const centerYmm = job.margin_top_mm + footprintH / 2 + (job.transform_offset_y_mm ?? 0);
+  const vbCenterX = vbX + vbW / 2, vbCenterY = vbY + vbH / 2;
+
+  // Full (signed) rotation for accurate corner mapping — the abs() version
+  // above is only valid for the canvas's own size, since a rotated
+  // rectangle's *size* is position-independent, but the ink's *position*
+  // isn't.
+  const cosR = Math.cos(rad), sinR = Math.sin(rad);
+  const toPage = (px, py) => {
+    const dx = (px - vbCenterX) * unitsToMm, dy = (py - vbCenterY) * unitsToMm;
+    return [centerXmm + dx * cosR - dy * sinR, centerYmm + dx * sinR + dy * cosR];
+  };
+  const xmin = bbox.x, ymin = bbox.y, xmax = bbox.x + bbox.width, ymax = bbox.y + bbox.height;
+  const corners = [toPage(xmin, ymin), toPage(xmax, ymin), toPage(xmin, ymax), toPage(xmax, ymax)];
+  const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1]);
+  const left = Math.min(...xs), top = Math.min(...ys);
+  return { left, top, width: Math.max(...xs) - left, height: Math.max(...ys) - top };
+}
+
+// The delta (a manual jog for the next job about to start, or an origin
+// nudge for the active job paused mid-plot) that actually applies to this
+// job right now, in mm — {dx: 0, dy: 0} if neither applies.
+// The delta actually baked into the active job's physical run right now —
+// null for any other job, including one that's merely queued next (see
+// effectiveDeltaForJob, which also previews a manual jog for that case:
+// aiming, not yet drawn). Both pieces stay in effect for every stage of the
+// run, not just while paused: a manual jog becomes the run's physical zero
+// the moment its first stage starts (nothing re-homes the carriage mid-run
+// — see plot_worker.py, manual_jog is idle-only), and an origin nudge
+// dialed in at a pause applies to every stage from then on (see
+// nudge_origin / _run_staged_loop_impl), not only the pause itself.
+function activeRunDelta(job) {
+  if (job.job_id !== serverState.active_id) return null;
+  return {
+    dx: (serverState.manual_origin_offset_x_mm || 0) + (serverState.origin_nudge_x_mm || 0),
+    dy: (serverState.manual_origin_offset_y_mm || 0) + (serverState.origin_nudge_y_mm || 0),
+  };
+}
+
+function effectiveDeltaForJob(job) {
+  const running = activeRunDelta(job);
+  if (running) return running;
+  if (serverState.status === "idle") {
+    const firstQueued = serverState.queue.find((j) => j.status === "queued");
+    if (firstQueued && firstQueued.job_id === job.job_id) {
+      return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
+    }
+    // Nothing else is actually queued, and this is the job that was last
+    // running (e.g. cancelled) — the manual jog is still physically applied
+    // (nothing resets it on cancel), so keep showing it "as if queued"
+    // rather than snapping to zero the instant the job stops being active.
+    // Server-tracked (state.last_active_id), not just client memory, so
+    // this survives a page reload after the cancel already happened.
+    if (!firstQueued && job.job_id === serverState.last_active_id) {
+      return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
+    }
+  }
+  return { dx: 0, dy: 0 };
+}
+
+// Red dot + thin red outline on the preview: where the current delta (see
+// effectiveDeltaForJob) puts the geometry's own origin corner, and the
+// geometry's actual on-page footprint from there — the same numbers the
+// server's pre-flight/nudge bounds check uses (see _delta_correction_mm),
+// made visible instead of only surfacing as an error after the fact.
+function renderDeltaOverlay(card, job, footprint) {
+  const dot = card.querySelector(".delta-dot");
+  const square = card.querySelector(".delta-square");
+  if (!dot || !square) return;
+  const w = job.paper_width_mm, h = job.paper_height_mm;
+  const validPage = w > 0 && h > 0;
+
+  // The dot marks the delta itself — (dx, dy) as a raw coordinate on the
+  // page (0, 0 = the paper's own top-left, same as if there were no jog/
+  // nudge at all) — independent of where the geometry sits, so it stays
+  // meaningful even for a job with no geometry loaded yet.
+  const { dx, dy } = effectiveDeltaForJob(job);
+  dot.hidden = !validPage;
+  if (validPage) {
+    dot.style.left = `${(dx / w) * 100}%`;
+    dot.style.top = `${(dy / h) * 100}%`;
+  }
+
+  // The square is the geometry's actual on-page footprint, delta included —
+  // where the artwork will really be, unlinked from the dot above.
+  if (!footprint || !validPage) {
+    square.hidden = true;
+    return;
+  }
+  const left = footprint.left + dx, top = footprint.top + dy;
+  square.hidden = false;
+  square.style.left = `${(left / w) * 100}%`;
+  square.style.top = `${(top / h) * 100}%`;
+  square.style.width = `${(footprint.width / w) * 100}%`;
+  square.style.height = `${(footprint.height / h) * 100}%`;
 }
 
 // Advisory only: pyaxidraw enforces the real AxiDraw travel bounds at plot
@@ -1008,7 +1207,7 @@ function renderPreview(card, job) {
   if (!ctx || !ctx.svg) return;
   const previewEl = card.querySelector(".svg-preview");
   if (!previewEl.dataset.rendered) {
-    previewEl.innerHTML = `<div class="paper"><div class="paper-margins" hidden></div><div class="paper-content">${ctx.svg.text}</div><div class="pen-cursor" hidden></div></div>`;
+    previewEl.innerHTML = `<div class="paper"><div class="paper-margins" hidden></div><div class="paper-content">${ctx.svg.text}</div><div class="pen-cursor" hidden></div><div class="delta-square" hidden></div><div class="delta-dot" hidden></div></div>`;
     previewEl.dataset.rendered = "1";
   }
   card.querySelector(".svg-dims").textContent = `${formatDim(ctx.svg.width)} × ${formatDim(ctx.svg.height)}`;
@@ -1268,8 +1467,16 @@ function updatePreviewTransform(card, job) {
   // at (offX + fW/2, offY + fH/2) — not the corrected anchor cX/cY. Fold in
   // the difference here since translate() is the only part of this
   // transform applied in unrotated screen space.
-  const anchorCorrectionX = (bboxW - fW) / 2 + offX_user;
-  const anchorCorrectionY = (bboxH - fH) / 2 + offY_user;
+  //
+  // While this job is actually running, also fold in its live delta (see
+  // activeRunDelta) — the same pure page-space translation the plotter
+  // itself is physically applying right now — so the preview visually
+  // matches where the pen really is instead of showing the design's
+  // as-drawn position. It snaps back the moment the job stops being active
+  // (completes/cancels/fails), since activeRunDelta then returns null.
+  const runDelta = activeRunDelta(job);
+  const anchorCorrectionX = (bboxW - fW) / 2 + offX_user + (runDelta ? runDelta.dx : 0);
+  const anchorCorrectionY = (bboxH - fH) / 2 + offY_user + (runDelta ? runDelta.dy : 0);
   content.style.transform =
     `translate(${anchorCorrectionX * mmToPx}px, ${anchorCorrectionY * mmToPx}px) ` +
     `rotate(${rotDeg}deg) scale(${userScale})`;
@@ -1583,6 +1790,30 @@ async function requeueJob(id) {
   }
 }
 
+// Applies a job-card's suggested jog correction (see job.jog_hint_dx_mm/
+// jog_hint_dy_mm) via the same idle manual-jog endpoint as the top control
+// panel's Move buttons, then re-queues the job it was correcting — one
+// click both fixes the carriage position and puts the job back where
+// pressing Plot works again. The error banner (and this button with it)
+// disappears on its own once the requeue clears job.error.
+async function nudgeBack(jobId, dxStr, dyStr) {
+  const dx = parseFloat(dxStr) || 0;
+  const dy = parseFloat(dyStr) || 0;
+  try {
+    const res = await fetch("/pen/jog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+    const res2 = await fetch(`/jobs/${jobId}/requeue`, { method: "POST" });
+    if (!res2.ok) throw new Error(await readErr(res2));
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+}
+
 async function moveJob(id, delta) {
   const idx = serverState.queue.findIndex((j) => j.job_id === id);
   if (idx < 0) return;
@@ -1717,16 +1948,20 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
 // Distinct from the fine origin nudge above, which only applies mid-plot
 // to the active job's remaining stages.
 //
-// Success/failure is shown by flashing the clicked button green/red for 2s,
-// instead of a persistent confirmation message.
+// Success is shown by flashing the clicked button green for 2s; a denied
+// command (bed-edge/artwork-bounds rejection, or any other failure) blinks
+// it red twice instead, instead of a persistent confirmation message.
 function flashJogResult(btn, ok) {
-  btn.classList.remove("jog-flash-ok", "jog-flash-err");
-  void btn.offsetWidth; // restart the flash if the same button is clicked again quickly
-  btn.classList.add(ok ? "jog-flash-ok" : "jog-flash-err");
+  btn.classList.remove("jog-flash-ok", "jog-flash-err-blink");
+  void btn.offsetWidth; // restart the flash/blink if the same button is clicked again quickly
   clearTimeout(btn._jogFlashTimer);
-  btn._jogFlashTimer = setTimeout(() => {
-    btn.classList.remove("jog-flash-ok", "jog-flash-err");
-  }, 2000);
+  if (ok) {
+    btn.classList.add("jog-flash-ok");
+    btn._jogFlashTimer = setTimeout(() => btn.classList.remove("jog-flash-ok"), 2000);
+  } else {
+    btn.classList.add("jog-flash-err-blink");
+    btn._jogFlashTimer = setTimeout(() => btn.classList.remove("jog-flash-err-blink"), 800);
+  }
 }
 
 jogMoveBtn.addEventListener("click", async () => {
@@ -2798,9 +3033,16 @@ function updatePenCursor(msg) {
   // This fork never sets ad.options.auto_rotate, so it stays at pyaxidraw's
   // own default (False, see axidraw_conf.py) — the physical pen frame is
   // never rotated relative to the document, and phys_x/phys_y map straight
-  // onto the document's own top-left-origin frame.
-  const leftPct = (msg.x_mm / w) * 100;
-  const topPct = (msg.y_mm / h) * 100;
+  // onto the document's own top-left-origin frame. That frame is anchored
+  // wherever plot_setup() started (i.e. it excludes any jog/nudge — verified
+  // empirically: phys_x stays within the artwork's own extent regardless of
+  // an active manual jog), the same frame the *undelta-shifted* design sits
+  // in — so add the same live delta applied to the preview content (see
+  // updatePreviewTransform's runDelta) or the cursor drifts off the artwork
+  // the moment there's an active jog/nudge.
+  const runDelta = activeRunDelta(job) || { dx: 0, dy: 0 };
+  const leftPct = ((msg.x_mm + runDelta.dx) / w) * 100;
+  const topPct = ((msg.y_mm + runDelta.dy) / h) * 100;
   cursor.hidden = false;
   cursor.style.left = `${leftPct}%`;
   cursor.style.top = `${topPct}%`;

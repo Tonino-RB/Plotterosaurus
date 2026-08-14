@@ -10,7 +10,7 @@ WorkingDirectory=/opt/mediamtx
 # 'video' group, checked by install.sh) and write access to the Plotterosaurus
 # project's recordings/ folder, which recordPath is pointed at per-recording.
 User=__SERVICE_USER__
-Restart=on-failure
+Restart=always
 RestartSec=3
 
 [Install]

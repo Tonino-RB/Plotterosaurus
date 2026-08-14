@@ -92,6 +92,180 @@ def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path) ->
     tree.write(str(out_path), xml_declaration=True, encoding="utf-8")
 
 
+def _content_footprint_mm(
+    root,
+    paper_width_mm: float,
+    paper_height_mm: float,
+    margin_top_mm: float,
+    margin_right_mm: float,
+    margin_bottom_mm: float,
+    margin_left_mm: float,
+    fit_content: bool,
+    transform_scale: float,
+    transform_rotation_deg: float,
+    machine_custom_enabled: bool,
+    machine_auto_rotate: str,
+) -> tuple[float, float, float, float]:
+    """Sizing math shared by transform_to_paper and content_bounds_mm: the
+    content's on-page footprint (its rotated bounding box, at fit_content's
+    scale if enabled). Returns (footprint_w_mm, footprint_h_mm,
+    total_rotation_deg, total_mm_scale)."""
+    orig_w_mm, orig_h_mm = svg_size_mm(root)
+    orig_w_mm = orig_w_mm or paper_width_mm
+    orig_h_mm = orig_h_mm or paper_height_mm
+
+    # A custom machine bed with auto-rotate forces the paper into a fixed
+    # orientation (see caller); the artwork must turn with it too, or it just
+    # sits undersized/sideways on the swapped page. Add 90 deg whenever the
+    # content's own natural orientation doesn't match the paper's — mirrors
+    # the same decision made client-side for the preview (app.js).
+    auto_rotate_deg = 0.0
+    if machine_custom_enabled and machine_auto_rotate != "off":
+        page_landscape = paper_width_mm > paper_height_mm
+        content_landscape = orig_w_mm > orig_h_mm
+        if page_landscape != content_landscape:
+            auto_rotate_deg = 90.0
+    total_rotation_deg = transform_rotation_deg + auto_rotate_deg
+
+    available_w = max(0.0, paper_width_mm - margin_left_mm - margin_right_mm)
+    available_h = max(0.0, paper_height_mm - margin_top_mm - margin_bottom_mm)
+
+    # fit_content sizes content against its *rotated* bounding box (at the
+    # combined auto + manual rotation), so "Fit to page" keeps the content
+    # within the page at any rotation angle instead of only the unrotated one.
+    rot_rad = math.radians(total_rotation_deg)
+    cos_r, sin_r = abs(math.cos(rot_rad)), abs(math.sin(rot_rad))
+    bbox_w_per_unit = orig_w_mm * cos_r + orig_h_mm * sin_r
+    bbox_h_per_unit = orig_w_mm * sin_r + orig_h_mm * cos_r
+    if fit_content and bbox_w_per_unit > 0 and bbox_h_per_unit > 0 and available_w > 0 and available_h > 0:
+        fit_scale = min(available_w / bbox_w_per_unit, available_h / bbox_h_per_unit)
+    else:
+        fit_scale = 1.0
+
+    total_mm_scale = fit_scale * transform_scale
+    return bbox_w_per_unit * total_mm_scale, bbox_h_per_unit * total_mm_scale, total_rotation_deg, total_mm_scale
+
+
+def content_bounds_mm(
+    svg_path: Path,
+    paper_width_mm: float,
+    paper_height_mm: float,
+    margin_top_mm: float,
+    margin_right_mm: float,
+    margin_bottom_mm: float,
+    margin_left_mm: float,
+    fit_content: bool,
+    transform_scale: float = 1.0,
+    transform_rotation_deg: float = 0.0,
+    transform_offset_x_mm: float = 0.0,
+    transform_offset_y_mm: float = 0.0,
+    machine_custom_enabled: bool = False,
+    machine_auto_rotate: str = "off",
+) -> tuple[float, float, float, float]:
+    """Where the content's bounding box would land on the page (in mm) under
+    transform_to_paper's placement rules, as (left, top, right, bottom) —
+    without writing an output SVG. Used for pre-flight bounds checks, e.g.
+    nudge_origin verifying a nudge won't push content off the page."""
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    footprint_w_mm, footprint_h_mm, _, _ = _content_footprint_mm(
+        root, paper_width_mm, paper_height_mm,
+        margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
+        fit_content, transform_scale, transform_rotation_deg,
+        machine_custom_enabled, machine_auto_rotate,
+    )
+    left = margin_left_mm + transform_offset_x_mm
+    top = margin_top_mm + transform_offset_y_mm
+    return left, top, left + footprint_w_mm, top + footprint_h_mm
+
+
+def ink_bounds_mm(
+    svg_path: Path,
+    layer_indices: list[int],
+    paper_width_mm: float,
+    paper_height_mm: float,
+    margin_top_mm: float,
+    margin_right_mm: float,
+    margin_bottom_mm: float,
+    margin_left_mm: float,
+    fit_content: bool,
+    transform_scale: float = 1.0,
+    transform_rotation_deg: float = 0.0,
+    transform_offset_x_mm: float = 0.0,
+    transform_offset_y_mm: float = 0.0,
+    machine_custom_enabled: bool = False,
+    machine_auto_rotate: str = "off",
+) -> tuple[float, float, float, float] | None:
+    """Where the *actual drawn geometry* of the given layers (not the SVG's
+    document canvas — see content_bounds_mm) would land on the page under
+    transform_to_paper's placement rules, in mm: (left, top, right, bottom).
+    None if there's no geometry to measure (no layers selected, or they're
+    empty of drawable content).
+
+    fit_content's *scale factor* is still driven by the canvas size, exactly
+    like transform_to_paper itself — only the reported extent switches to
+    the ink's true bounding box. That box is measured with vpype (already a
+    dependency — see svg_optimize.py) on a temporary file filtered to just
+    the given layers, then mapped through the same
+    translate/rotate/scale/translate transform_to_paper's <g transform=...>
+    applies, corner by corner, so a rotated design's true footprint (not
+    just its unrotated one) is reported correctly regardless of where the
+    ink sits within its own canvas."""
+    import os
+    import tempfile
+
+    import vpype
+
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    footprint_w_mm, footprint_h_mm, total_rotation_deg, total_mm_scale = _content_footprint_mm(
+        root, paper_width_mm, paper_height_mm,
+        margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
+        fit_content, transform_scale, transform_rotation_deg,
+        machine_custom_enabled, machine_auto_rotate,
+    )
+    orig_w_mm, orig_h_mm = svg_size_mm(root)
+    orig_w_mm = orig_w_mm or paper_width_mm
+    orig_h_mm = orig_h_mm or paper_height_mm
+    vb = root.get("viewBox", "")
+    if vb:
+        parts = vb.split()
+        vb_x, vb_y, vb_w, vb_h = (float(p) for p in parts[:4])
+    else:
+        vb_x, vb_y = 0.0, 0.0
+        vb_w, vb_h = orig_w_mm, orig_h_mm
+    user_scale = total_mm_scale * (orig_w_mm / vb_w) if vb_w else total_mm_scale
+    vb_center_x, vb_center_y = vb_x + vb_w / 2, vb_y + vb_h / 2
+    center_x_mm = margin_left_mm + footprint_w_mm / 2 + transform_offset_x_mm
+    center_y_mm = margin_top_mm + footprint_h_mm / 2 + transform_offset_y_mm
+
+    fd, tmp_name = tempfile.mkstemp(dir=svg_path.parent, suffix=".svg")
+    tmp = Path(tmp_name)
+    os.close(fd)
+    try:
+        filter_to_layers(svg_path, layer_indices, tmp)
+        bounds = vpype.read_multilayer_svg(str(tmp), quantization=0.1).bounds()
+    finally:
+        tmp.unlink(missing_ok=True)
+    if bounds is None:
+        return None
+    xmin, ymin, xmax, ymax = bounds
+
+    rad = math.radians(total_rotation_deg)
+    cos_r, sin_r = math.cos(rad), math.sin(rad)
+
+    def to_page(px: float, py: float) -> tuple[float, float]:
+        dx, dy = (px - vb_center_x) * user_scale, (py - vb_center_y) * user_scale
+        return (
+            center_x_mm + dx * cos_r - dy * sin_r,
+            center_y_mm + dx * sin_r + dy * cos_r,
+        )
+
+    corners = [to_page(x, y) for x in (xmin, xmax) for y in (ymin, ymax)]
+    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def transform_to_paper(
     svg_path: Path,
     out_path: Path,
@@ -131,35 +305,12 @@ def transform_to_paper(
         vb_x, vb_y = 0.0, 0.0
         vb_w, vb_h = orig_w_mm, orig_h_mm
 
-    # A custom machine bed with auto-rotate forces the paper into a fixed
-    # orientation (see caller); the artwork must turn with it too, or it just
-    # sits undersized/sideways on the swapped page. Add 90 deg whenever the
-    # content's own natural orientation doesn't match the paper's — mirrors
-    # the same decision made client-side for the preview (app.js).
-    auto_rotate_deg = 0.0
-    if machine_custom_enabled and machine_auto_rotate != "off":
-        page_landscape = paper_width_mm > paper_height_mm
-        content_landscape = orig_w_mm > orig_h_mm
-        if page_landscape != content_landscape:
-            auto_rotate_deg = 90.0
-    total_rotation_deg = transform_rotation_deg + auto_rotate_deg
-
-    available_w = max(0.0, paper_width_mm - margin_left_mm - margin_right_mm)
-    available_h = max(0.0, paper_height_mm - margin_top_mm - margin_bottom_mm)
-
-    # fit_content sizes content against its *rotated* bounding box (at the
-    # combined auto + manual rotation), so "Fit to page" keeps the content
-    # within the page at any rotation angle instead of only the unrotated one.
-    rot_rad = math.radians(total_rotation_deg)
-    cos_r, sin_r = abs(math.cos(rot_rad)), abs(math.sin(rot_rad))
-    bbox_w_per_unit = orig_w_mm * cos_r + orig_h_mm * sin_r
-    bbox_h_per_unit = orig_w_mm * sin_r + orig_h_mm * cos_r
-    if fit_content and bbox_w_per_unit > 0 and bbox_h_per_unit > 0 and available_w > 0 and available_h > 0:
-        fit_scale = min(available_w / bbox_w_per_unit, available_h / bbox_h_per_unit)
-    else:
-        fit_scale = 1.0
-
-    total_mm_scale = fit_scale * transform_scale
+    footprint_w_mm, footprint_h_mm, total_rotation_deg, total_mm_scale = _content_footprint_mm(
+        root, paper_width_mm, paper_height_mm,
+        margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
+        fit_content, transform_scale, transform_rotation_deg,
+        machine_custom_enabled, machine_auto_rotate,
+    )
     # Source user units -> paper mm.
     user_scale = total_mm_scale * (orig_w_mm / vb_w) if vb_w else total_mm_scale
 
@@ -169,14 +320,13 @@ def transform_to_paper(
     # fit_scale'd size) to the margin box's top-left corner rather than
     # centering it — so a design's own (0,0) lines up with the page's origin
     # by default, whether or not "Fit to page" scaled it down. Using the
-    # rotated bbox (bbox_w_per_unit/bbox_h_per_unit) instead of the raw
-    # orig_w_mm/orig_h_mm matters once total_rotation_deg != 0/180: for
-    # non-square content the rotated footprint is a different size than the
-    # unrotated one, so anchoring off the unrotated size drifts the content
-    # off the page edge. Mirrors offX/offY/cX/cY in updatePreviewTransform()
-    # (app.js).
-    center_x_mm = margin_left_mm + (bbox_w_per_unit * total_mm_scale) / 2 + transform_offset_x_mm
-    center_y_mm = margin_top_mm + (bbox_h_per_unit * total_mm_scale) / 2 + transform_offset_y_mm
+    # rotated footprint instead of the raw orig_w_mm/orig_h_mm matters once
+    # total_rotation_deg != 0/180: for non-square content the rotated
+    # footprint is a different size than the unrotated one, so anchoring off
+    # the unrotated size drifts the content off the page edge. Mirrors
+    # offX/offY/cX/cY in updatePreviewTransform() (app.js).
+    center_x_mm = margin_left_mm + footprint_w_mm / 2 + transform_offset_x_mm
+    center_y_mm = margin_top_mm + footprint_h_mm / 2 + transform_offset_y_mm
     vb_center_x = vb_x + vb_w / 2
     vb_center_y = vb_y + vb_h / 2
 

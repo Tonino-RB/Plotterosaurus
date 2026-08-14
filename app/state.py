@@ -30,7 +30,9 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     # `plotting` is allowed straight from queued/awaiting_optimize/optimizing
     # so the plot worker can skip the `planning` status when the preview is
     # already cached (the plan queue ran ahead of the user's Plot click).
-    "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting"},
+    # "failed" straight from "queued" covers _run_job's pre-flight bounds
+    # check, which can reject a job before optimize/plan ever starts.
+    "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting", "failed"},
     "awaiting_optimize":    {"optimizing", "planning", "plotting", "cancelled", "failed"},
     "optimizing":           {"planning", "plotting", "cancelled", "failed"},
     "planning":             {"plotting", "cancelled"},
@@ -71,6 +73,13 @@ _queue: list[dict] = []
 # whether the on-disk .opt.svg still matches the settings it was produced with.
 _svgs: dict[str, dict] = {}
 _active_id: str | None = None
+# Sticky version of _active_id: sees the same job IDs but never reverts to
+# None when a run ends. Lets the frontend keep showing the delta overlay
+# (see effectiveDeltaForJob in app.js) on the job that was just running —
+# manual_origin_offset/origin_nudge aren't cleared by a cancel either — even
+# across a page reload, when active_id has already gone back to None and
+# there's no client-side memory of what it used to be.
+_last_active_id: str | None = None
 _awaiting_next_job: bool = False
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
@@ -224,6 +233,7 @@ def snapshot() -> dict:
         "queue": [deepcopy(j) for j in _queue],
         "svgs": {k: dict(v) for k, v in _svgs.items()},
         "active_id": _active_id,
+        "last_active_id": _last_active_id,
         "awaiting_next_job": _awaiting_next_job,
         "pause_at_pen_up_pending": _pause_at_pen_up_pending,
         "last_pen_position": dict(_last_pen_position) if _last_pen_position else None,
@@ -287,6 +297,13 @@ def _make_record(data: dict) -> dict:
         "pen_lifts": None,
         "resume_path": None,
         "error": None,
+        # Set alongside "error" only when the job was blocked by a leftover
+        # manual jog (see plot_worker._run_job / _delta_correction_mm): the
+        # exact (dx, dy) nudge that would bring the artwork back onto the
+        # page, so the UI can offer a "nudge back" button instead of forcing
+        # a full return-to-origin. Cleared on requeue.
+        "jog_hint_dx_mm": None,
+        "jog_hint_dy_mm": None,
         **data,
     }
 
@@ -338,8 +355,10 @@ def move_job(job_id: str, new_index: int) -> bool:
 
 
 def set_active(job_id: str | None) -> None:
-    global _active_id
+    global _active_id, _last_active_id
     _active_id = job_id
+    if job_id is not None:
+        _last_active_id = job_id
     _broadcast()
 
 

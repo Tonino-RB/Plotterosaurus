@@ -146,6 +146,7 @@
   "plotinfo.total_dist": "Total distance",
   "plotinfo.pen_lifts": "Pen lifts",
 
+  "card.nudge_back_btn": "Nudge back ({dx}, {dy})",
   "card.layers": "Layers",
   "card.stages": "Stages",
   "card.page": "Page",

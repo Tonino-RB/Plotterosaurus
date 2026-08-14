@@ -1,6 +1,6 @@
 # Plotterosaurus
 
-> **Status: beta (v0.2.0-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
+> **Status: beta (v0.2.12-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
 
 A self-hosted plot server for the iDraw H SE A3 and AxiDraw-class pen plotters. Submit SVGs over the network and the Pi drives the plotter locally via the official AxiDraw Python API, so your workstation doesn't need to stay connected for the duration of the plot.
 
@@ -34,7 +34,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Live pen cursor on the preview (blue while drawing, grey while traveling)
 - UI Pause / Resume / Cancel — cancel returns to origin via `res_home`
 - "Pause at Pen Lift" — a deferred pause that waits for the next pen-up so pump-action pens don't leave a dot mid-stroke
-- Live speed / acceleration / pen-height adjustment while a stage is actively plotting, applied at the next motion checkpoint
+- Live speed / acceleration / pen-height adjustment while a stage is actively plotting, applied at the next motion checkpoint; a speed/acceleration change also recalibrates the remaining-time estimate in the background so the progress bar stays accurate
 - Physical pause button toggles: press to pause, press again to resume
 
 **Calibration & alignment**
@@ -44,6 +44,8 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Fine origin nudge (X/Y, in mm) during a pen-change pause to correct for paper drift between layers — also physically jogs the carriage so you see/feel the correction
 - Manual jog d-pad + "Set Origin Here" to walk the carriage over the paper while idle and capture that position as the default offset for new jobs
 - Manual pen up/down and motor enable/disable, usable any time the plotter isn't actively driving a plot (e.g. to move the carriage by hand)
+- Bounds protection: a nudge, jog, or leftover un-homed jog that would push the artwork's actual ink (not just its canvas) off the page or the carriage past the machine bed edge is rejected up front, with a precise "nudge back by (x, y) mm" correction — surfaced as a one-click button on the job card if it blocks a plot from starting
+- Live preview overlay (red dot + outline) showing exactly where the current jog/nudge places the artwork's origin and footprint on the page, before it's committed
 
 **Plot recording (optional — camera)**
 
@@ -115,7 +117,7 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 
 - `/etc/systemd/system/plotterosaurus.service` — templated from `systemd/plotterosaurus.service` with the invoking user and the repo path
 - `/etc/sudoers.d/plotterosaurus-shutdown` — grants the service user NOPASSWD on `/sbin/shutdown` so the UI's shutdown button works
-- `/etc/systemd/system/mediamtx.service` and `/opt/mediamtx/mediamtx.yml` — installed and enabled only with `ENABLE_CAMERA=1`; the config is templated from MediaMTX's own defaults with the Control API bound to loopback (127.0.0.1:9997) and a single `cam` path added for the Camera Module 3
+- `/etc/systemd/system/mediamtx.service` and `/opt/mediamtx/mediamtx.yml` — installed and enabled only with `ENABLE_CAMERA=1`; the config is templated from MediaMTX's own defaults with the Control API bound to loopback (127.0.0.1:9997) and a single `cam` path added for the Camera Module 3. The unit uses `Restart=always`, so MediaMTX is brought back up a few seconds after any exit — clean or crashed — keeping the camera available without manual intervention
 - `/usr/local/sbin/plotterosaurus-update` and `/etc/sudoers.d/plotterosaurus-update` — root-owned self-update helper and its NOPASSWD sudo rule, installed only with `ENABLE_SELF_UPDATE=1` (off by default — see [Updating](#updating))
 
 ### Assumed already present on Raspberry Pi OS

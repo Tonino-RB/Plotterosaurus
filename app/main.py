@@ -855,7 +855,8 @@ def requeue_job(job_id: str):
                      estimated_total_seconds=None,
                      distance_pendown_m=None,
                      distance_total_m=None,
-                     pen_lifts=None)
+                     pen_lifts=None,
+                     jog_hint_dx_mm=None, jog_hint_dy_mm=None)
     fresh = state.get_job(job_id)
     optimize_queue.enqueue_for_job(fresh)
     plan_queue.enqueue(fresh)

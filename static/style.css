@@ -60,6 +60,7 @@ body > header h1 { margin: 0; font-size: 1.25rem; font-weight: 500; color: var(-
   min-width: 2rem;
 }
 .icon-btn:hover { opacity: 1; }
+.icon-btn:active:not(:disabled) { opacity: 1; background: var(--accent-dark); color: var(--text); border-radius: 4px; }
 .icon-btn[hidden] { display: none; }
 .icon-btn:disabled,
 .icon-btn:disabled:hover {
@@ -176,6 +177,10 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 .job-body { padding: 0 1rem 1rem 1rem; border-top: 1px solid var(--border-soft); }
 
 .job-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   padding: 0.55rem 1rem;
   background: #fee2e2;
   color: #FF4D4D;
@@ -183,6 +188,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
   border-top: 1px solid #fecaca;
 }
 .job-error[hidden] { display: none; }
+.job-error-nudge-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+.job-error-nudge-btn[hidden] { display: none; }
 
 .job-card.readonly .col-form { opacity: 0.6; }
 
@@ -271,6 +282,32 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
   z-index: 10;
 }
 .pen-cursor.pen-down { background: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 2px 4px rgba(0,0,0,0.2); }
+
+/* Delta dot + geometry-footprint square (see renderDeltaOverlay): where the
+   current manual jog / origin nudge places the artwork's origin corner, and
+   its actual on-page footprint from there — same numbers the pre-flight
+   bounds check uses (see _delta_correction_mm), shown before the fact. */
+.delta-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #e5342b;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px #e5342b;
+  pointer-events: none;
+  z-index: 11;
+}
+.delta-dot[hidden] { display: none; }
+.delta-square {
+  position: absolute;
+  border: 1.5px solid #e5342b;
+  pointer-events: none;
+  z-index: 9;
+}
+.delta-square[hidden] { display: none; }
 
 .plot-info {
   margin-top: 0.75rem;
@@ -382,6 +419,7 @@ label.inline-check input[type="checkbox"] { margin: 0; }
 .segmented button:not(:last-child) { border-right: 1px solid var(--border); }
 .segmented button.active { background: var(--accent); color: var(--text); }
 .segmented button:hover:not(.active) { background: var(--surface-alt); }
+.segmented button:active:not(.active) { background: var(--accent-dark); color: var(--text); }
 
 .card-section {
   border: 1px solid var(--border);
@@ -418,6 +456,7 @@ label.inline-check input[type="checkbox"] { margin: 0; }
   border-radius: 4px;
 }
 .card-section-reset:hover { color: var(--text); background: var(--surface-alt); }
+.card-section-reset:active { color: var(--text); background: var(--accent-dark); }
 .card-section-caret {
   display: inline-flex;
   align-items: center;
@@ -460,7 +499,7 @@ label.inline-check input[type="checkbox"] { margin: 0; }
 
 .slider-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 0.65rem 1rem;
 }
 .slider-grid > label {
@@ -582,6 +621,15 @@ button.neutral { background: var(--border); color: var(--text); }
 button.neutral:hover:not(:disabled) { background: var(--border-dark); }
 button.danger { background: #FF4D4D; }
 button.danger:hover:not(:disabled) { background: #CC4D4D; }
+/* Click confirmation: every button flashes the same "Tracer" (Plot button)
+   accent gold on :active, regardless of its own resting/hover color, so a
+   click always reads as "confirmed" the same way across the whole app.
+   Matches each :hover rule's specificity (class + 2 pseudo-classes) so
+   :active correctly wins over :hover while the mouse is still down. */
+button.primary:active:not(:disabled),
+button.secondary:active:not(:disabled),
+button.neutral:active:not(:disabled),
+button.danger:active:not(:disabled) { background: var(--accent-dark); color: var(--text); }
 
 .optimize-options {
   margin-left: 1.4rem;
@@ -621,26 +669,15 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
   border-bottom: 1px solid var(--border);
   font-size: 0.9rem;
 }
-/* Jog/origin and pen/motors always sit side by side (jog sized to its own
-   compact content, motors taking the rest of the row); recording spans the
-   full width of both, underneath, so its status text has room while
-   recording. Fixed across every viewport, including phone. */
+/* Jog/origin and pen/motors sit in one line, unconditionally — same layout
+   at every viewport width, no breakpoint. Recording spans the full width of
+   both, underneath, on its own row. */
 .controls-columns {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.75rem;
 }
 #camera-controls { grid-column: 1 / -1; }
-
-/* On large screens, all three cards fit in one line: recording rejoins the
-   row instead of spanning underneath, and the motors column is capped at a
-   width that still fits its 4 buttons in one line (rather than stretching
-   edge-to-edge across all the leftover space) and centered in the row. */
-@media (min-width: 900px) {
-  .controls-columns { grid-template-columns: auto 1fr auto; }
-  #camera-controls { grid-column: auto; }
-  #pen-controls { max-width: 700px; justify-self: center; }
-}
 .control-col {
   display: flex;
   flex-wrap: wrap;
@@ -720,8 +757,13 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
   transition: background-color 0.2s ease;
 }
 .jog-action-btn:hover:not(:disabled) { background: var(--border-dark); }
+.jog-action-btn:active:not(:disabled) { background: var(--accent-dark); color: var(--text); }
 .jog-action-btn.jog-flash-ok { background: #4C8C4A; color: #fff; }
-.jog-action-btn.jog-flash-err { background: #FF4D4D; color: #fff; }
+@keyframes jog-flash-err-blink {
+  0%, 49% { background: #FF4D4D; color: #fff; }
+  50%, 100% { background: var(--border); color: var(--text); }
+}
+.jog-action-btn.jog-flash-err-blink { animation: jog-flash-err-blink 0.4s steps(1, end) 2; }
 
 .jog-home-btn { padding: 0.3rem 0.5rem; }
 
@@ -779,6 +821,7 @@ button.danger:hover:not(:disabled) { background: #CC4D4D; }
 .nudge-readout { min-width: 3.5em; text-align: center; font-variant-numeric: tabular-nums; }
 .nudge-btn { padding: 0.25rem 0.5rem; background: var(--border); border: 0; border-radius: 4px; cursor: pointer; }
 .nudge-btn:hover { background: var(--border-dark); }
+.nudge-btn:active { background: var(--accent-dark); color: var(--text); }
 
 .calibration-file-row {
   display: flex;

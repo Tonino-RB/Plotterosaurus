@@ -50,6 +50,14 @@ _worker_lock = threading.Lock()
 _live_settings_lock = threading.Lock()
 _pending_live_settings: dict | None = None
 
+# Coalesces background estimated_total_seconds recomputes triggered by live
+# speed/acceleration changes (see set_live_plot_settings /
+# _recompute_live_estimate) — each request bumps the token, so a superseded
+# recompute notices before (or after) running its slow preview subprocess and
+# drops its result instead of overwriting a newer one.
+_live_estimate_lock = threading.Lock()
+_live_estimate_token = 0
+
 _poll_thread: threading.Thread | None = None
 _stop_polling = threading.Event()
 _BUTTON_POLL_INTERVAL_S = 0.3
@@ -577,6 +585,71 @@ def continue_next() -> None:
     raise RuntimeError("Nothing to continue")
 
 
+def _delta_correction_mm(job: dict, svg_path: Path,
+                         dx_mm: float, dy_mm: float) -> tuple[float, float] | None:
+    """How far a delta on top of the job's own placement (a manual jog and/or
+    an origin nudge) needs to move, on top of what it already is, so it's no
+    *worse* than the job's own placement alone (delta = 0). Returns
+    (correction_dx, correction_dy) — add these to the current delta — or
+    None if the delta isn't making things worse than the design's own
+    baseline already was.
+
+    The job's own transform (offset/scale/rotation/fit_content) is the fixed
+    baseline and is *never* itself the reason to block: content placed
+    partly (or entirely) off the page by the design's own settings is a
+    deliberate choice, visible in the preview — pyaxidraw just clips it at
+    plot time, same as always. Only a delta that pushes the placement
+    *further* off the page than that baseline already was is worth stopping
+    for, since the delta itself is invisible in the preview (a manual jog
+    moves the physical carriage; an origin nudge is dialed in blind between
+    layers) — the user has no way to see it coming. Comparing against the
+    baseline's own overflow (rather than demanding a perfect fit) is what
+    keeps an already off-page design from being blocked by a zero, or even a
+    corrective, delta.
+
+    Measures the *actual drawn geometry* of the job's selected layers (see
+    svg_utils.ink_bounds_mm), not the SVG document's canvas size — a design
+    is commonly much smaller than its own canvas, and checking against the
+    canvas left zero slack for perfectly reasonable jogs/nudges on any
+    design that happens to fill its canvas edge-to-edge. Uses the
+    *un-optimized* source SVG: optimize_svg only simplifies paths, it never
+    changes the actual drawn extent in any way that would matter here."""
+    layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
+    ink_bounds = svg_utils.ink_bounds_mm(
+        svg_path, layer_indices,
+        job["paper_width_mm"], job["paper_height_mm"],
+        job["margin_top_mm"], job["margin_right_mm"],
+        job["margin_bottom_mm"], job["margin_left_mm"],
+        job["fit_content"],
+        transform_scale=job.get("transform_scale", 1.0),
+        transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
+        transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+        transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+        machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+    )
+    if ink_bounds is None:
+        return None  # nothing drawable selected — nothing to protect
+    base_left, base_top, base_right, base_bottom = ink_bounds
+
+    def axis_correction(base_min: float, base_max: float, page_max: float, delta: float) -> float:
+        base_neg = max(0.0, -base_min)
+        base_pos = max(0.0, base_max - page_max)
+        cur_neg = max(0.0, -(base_min + delta))
+        cur_pos = max(0.0, (base_max + delta) - page_max)
+        if cur_neg > base_neg + 1e-6:
+            return (-base_min - base_neg) - delta
+        if cur_pos > base_pos + 1e-6:
+            return (page_max + base_pos - base_max) - delta
+        return 0.0
+
+    corr_x = axis_correction(base_left, base_right, job["paper_width_mm"], dx_mm)
+    corr_y = axis_correction(base_top, base_bottom, job["paper_height_mm"], dy_mm)
+    if corr_x == 0.0 and corr_y == 0.0:
+        return None
+    return corr_x, corr_y
+
+
 def nudge_origin(dx_mm: float, dy_mm: float) -> None:
     """Shift the origin of the remaining (not-yet-plotted) stages by a small
     delta, to compensate for paper drift between layers during a pen-change
@@ -587,16 +660,38 @@ def nudge_origin(dx_mm: float, dy_mm: float) -> None:
 
     Also physically jogs the carriage by the same delta (pen-up, relative),
     the same way manual_pen/manual_motors do, so the user sees/feels the
-    correction against the paper before continuing."""
+    correction against the paper before continuing.
+
+    Rejected outright — nothing is moved or stored — if the resulting delta
+    would push the paper past the machine bed's physical travel limits, or
+    the content's bounding box past the page edge."""
     job = state.active_job()
     if job is None or job["status"] != "awaiting_pen_change":
         raise RuntimeError("Origin nudge only available at a pen-change pause")
     if _current_ad is not None:
         raise RuntimeError("Plotter busy")
     x, y = state.origin_nudge()
-    bound = max(job.get("paper_width_mm", 0), job.get("paper_height_mm", 0), 1.0)
-    x = max(-bound, min(bound, x + dx_mm))
-    y = max(-bound, min(bound, y + dy_mm))
+    new_x, new_y = x + dx_mm, y + dy_mm
+    # AxiDraw has no negative travel range — a move toward negative
+    # coordinates is silently clipped rather than actually moving (see the
+    # connect()/ad.move() comment below) — so the paper's origin corner
+    # itself must stay within the bed's [0, machine_width] x
+    # [0, machine_height] travel envelope. Overshoot on the *far* side is
+    # comparatively benign (pyaxidraw clips it, same as artwork that runs
+    # past the page edge — see _delta_correction_mm), so this only guards
+    # the bed's own outer extent, not the paper size on top of it.
+    if new_x < 0 or new_x > config.MACHINE_WIDTH_MM or new_y < 0 or new_y > config.MACHINE_HEIGHT_MM:
+        raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
+    x, y = new_x, new_y
+
+    svg_path = _uploads() / f"{job['svg_id']}.svg"
+    correction = _delta_correction_mm(job, svg_path, x, y)
+    if correction is not None:
+        cx, cy = correction
+        raise RuntimeError(
+            f"Nudge rejected: would push the artwork off the page. Nudge back by "
+            f"({cx:+.1f}, {cy:+.1f}) mm to bring it back onto the page."
+        )
     state.set_origin_nudge(x, y)
 
     ad = axidraw.AxiDraw()
@@ -634,16 +729,38 @@ def manual_jog(dx_mm: float, dy_mm: float) -> None:
     nudge_origin, which corrects an active job's remaining stages mid-plot,
     this has no job to apply to; it just walks the carriage and accumulates
     the net displacement in session state so manual_jog_home knows how far
-    to walk back."""
+    to walk back.
+
+    Rejected outright — nothing is moved or stored — if it would push the
+    paper past the machine bed's physical travel limits.
+
+    Deliberately doesn't also check the next queued job's artwork bounds the
+    way nudge_origin does: this is a free physical-alignment tool (walking
+    the pen to a mark on the actual paper), and most designs are plotted
+    edge-to-edge, leaving zero slack for *any* jog — checking content bounds
+    here would make the tool unusable for exactly the common case it exists
+    for. _run_job's pre-flight check is the real backstop: it catches a
+    leftover jog that's actually a problem right before a plot starts,
+    with a precise correction and a one-click fix in the UI."""
     if state.snapshot()["status"] != "idle":
         raise RuntimeError("Manual jog only available while idle")
     if _current_ad is not None:
         raise RuntimeError("Plotter busy")
-    if abs(dx_mm) > config.MACHINE_WIDTH_MM or abs(dy_mm) > config.MACHINE_HEIGHT_MM:
-        raise RuntimeError("Jog distance exceeds the machine bed size")
     x, y = state.manual_origin_offset()
-    x = max(-config.MACHINE_WIDTH_MM, min(config.MACHINE_WIDTH_MM, x + dx_mm))
-    y = max(-config.MACHINE_HEIGHT_MM, min(config.MACHINE_HEIGHT_MM, y + dy_mm))
+    new_x, new_y = x + dx_mm, y + dy_mm
+
+    # AxiDraw has no negative travel range — a move toward negative
+    # coordinates is silently clipped rather than actually moving (see
+    # manual_jog's ad.move() comment below) — so the paper's origin corner
+    # itself must stay within the bed's [0, machine_width] x
+    # [0, machine_height] travel envelope. Overshoot on the *far* side is
+    # comparatively benign (pyaxidraw clips it, same as artwork that runs
+    # past the page edge — see _delta_correction_mm), so this only guards
+    # the bed's own outer extent, not the paper size on top of it.
+    if new_x < 0 or new_x > config.MACHINE_WIDTH_MM or new_y < 0 or new_y > config.MACHINE_HEIGHT_MM:
+        raise RuntimeError("Jog rejected: would move past the machine bed edge.")
+    x, y = new_x, new_y
+
     state.set_manual_origin_offset(x, y)
 
     ad = axidraw.AxiDraw()
@@ -754,6 +871,69 @@ def set_live_plot_settings(speed_pendown: int | None = None, speed_penup: int | 
     with _live_settings_lock:
         _pending_live_settings = {**(_pending_live_settings or {}), **updates}
     state.update_job(job["job_id"], **updates)
+
+    if any(k in updates for k in ("speed_pendown", "speed_penup", "acceleration")):
+        _schedule_live_estimate_recompute(job["job_id"])
+
+
+def _schedule_live_estimate_recompute(job_id: str) -> None:
+    """Kick off a background re-estimate after a live speed/acceleration
+    change. Pen height alone never reaches here — preview_runner.py doesn't
+    take pen height as input, so it can't move the estimate."""
+    global _live_estimate_token
+    with _live_estimate_lock:
+        _live_estimate_token += 1
+        token = _live_estimate_token
+    threading.Thread(target=_recompute_live_estimate, args=(job_id, token), daemon=True).start()
+
+
+def _recompute_live_estimate(job_id: str, token: int) -> None:
+    """Re-run the full-document preview under the job's now-current speed/
+    acceleration and recalibrate estimated_total_seconds so the sticky
+    progress bar / remaining-time readout (see startSharedElapsed in
+    app.js) reflect the new pace — without touching plotting_started_at, so
+    the elapsed clock itself keeps running uninterrupted.
+
+    The recompute re-estimates the whole document from scratch, which would
+    on its own throw away however much has already been plotted under the
+    old (slower/faster) settings. To avoid that, the fraction of the OLD
+    estimate already elapsed is treated as the fraction of the job that's
+    behind us, and only the remaining fraction is rescaled to the new total.
+
+    Coalesced via _live_estimate_token: a superseded request (an even newer
+    live-setting change landed) drops its result rather than clobbering one
+    that's more current, checked both before the slow preview subprocess
+    runs and after.
+    """
+    trigger_time = time.time()
+    job = state.get_job(job_id)
+    if job is None:
+        return
+    old_estimate = job.get("estimated_total_seconds")
+    started_at = job.get("plotting_started_at")
+    if not old_estimate or not started_at:
+        return
+
+    with _live_estimate_lock:
+        if token != _live_estimate_token:
+            return
+
+    svg_path = _effective_svg_path(job)
+    estimate = compute_preview(job, svg_path)
+
+    with _live_estimate_lock:
+        if token != _live_estimate_token:
+            return
+    if not estimate:
+        return
+
+    job = state.get_job(job_id)
+    if job is None or job.get("status") != "plotting" or job.get("plotting_started_at") != started_at:
+        return  # job finished, paused, or moved on while we were computing
+
+    progress_frac = min(1.0, max(0.0, trigger_time - started_at) / old_estimate)
+    remaining = max(0.0, (1 - progress_frac) * estimate["estimated_total_seconds"])
+    state.update_job(job_id, estimated_total_seconds=(time.time() - started_at) + remaining)
 
 
 def trigger_calibration() -> None:
@@ -1206,6 +1386,26 @@ def _run_job(job_id: str) -> None:
         }]
 
     svg_path = _uploads() / f"{job['svg_id']}.svg"
+
+    # Pre-flight check: refuse to touch hardware if a leftover manual jog
+    # (see manual_jog) pushes the artwork off the page. AxiDraw has no
+    # hardware home switches, so wherever the carriage physically sits when a
+    # plot starts becomes its new logical (0, 0) — an un-homed manual jog is
+    # a real, invisible-in-preview physical origin shift, unlike the job's
+    # own offset/scale/rotation/fit-to-page, which the preview already shows
+    # and which pyaxidraw clips at plot time same as always if it runs past
+    # the edge — that's a deliberate crop, not blocked here (see
+    # _delta_correction_mm).
+    manual_x, manual_y = state.manual_origin_offset()
+    correction = _delta_correction_mm(job, svg_path, manual_x, manual_y)
+    if correction is not None:
+        cx, cy = correction
+        state.update_job(job_id, status="failed",
+                         error=f"A leftover manual jog puts the artwork off the page. "
+                               f"Nudge back by ({cx:+.1f}, {cy:+.1f}) mm to bring it "
+                               "onto the page, then plot again.",
+                         jog_hint_dx_mm=cx, jog_hint_dy_mm=cy)
+        return
 
     optimized = _run_optimize_phase(job_id, svg_path, stages)
     if optimized is None:
