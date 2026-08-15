@@ -70,9 +70,6 @@
   "settings.localization.title": "言語と単位",
   "settings.language.title": "言語",
   "settings.language.label": "言語",
-  "settings.plotter_model.title": "プロッターモデル",
-  "settings.plotter_model.label": "モデル",
-  "settings.plotter_model.note": "これは用紙サイズではなく、お使いの AxiDraw ハードウェアに合わせてください。",
   "settings.display.title": "表示",
   "settings.display.unit_label": "長さの単位",
   "settings.display.unit_mm": "ミリメートル (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "ペンが 0,0 の角より上または左に移動するため、描画の一部が用紙からはみ出す可能性があります。その方向にキャリッジの可動域が残っているか確認してください。",
   "origin.below_confirm": "そのまま移動",
   "apierror.jog_below_origin": "この移動は原点より上または左に出てしまいます。",
-  "apierror.nudge_below_origin": "この微調整は原点より上または左に出てしまいます。"
+  "apierror.nudge_below_origin": "この微調整は原点より上または左に出てしまいます。",
+
+  "settings.machine.title": "マシン",
+  "settings.machine.active_label": "使用中のマシン",
+  "settings.machine.name_label": "名前",
+  "settings.machine.name_placeholder": "マイプロッター",
+  "settings.machine.add": "追加",
+  "settings.machine.delete": "削除",
+  "settings.machine.new_name": "新しいマシン",
+  "settings.machine.unnamed": "名称未設定のマシン",
+  "settings.machine.auto_rotate_label": "用紙の自動回転",
+  "settings.machine.auto_rotate_off": "オフ",
+  "settings.machine.note": "ペンが実際に届く範囲を測ってください。ここでは可動範囲がマシンそのもので、そこを超えた部分はプロット時に切り取られます。プリセットは出発点にすぎません。名前の変更、サイズ変更、削除は自由です。"
 }

@@ -192,40 +192,36 @@
         </div>
       </section>
 
-      <section class="card-section" data-section="plotter-model">
+      <section class="card-section" data-section="machine">
         <header class="card-section-head">
-          <span class="card-section-title" data-i18n="settings.plotter_model.title">Plotter Model</span>
+          <span class="card-section-title" data-i18n="settings.machine.title">Machine</span>
           <span class="card-section-caret" aria-hidden="true">▼</span>
         </header>
         <div class="card-section-body">
+          <div class="machine-picker">
+            <label class="field">
+              <span class="field-label" data-i18n="settings.machine.active_label">Machine in use</span>
+              <select id="settings-machine-select"></select>
+            </label>
+            <div class="machine-picker-actions">
+              <button type="button" id="settings-machine-add" class="neutral" data-i18n="settings.machine.add">Add</button>
+              <button type="button" id="settings-machine-delete" class="neutral" data-i18n="settings.machine.delete">Delete</button>
+            </div>
+          </div>
           <label class="field">
-            <span class="field-label" data-i18n="settings.plotter_model.label">Model</span>
-            <select id="settings-plotter-model">
-              <option value="1">1 — AxiDraw V2 / V3 / SE A4 (215 × 279 mm)</option>
-              <option value="2">2 — AxiDraw SE A3 / iDraw H SE A3 (430 × 297 mm)</option>
-              <option value="3">3 — AxiDraw V3 XLX (595 × 218 mm)</option>
-              <option value="4">4 — AxiDraw MiniKit (150 × 210 mm)</option>
-              <option value="5">5 — AxiDraw SE A1 (842 × 594 mm)</option>
-              <option value="6">6 — AxiDraw SE A2 (594 × 420 mm)</option>
-              <option value="7">7 — AxiDraw V3 B6 (150 × 105 mm)</option>
-              <option value="8">8 — AxiDraw V3 Wide (390 × 218 mm)</option>
-            </select>
+            <span class="field-label" data-i18n="settings.machine.name_label">Name</span>
+            <input type="text" id="settings-machine-name" maxlength="60" data-i18n-placeholder="settings.machine.name_placeholder" placeholder="My plotter" />
           </label>
-          <p class="muted" data-i18n="settings.plotter_model.note">Match this to your AxiDraw hardware — not your paper size.</p>
-          <label class="inline-check">
-            <input type="checkbox" id="settings-machine-custom-enabled" />
-            <span data-i18n="settings.machine.custom_label">Use a custom bed size (also clips the plotter's real travel to this area, never beyond the hardware's own limits)</span>
-          </label>
-          <div id="settings-machine-custom-fields" class="form-row" hidden>
+          <div class="form-row">
             <label class="field">
               <span class="field-label" data-i18n="card.width_mm">Width (mm)</span>
-              <input type="number" id="settings-machine-width" min="10" step="0.1" value="297" />
+              <input type="number" id="settings-machine-width" min="1" step="0.1" value="430" />
             </label>
             <label class="field">
               <span class="field-label" data-i18n="card.height_mm">Height (mm)</span>
-              <input type="number" id="settings-machine-height" min="10" step="0.1" value="420" />
+              <input type="number" id="settings-machine-height" min="1" step="0.1" value="297" />
             </label>
-            <div class="field">
+            <div class="field machine-rotate-field">
               <span class="field-label" data-i18n="settings.machine.auto_rotate_label">Auto-rotate paper to</span>
               <div class="segmented" id="settings-machine-auto-rotate">
                 <button type="button" data-val="off" class="active" data-i18n="settings.machine.auto_rotate_off">Off</button>
@@ -234,6 +230,7 @@
               </div>
             </div>
           </div>
+          <p class="muted" data-i18n="settings.machine.note">Measure what the pen can actually reach — the bed is the whole machine here, and anything past it is clipped at plot time. The presets are only starting points: rename, resize or delete any of them.</p>
         </div>
       </section>
 

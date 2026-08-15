@@ -75,9 +75,6 @@
   "settings.localization.title": "Taal & eenheden",
   "settings.language.title": "Taal",
   "settings.language.label": "Taal",
-  "settings.plotter_model.title": "Plottermodel",
-  "settings.plotter_model.label": "Model",
-  "settings.plotter_model.note": "Stem dit af op je AxiDraw-hardware — niet op je papierformaat.",
   "settings.display.title": "Weergave",
   "settings.display.unit_label": "Lengte-eenheid",
   "settings.display.unit_mm": "Millimeter (mm)",
@@ -244,5 +241,17 @@
   "origin.below_note": "Hiermee komt de pen boven of links van de hoek 0,0 te staan, dus een deel van de plot kan naast het papier vallen. Controleer of de slede die kant op nog ruimte heeft.",
   "origin.below_confirm": "Toch bewegen",
   "apierror.jog_below_origin": "Deze beweging zou boven of links van de oorsprong uitkomen.",
-  "apierror.nudge_below_origin": "Deze bijstelling zou boven of links van de oorsprong uitkomen."
+  "apierror.nudge_below_origin": "Deze bijstelling zou boven of links van de oorsprong uitkomen.",
+
+  "settings.machine.title": "Machine",
+  "settings.machine.active_label": "Gebruikte machine",
+  "settings.machine.name_label": "Naam",
+  "settings.machine.name_placeholder": "Mijn plotter",
+  "settings.machine.add": "Toevoegen",
+  "settings.machine.delete": "Verwijderen",
+  "settings.machine.new_name": "Nieuwe machine",
+  "settings.machine.unnamed": "Naamloze machine",
+  "settings.machine.auto_rotate_label": "Papier automatisch draaien naar",
+  "settings.machine.auto_rotate_off": "Uit",
+  "settings.machine.note": "Meet wat de pen echt kan bereiken — het bed is hier de hele machine, en alles daarbuiten wordt bij het plotten afgesneden. De presets zijn alleen een startpunt: je kunt ze hernoemen, aanpassen of verwijderen."
 }

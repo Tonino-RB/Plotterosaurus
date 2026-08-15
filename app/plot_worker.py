@@ -8,7 +8,6 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from axidrawinternal import axidraw_conf
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
@@ -250,9 +249,12 @@ def _stop_button_poll() -> None:
 
 # pyaxidraw wrappers -------------------------------------------------------
 
-# Maps PLOTTER_MODEL to the axidrawinternal.axidraw_conf attribute pair its
-# driver reads for real travel bounds (see AxiDraw.update_options()). Models
-# not listed (1, 8, and anything unrecognized) fall back to x/y_travel_default.
+# Maps PLOTTER_MODEL to the ad.params attribute pair the driver reads for
+# real travel bounds (see AxiDraw.update_options()). Models not listed (1, 8,
+# and anything unrecognized) fall back to x/y_travel_default. Only used to
+# find the slot _apply_bed_size overwrites with the active machine's bed —
+# which is also why the model number itself has no effect on a plot: whichever
+# slot it selects is the one that gets replaced.
 _MODEL_TRAVEL_PARAMS = {
     2: ("x_travel_V3A3", "y_travel_V3A3"),
     3: ("x_travel_V3XLX", "y_travel_V3XLX"),
@@ -264,31 +266,25 @@ _MODEL_TRAVEL_PARAMS = {
 
 
 def machine_bounds_mm() -> tuple[float, float]:
-    """The working area the carriage can actually reach, in mm.
+    """The working area the carriage can actually reach, in mm: the active
+    machine profile's bed, taken at face value.
 
-    A configured custom bed profile is taken at face value, in both
-    directions. The stock AxiDraw models are all landscape (the long axis is
-    X), so clamping a custom profile down to the selected model's travel
-    silently amputates any machine built to a different shape — a portrait
-    build with a tall Y axis ends up cut off at the model's short one, and
-    everything past that is dropped at plot time with nothing but the
-    paper-too-big warning to explain it. The model dropdown is a stand-in for
-    the machine only while the custom profile is switched off; once it's on,
-    the profile is the more specific answer and the one to believe. That does
-    mean an over-stated profile lets the carriage be driven into its end
-    stops — the number describes the user's own machine, so it's theirs to
-    get right.
+    The profile is believed in both directions, including past the travel of
+    whichever AxiDraw model happens to be configured. Every stock AxiDraw is
+    landscape — the long axis is X — so measuring a machine against the model
+    table amputates any build of a different shape: a portrait machine gets
+    cut off at the model's short axis, and everything past it is dropped at
+    plot time with nothing but the paper-too-big warning to explain why. The
+    profile describes the user's own machine, so an over-stated bed lets the
+    carriage be driven into its end stops; that number is theirs to get right,
+    and no table can second-guess it.
 
     This is the single answer every bounds question has to use: the driver's
     clip limits (_apply_bed_size), the jog/nudge guards, and the card's
     paper-too-big warning.
     """
-    if config.MACHINE_CUSTOM_ENABLED:
-        return config.MACHINE_WIDTH_MM, config.MACHINE_HEIGHT_MM
-    x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
-        config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
-    return (getattr(axidraw_conf, x_attr) * 25.4,
-            getattr(axidraw_conf, y_attr) * 25.4)
+    machine = config.active_machine()
+    return machine["width_mm"], machine["height_mm"]
 
 
 def _apply_bed_size(ad: axidraw.AxiDraw) -> None:

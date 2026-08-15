@@ -70,9 +70,6 @@
   "settings.localization.title": "Idioma e Unidades",
   "settings.language.title": "Idioma",
   "settings.language.label": "Idioma",
-  "settings.plotter_model.title": "Modelo do Plotter",
-  "settings.plotter_model.label": "Modelo",
-  "settings.plotter_model.note": "Faz corresponder isto ao teu hardware AxiDraw — não ao tamanho do papel.",
   "settings.display.title": "Visualização",
   "settings.display.unit_label": "Unidade de Comprimento",
   "settings.display.unit_mm": "Milímetros (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "Isto deixa a caneta acima ou à esquerda do canto 0,0, por isso parte do desenho pode ficar fora do papel. Confirma que o carro ainda tem curso nessa direção.",
   "origin.below_confirm": "Mover mesmo assim",
   "apierror.jog_below_origin": "Esse movimento iria para cima ou para a esquerda da origem.",
-  "apierror.nudge_below_origin": "Esse ajuste iria para cima ou para a esquerda da origem."
+  "apierror.nudge_below_origin": "Esse ajuste iria para cima ou para a esquerda da origem.",
+
+  "settings.machine.title": "Máquina",
+  "settings.machine.active_label": "Máquina em uso",
+  "settings.machine.name_label": "Nome",
+  "settings.machine.name_placeholder": "O meu plotter",
+  "settings.machine.add": "Adicionar",
+  "settings.machine.delete": "Eliminar",
+  "settings.machine.new_name": "Nova máquina",
+  "settings.machine.unnamed": "Máquina sem nome",
+  "settings.machine.auto_rotate_label": "Rodar o papel automaticamente para",
+  "settings.machine.auto_rotate_off": "Desligado",
+  "settings.machine.note": "Mede o que a caneta alcança mesmo — aqui a área é a máquina toda, e o que ficar para lá disso é cortado ao traçar. As predefinições são só um ponto de partida: podes renomear, redimensionar ou eliminar qualquer uma."
 }

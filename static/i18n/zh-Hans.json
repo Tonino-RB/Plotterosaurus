@@ -70,9 +70,6 @@
   "settings.localization.title": "语言与单位",
   "settings.language.title": "语言",
   "settings.language.label": "语言",
-  "settings.plotter_model.title": "绘图机型号",
-  "settings.plotter_model.label": "型号",
-  "settings.plotter_model.note": "请与你的 AxiDraw 硬件匹配，而不是纸张尺寸。",
   "settings.display.title": "显示",
   "settings.display.unit_label": "长度单位",
   "settings.display.unit_mm": "毫米 (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "这会让笔停在 0,0 角的上方或左侧，部分图形可能会落到纸张外面。请确认滑车在这个方向还有行程。",
   "origin.below_confirm": "仍然移动",
   "apierror.jog_below_origin": "该移动会超出原点上方或左侧。",
-  "apierror.nudge_below_origin": "该微调会超出原点上方或左侧。"
+  "apierror.nudge_below_origin": "该微调会超出原点上方或左侧。",
+
+  "settings.machine.title": "机器",
+  "settings.machine.active_label": "当前机器",
+  "settings.machine.name_label": "名称",
+  "settings.machine.name_placeholder": "我的绘图机",
+  "settings.machine.add": "添加",
+  "settings.machine.delete": "删除",
+  "settings.machine.new_name": "新机器",
+  "settings.machine.unnamed": "未命名机器",
+  "settings.machine.auto_rotate_label": "自动旋转纸张为",
+  "settings.machine.auto_rotate_off": "关闭",
+  "settings.machine.note": "量一下笔实际能到达的范围——这里的工作区就是整台机器，超出的部分会在绘制时被裁掉。预设只是起点：可以随意重命名、改尺寸或删除。"
 }

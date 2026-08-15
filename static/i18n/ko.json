@@ -70,9 +70,6 @@
   "settings.localization.title": "언어 및 단위",
   "settings.language.title": "언어",
   "settings.language.label": "언어",
-  "settings.plotter_model.title": "플로터 모델",
-  "settings.plotter_model.label": "모델",
-  "settings.plotter_model.note": "용지 크기가 아니라 사용 중인 AxiDraw 하드웨어에 맞추세요.",
   "settings.display.title": "표시",
   "settings.display.unit_label": "길이 단위",
   "settings.display.unit_mm": "밀리미터 (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "펜이 0,0 모서리보다 위쪽 또는 왼쪽으로 가기 때문에 그림 일부가 종이 밖으로 나갈 수 있어요. 그 방향으로 캐리지가 움직일 여유가 있는지 확인하세요.",
   "origin.below_confirm": "그래도 이동",
   "apierror.jog_below_origin": "이 이동은 원점보다 위쪽 또는 왼쪽으로 벗어나요.",
-  "apierror.nudge_below_origin": "이 미세 조정은 원점보다 위쪽 또는 왼쪽으로 벗어나요."
+  "apierror.nudge_below_origin": "이 미세 조정은 원점보다 위쪽 또는 왼쪽으로 벗어나요.",
+
+  "settings.machine.title": "장비",
+  "settings.machine.active_label": "사용 중인 장비",
+  "settings.machine.name_label": "이름",
+  "settings.machine.name_placeholder": "내 플로터",
+  "settings.machine.add": "추가",
+  "settings.machine.delete": "삭제",
+  "settings.machine.new_name": "새 장비",
+  "settings.machine.unnamed": "이름 없는 장비",
+  "settings.machine.auto_rotate_label": "용지 자동 회전",
+  "settings.machine.auto_rotate_off": "끄기",
+  "settings.machine.note": "펜이 실제로 닿는 범위를 재보세요. 여기서는 작업 영역이 곧 장비이고, 그 밖으로 나간 부분은 플로팅할 때 잘려요. 프리셋은 시작점일 뿐이니 이름 변경, 크기 조정, 삭제 모두 가능해요."
 }

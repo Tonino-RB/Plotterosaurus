@@ -1,3 +1,4 @@
+import itertools
 import math
 import re
 
@@ -11,6 +12,9 @@ NS = {"svg": SVG_NS, "inkscape": INKSCAPE_NS}
 LAYER_TAG = f"{{{SVG_NS}}}g"
 GROUPMODE_ATTR = f"{{{INKSCAPE_NS}}}groupmode"
 LABEL_ATTR = f"{{{INKSCAPE_NS}}}label"
+
+# Label given to the layer that collects content found outside any layer.
+LAYERLESS_LABEL = "Layerless elements"
 
 
 PX_PER_MM = 96.0 / 25.4
@@ -110,6 +114,91 @@ def parse_layers(svg_path: Path) -> dict:
     }
 
 
+_DIGIT_GROUP_RE = re.compile(r"\d+")
+
+
+def _vpype_layer_id(label: str, elem_id: str, order: int) -> int:
+    """The layer id vpype will give a top-level group, replicated from
+    ``vpype.io.read_multilayer_svg``: the first contiguous group of digits in
+    the ``inkscape:label``, else in the ``id``, else the group's 1-based
+    appearance order. An id of 0 is bumped to 1."""
+    m = _DIGIT_GROUP_RE.search(label) or _DIGIT_GROUP_RE.search(elem_id)
+    if m is None:
+        return order
+    return int(m.group()) or 1
+
+
+def normalize_layer_structure(svg_path: Path) -> bool:
+    """Rewrite ``svg_path`` in place so every drawable top-level element is
+    addressable as a layer and no two layers collapse into one inside vpype.
+    Returns True if anything was changed.
+
+    Fixes two failure modes, both of them silent before this ran:
+
+    - Content outside any layer. Only ``inkscape:groupmode="layer"`` groups
+      count as layers, so a loose <path>, or the plain <g> groups written by
+      producers other than Inkscape, had no layer index at all: not listable,
+      not selectable, no pen or speed of its own, just force-fed into the
+      first stage (see _top_level_orphans and filter_to_layers). Plain groups
+      are promoted in place — they are layers in every sense but the attribute
+      their producer didn't write — and whatever is left over is collected
+      into one LAYERLESS_LABEL layer at the position it was found.
+
+    - Labels that map to the same vpype layer id. vpype takes that id from the
+      first digit group of the label (see _vpype_layer_id), so "Contours"
+      (no digits, so its position: 1) and "Layer 1" both resolve to 1 and get
+      merged into a single layer by "Optimize SVG". reconcile_layers restores
+      the layer *count* afterwards, but by then the geometry has been folded
+      into the wrong layer: one plots nothing, the other plots twice. Colliding
+      layers get a free id prefixed onto their label, which wins because vpype
+      reads the first digit group.
+    """
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    changed = False
+
+    for pos, el in enumerate([e for e in root if e.tag == LAYER_TAG], start=1):
+        if el.get(GROUPMODE_ATTR) == "layer":
+            continue
+        el.set(GROUPMODE_ATTR, "layer")
+        if not el.get(LABEL_ATTR):
+            el.set(LABEL_ATTR, el.get("id") or f"Layer {pos}")
+        changed = True
+
+    orphans = _top_level_orphans(root)
+    if orphans:
+        wrapper = etree.Element(LAYER_TAG)
+        wrapper.set(GROUPMODE_ATTR, "layer")
+        wrapper.set(LABEL_ATTR, LAYERLESS_LABEL)
+        root.insert(root.index(orphans[0]), wrapper)
+        for el in orphans:
+            wrapper.append(el)
+        changed = True
+
+    # Resolve id collisions in two passes: every layer that claims an id first
+    # keeps it, so the replacement ids handed out below can't collide with a
+    # later layer's own id.
+    layers = _top_level_layers(root)
+    ids = [_vpype_layer_id(g.get(LABEL_ATTR) or "", g.get("id") or "", order)
+           for order, g in enumerate(layers, start=1)]
+    taken: set[int] = set()
+    clashing = []
+    for g, lid in zip(layers, ids):
+        if lid in taken:
+            clashing.append(g)
+        else:
+            taken.add(lid)
+    for g in clashing:
+        free = next(i for i in itertools.count(1) if i not in taken)
+        taken.add(free)
+        g.set(LABEL_ATTR, f"{free} {g.get(LABEL_ATTR) or ''}".strip())
+        changed = True
+
+    if changed:
+        tree.write(str(svg_path), xml_declaration=True, encoding="utf-8")
+    return changed
+
+
 def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path,
                      include_orphans: bool = True) -> None:
     """Write ``out_path`` containing only the layers in ``keep_indices``.
@@ -137,17 +226,20 @@ def reconcile_layers(reference_path: Path, target_path: Path) -> None:
 
     vpype drops any layer it found nothing plottable in (a text-only layer, an
     image, an empty group), so the optimized SVG can have fewer layers than
-    the upload it came from. Layers are addressed by position everywhere
-    downstream (see filter_to_layers), and those positions come from the
-    upload — so a dropped layer silently shifts every later layer down one and
-    the wrong artwork gets plotted.
+    the upload it came from. It also writes the layers it kept in layer-id
+    order (see _vpype_layer_id), which is not necessarily the order they
+    appeared in. Layers are addressed by position everywhere downstream (see
+    filter_to_layers), and those positions come from the upload — so a dropped
+    or reordered layer silently shifts the others and the wrong artwork gets
+    plotted.
 
     Rather than teach every caller about two numbering schemes, restore the
     original sequence in place: walk the reference's labels in order, matching
     each to the next same-labelled layer in the target, and splice in an empty
     placeholder wherever the target has none. Target layers that match nothing
     (e.g. content vpype folded into a layer of its own) keep their relative
-    order at the end. Rewrites ``target_path`` only if something was missing.
+    order at the end. Rewrites ``target_path`` only if the sequence it already
+    had differs from the one that was rebuilt.
     """
     ref_root = etree.parse(str(reference_path)).getroot()
     tree = etree.parse(str(target_path))
@@ -159,7 +251,6 @@ def reconcile_layers(reference_path: Path, target_path: Path) -> None:
     remaining = list(target_layers)
 
     ordered: list = []
-    inserted = False
     for label in ref_labels:
         match = next((g for g in remaining
                       if (g.get(LABEL_ATTR) or "") == label), None)
@@ -171,10 +262,9 @@ def reconcile_layers(reference_path: Path, target_path: Path) -> None:
             placeholder.set(GROUPMODE_ATTR, "layer")
             placeholder.set(LABEL_ATTR, label)
             ordered.append(placeholder)
-            inserted = True
     ordered.extend(remaining)
 
-    if not inserted:
+    if ordered == target_layers:
         return
     # Re-attach in the reference's order, starting where the layers already
     # were, so the structural siblings (defs/style/namedview) stay put.

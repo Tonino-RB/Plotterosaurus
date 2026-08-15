@@ -1205,13 +1205,10 @@ function renderDeltaOverlay(card, job, footprint) {
 // Advisory only: pyaxidraw clips anything past the travel bounds at plot time
 // regardless — this is the earlier heads-up that it's going to.
 //
-// Measured against the *effective* working area from the server (the plotter
-// model's own travel, shrunk by the custom bed profile if one is set), not
-// against machine_width_mm/machine_height_mm. Those are only what the user
-// typed: they say nothing about the model's real travel, and mean nothing at
-// all while the custom profile is off — so an A3 page on a machine whose Y
-// travel stops at 297 mm used to draw no warning at all while the bottom
-// 123 mm silently went unplotted.
+// Measured against the *effective* working area from the server — the active
+// machine profile's bed, the same figure the driver and the jog guards use
+// (see plot_worker.machine_bounds_mm) — so the warning and the actual clip
+// can't disagree about where the machine stops.
 function renderMachineBoundsWarning(card, job) {
   const el = card.querySelector(".machine-bounds-warning");
   if (!el) return;
@@ -2528,7 +2525,6 @@ function layerSwatch(type, penHex, pageHex) {
 
 const settingsBtn = $("settings-btn");
 const settingsModal = $("settings-modal");
-const settingsPlotterModel = $("settings-plotter-model");
 const settingsApiKey = $("settings-api-key");
 const settingsApiKeyCopy = $("settings-api-key-copy");
 const settingsPauseBetweenLayers = $("settings-pause-between-layers");
@@ -2539,8 +2535,10 @@ const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
 const settingsPenPosUp = $("settings-pen-pos-up");
 const settingsPenPosDown = $("settings-pen-pos-down");
-const settingsMachineCustomEnabled = $("settings-machine-custom-enabled");
-const settingsMachineCustomFields = $("settings-machine-custom-fields");
+const settingsMachineSelect = $("settings-machine-select");
+const settingsMachineAdd = $("settings-machine-add");
+const settingsMachineDelete = $("settings-machine-delete");
+const settingsMachineName = $("settings-machine-name");
 const settingsMachineWidth = $("settings-machine-width");
 const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
@@ -2693,7 +2691,6 @@ async function openSettings() {
     const res = await fetch("/settings");
     const data = await res.json();
     applyAppSettings(data);
-    settingsPlotterModel.value = String(data.plotter_model || 2);
     settingsApiKey.value = data.api_key || "";
     settingsPauseBetweenLayers.checked = data.pause_between_layers_default ?? true;
     settingsPauseAfterJob.checked = data.pause_after_job_default ?? true;
@@ -2715,11 +2712,7 @@ async function openSettings() {
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
-    settingsMachineCustomEnabled.checked = !!data.machine_custom_enabled;
-    settingsMachineWidth.value = data.machine_width_mm ?? 297;
-    settingsMachineHeight.value = data.machine_height_mm ?? 420;
-    setSegmentedValue(settingsMachineAutoRotate, data.machine_auto_rotate || "off");
-    settingsMachineCustomFields.hidden = !settingsMachineCustomEnabled.checked;
+    loadMachineDraft(data);
     settingsWebhookUrl.value = data.webhook_url || "";
     settingsWebhookOnLayerComplete.checked = !!data.webhook_on_layer_complete;
     settingsWebhookOnJobComplete.checked = !!data.webhook_on_job_complete;
@@ -2739,8 +2732,10 @@ async function saveSettings() {
   try {
     const tol = parseFloat(settingsOptimizeTolerance.value);
     const minLen = parseFloat(settingsOptimizeMinLengthMm.value);
+    captureMachineFields();
     const body = {
-      plotter_model: parseInt(settingsPlotterModel.value),
+      machines: machineDraft,
+      active_machine_id: machineDraftActiveId,
       pause_between_layers_default: settingsPauseBetweenLayers.checked,
       pause_after_job_default: settingsPauseAfterJob.checked,
       delete_on_complete_default: settingsDeleteOnComplete.checked,
@@ -2758,10 +2753,6 @@ async function saveSettings() {
       optimize_svg_min_length_default: settingsOptimizeMinLength.checked,
       optimize_svg_min_length_mm_default: isFinite(minLen) && minLen > 0 ? minLen : 1.0,
       display_unit: settingsDisplayUnit.value,
-      machine_custom_enabled: settingsMachineCustomEnabled.checked,
-      machine_width_mm: parseFloat(settingsMachineWidth.value) || 297,
-      machine_height_mm: parseFloat(settingsMachineHeight.value) || 420,
-      machine_auto_rotate: getSegmentedValue(settingsMachineAutoRotate, "off"),
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
       webhook_on_job_complete: settingsWebhookOnJobComplete.checked,
@@ -2813,11 +2804,112 @@ function resetSettingsPenHeight() {
   }
 }
 
-settingsMachineCustomEnabled.addEventListener("change", () => {
-  settingsMachineCustomFields.hidden = !settingsMachineCustomEnabled.checked;
-});
 settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
   btn.addEventListener("click", () => setSegmentedValue(settingsMachineAutoRotate, btn.dataset.val));
+});
+
+// ───── Machine profiles ──────────────────────────────────────────────────
+//
+// The modal edits a working copy of the machine list, not the live settings:
+// switching between machines has to carry unsaved edits with it, and Cancel
+// has to leave the real list alone. Nothing here reaches the server until
+// Save — which is also why deleting a machine asks for no confirmation.
+let machineDraft = [];
+let machineDraftActiveId = "";
+
+function machineDraftEntry(id) {
+  return machineDraft.find((m) => m.id === id) || null;
+}
+
+function renderMachineSelect() {
+  settingsMachineSelect.innerHTML = "";
+  for (const machine of machineDraft) {
+    const opt = document.createElement("option");
+    opt.value = machine.id;
+    opt.textContent = machine.name || t("settings.machine.unnamed");
+    settingsMachineSelect.appendChild(opt);
+  }
+  settingsMachineSelect.value = machineDraftActiveId;
+  // The bed is the one thing every bounds check needs an answer from, so the
+  // list can never be emptied.
+  settingsMachineDelete.disabled = machineDraft.length < 2;
+}
+
+function loadMachineFields() {
+  const machine = machineDraftEntry(machineDraftActiveId);
+  if (!machine) return;
+  settingsMachineName.value = machine.name;
+  settingsMachineWidth.value = machine.width_mm;
+  settingsMachineHeight.value = machine.height_mm;
+  setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
+}
+
+// Fold whatever is in the fields back into the draft. Runs before anything
+// that repoints the fields at a different machine, and again on save, so an
+// edit is never lost to a switch.
+function captureMachineFields() {
+  const machine = machineDraftEntry(machineDraftActiveId);
+  if (!machine) return;
+  machine.name = settingsMachineName.value.trim() || machine.name;
+  machine.width_mm = parseFloat(settingsMachineWidth.value) || machine.width_mm;
+  machine.height_mm = parseFloat(settingsMachineHeight.value) || machine.height_mm;
+  machine.auto_rotate = getSegmentedValue(settingsMachineAutoRotate, "off");
+}
+
+function loadMachineDraft(data) {
+  machineDraft = (data.machines || []).map((m) => ({ ...m }));
+  machineDraftActiveId = data.active_machine_id || "";
+  if (!machineDraftEntry(machineDraftActiveId) && machineDraft.length) {
+    machineDraftActiveId = machineDraft[0].id;
+  }
+  renderMachineSelect();
+  loadMachineFields();
+}
+
+settingsMachineSelect.addEventListener("change", () => {
+  captureMachineFields();
+  machineDraftActiveId = settingsMachineSelect.value;
+  loadMachineFields();
+});
+
+// Keep the dropdown label in step with the name field, so a rename is
+// visible in the list it's meant to make searchable without a save first.
+settingsMachineName.addEventListener("input", () => {
+  const machine = machineDraftEntry(machineDraftActiveId);
+  if (!machine) return;
+  machine.name = settingsMachineName.value;
+  const opt = [...settingsMachineSelect.options].find((o) => o.value === machine.id);
+  if (opt) opt.textContent = machine.name || t("settings.machine.unnamed");
+});
+
+settingsMachineAdd.addEventListener("click", () => {
+  captureMachineFields();
+  // Start from the machine on screen: a second profile is usually a variant
+  // of the one you're looking at, not of an arbitrary preset.
+  const base = machineDraftEntry(machineDraftActiveId);
+  const machine = {
+    id: `m${Date.now().toString(36)}`,
+    name: t("settings.machine.new_name"),
+    width_mm: base ? base.width_mm : 430,
+    height_mm: base ? base.height_mm : 297,
+    auto_rotate: "off",
+  };
+  machineDraft.push(machine);
+  machineDraftActiveId = machine.id;
+  renderMachineSelect();
+  loadMachineFields();
+  settingsMachineName.focus();
+  settingsMachineName.select();
+});
+
+settingsMachineDelete.addEventListener("click", () => {
+  if (machineDraft.length < 2) return;
+  const i = machineDraft.findIndex((m) => m.id === machineDraftActiveId);
+  if (i < 0) return;
+  machineDraft.splice(i, 1);
+  machineDraftActiveId = machineDraft[Math.min(i, machineDraft.length - 1)].id;
+  renderMachineSelect();
+  loadMachineFields();
 });
 
 settingsWebhookTest.addEventListener("click", async () => {

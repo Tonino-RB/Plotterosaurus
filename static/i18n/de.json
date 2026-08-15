@@ -70,9 +70,6 @@
   "settings.localization.title": "Sprache & Einheiten",
   "settings.language.title": "Sprache",
   "settings.language.label": "Sprache",
-  "settings.plotter_model.title": "Plotter-Modell",
-  "settings.plotter_model.label": "Modell",
-  "settings.plotter_model.note": "Stelle dies passend zu deiner AxiDraw-Hardware ein — nicht zu deinem Papierformat.",
   "settings.display.title": "Anzeige",
   "settings.display.unit_label": "Längeneinheit",
   "settings.display.unit_mm": "Millimeter (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "Damit steht der Stift oberhalb oder links der Ecke 0,0, also kann ein Teil der Zeichnung neben dem Papier landen. Prüfe, ob der Schlitten in diese Richtung noch Weg hat.",
   "origin.below_confirm": "Trotzdem bewegen",
   "apierror.jog_below_origin": "Diese Bewegung würde über den Ursprung hinaus nach oben oder links führen.",
-  "apierror.nudge_below_origin": "Diese Feinjustierung würde über den Ursprung hinaus nach oben oder links führen."
+  "apierror.nudge_below_origin": "Diese Feinjustierung würde über den Ursprung hinaus nach oben oder links führen.",
+
+  "settings.machine.title": "Maschine",
+  "settings.machine.active_label": "Verwendete Maschine",
+  "settings.machine.name_label": "Name",
+  "settings.machine.name_placeholder": "Mein Plotter",
+  "settings.machine.add": "Hinzufügen",
+  "settings.machine.delete": "Löschen",
+  "settings.machine.new_name": "Neue Maschine",
+  "settings.machine.unnamed": "Unbenannte Maschine",
+  "settings.machine.auto_rotate_label": "Papier automatisch drehen auf",
+  "settings.machine.auto_rotate_off": "Aus",
+  "settings.machine.note": "Miss aus, was der Stift wirklich erreicht — das Bett ist hier die ganze Maschine, und alles darüber hinaus wird beim Plotten abgeschnitten. Die Vorlagen sind nur Startpunkte: Du kannst jede umbenennen, ändern oder löschen."
 }

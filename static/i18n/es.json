@@ -70,9 +70,6 @@
   "settings.localization.title": "Idioma y unidades",
   "settings.language.title": "Idioma",
   "settings.language.label": "Idioma",
-  "settings.plotter_model.title": "Modelo de plotter",
-  "settings.plotter_model.label": "Modelo",
-  "settings.plotter_model.note": "Ajusta esto a tu hardware AxiDraw — no al tamaño del papel.",
   "settings.display.title": "Visualización",
   "settings.display.unit_label": "Unidad de longitud",
   "settings.display.unit_mm": "Milímetros (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "Esto deja el lápiz por encima o a la izquierda de la esquina 0,0, así que parte del trazado puede quedar fuera del papel. Comprueba que el carro tenga recorrido en esa dirección.",
   "origin.below_confirm": "Mover igualmente",
   "apierror.jog_below_origin": "Ese movimiento iría por encima o a la izquierda del origen.",
-  "apierror.nudge_below_origin": "Ese ajuste iría por encima o a la izquierda del origen."
+  "apierror.nudge_below_origin": "Ese ajuste iría por encima o a la izquierda del origen.",
+
+  "settings.machine.title": "Máquina",
+  "settings.machine.active_label": "Máquina en uso",
+  "settings.machine.name_label": "Nombre",
+  "settings.machine.name_placeholder": "Mi plóter",
+  "settings.machine.add": "Añadir",
+  "settings.machine.delete": "Eliminar",
+  "settings.machine.new_name": "Máquina nueva",
+  "settings.machine.unnamed": "Máquina sin nombre",
+  "settings.machine.auto_rotate_label": "Girar el papel automáticamente a",
+  "settings.machine.auto_rotate_off": "No",
+  "settings.machine.note": "Mide lo que el lápiz alcanza de verdad: aquí la superficie es toda la máquina, y lo que quede fuera se recorta al trazar. Los preajustes solo son un punto de partida: puedes renombrar, redimensionar o eliminar cualquiera."
 }

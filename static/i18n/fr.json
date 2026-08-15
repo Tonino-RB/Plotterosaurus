@@ -70,9 +70,6 @@
   "settings.localization.title": "Langue et unités",
   "settings.language.title": "Langue",
   "settings.language.label": "Langue",
-  "settings.plotter_model.title": "Modèle de traceur",
-  "settings.plotter_model.label": "Modèle",
-  "settings.plotter_model.note": "Fais correspondre ceci à ton matériel AxiDraw — pas à ton format de papier.",
   "settings.display.title": "Affichage",
   "settings.display.unit_label": "Unité de longueur",
   "settings.display.unit_mm": "Millimètres (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "Le stylo se retrouvera au-dessus ou à gauche du coin 0,0, donc une partie du tracé risque de tomber hors du papier. Vérifie que le chariot a de la course dans cette direction.",
   "origin.below_confirm": "Déplacer quand même",
   "apierror.jog_below_origin": "Ce déplacement irait au-dessus ou à gauche de l'origine.",
-  "apierror.nudge_below_origin": "Ce réglage irait au-dessus ou à gauche de l'origine."
+  "apierror.nudge_below_origin": "Ce réglage irait au-dessus ou à gauche de l'origine.",
+
+  "settings.machine.title": "Machine",
+  "settings.machine.active_label": "Machine utilisée",
+  "settings.machine.name_label": "Nom",
+  "settings.machine.name_placeholder": "Mon traceur",
+  "settings.machine.add": "Ajouter",
+  "settings.machine.delete": "Supprimer",
+  "settings.machine.new_name": "Nouvelle machine",
+  "settings.machine.unnamed": "Machine sans nom",
+  "settings.machine.auto_rotate_label": "Rotation auto du papier en",
+  "settings.machine.auto_rotate_off": "Désactivé",
+  "settings.machine.note": "Mesure ce que le stylo atteint vraiment — ici la surface est toute la machine, et tout ce qui dépasse est rogné au tracé. Les préréglages ne sont qu'un point de départ : tu peux en renommer, redimensionner ou supprimer n'importe lequel."
 }

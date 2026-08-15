@@ -73,14 +73,9 @@ _SETTINGS: list[_Setting] = [
     # Last update the user chose to skip. The update banner stays hidden while
     # this equals the latest remote version; a newer release re-shows it.
     _Setting("skipped_version", str, None),
-    # Custom machine bed-size profile, layered on top of plotter_model: the
-    # driver still only knows models 1-8 for real travel-bounds/homing math,
-    # these fields are UI/bounds-only (paper-fit + orientation auto-rotate).
-    _Setting("machine_custom_enabled", bool, False),
-    _Setting("machine_width_mm", float, 297.0, lambda v: v > 0),
-    _Setting("machine_height_mm", float, 420.0, lambda v: v > 0),
-    _Setting("machine_auto_rotate", str, "off",
-             lambda v: v in ("off", "portrait", "landscape")),
+    # The machine itself lives in MACHINES/ACTIVE_MACHINE_ID below, not here —
+    # its shape is a list of records rather than a scalar. plotter_model stays
+    # only because pyaxidraw wants a model number; see _MACHINE_PRESETS.
     # Outgoing webhook fired on layer/job completion (see app/notify.py).
     _Setting("webhook_url", str, None),
     _Setting("webhook_on_layer_complete", bool, False),
@@ -132,6 +127,170 @@ _SETTINGS: list[_Setting] = [
 # Static API key for /api/v1/* routes — kept outside the schema because it
 # auto-generates when missing rather than falling back to a hardcoded default.
 API_KEY: str = ""
+
+
+# Machine profiles ---------------------------------------------------------
+#
+# A machine is a name and a bed, and that really is all of it. pyaxidraw's
+# `model` option selects nothing but travel bounds (axidraw.py
+# update_options) — step resolution, servo timing and speeds are all
+# model-independent — and plot_worker._apply_bed_size already overwrites
+# those bounds with the profile's own size. So the bed fully describes the
+# machine here, and a custom build is expressible exactly as precisely as a
+# stock AxiDraw: no model has to be picked to stand in for it.
+#
+# Seeds for a fresh install, taken from the stock AxiDraw travel figures in
+# axidrawinternal.axidraw_conf (x/y_travel_*, inches -> mm), in model-number
+# order so a pre-profiles config.json can map its plotter_model onto one.
+# They're a starting point only — every entry is renameable, resizable and
+# removable from Settings.
+_MACHINE_PRESETS: list[dict] = [
+    {"name": "AxiDraw V2 / V3 / SE A4", "width_mm": 300.0, "height_mm": 217.9},
+    {"name": "AxiDraw SE A3 / iDraw H SE A3", "width_mm": 430.0, "height_mm": 296.9},
+    {"name": "AxiDraw V3 XLX", "width_mm": 594.9, "height_mm": 217.9},
+    {"name": "AxiDraw MiniKit", "width_mm": 160.0, "height_mm": 101.6},
+    {"name": "AxiDraw SE A1", "width_mm": 864.1, "height_mm": 594.1},
+    {"name": "AxiDraw SE A2", "width_mm": 594.1, "height_mm": 432.1},
+    {"name": "AxiDraw V3 B6", "width_mm": 190.0, "height_mm": 140.0},
+    {"name": "AxiDraw V3 Wide", "width_mm": 300.0, "height_mm": 217.9},
+]
+
+_AUTO_ROTATE_VALUES = ("off", "portrait", "landscape")
+_MACHINE_NAME_MAX = 60
+
+MACHINES: list[dict] = []
+ACTIVE_MACHINE_ID: str = ""
+
+# Mirrors of the active profile. Everything that asks about the machine —
+# plot_worker's bounds and auto-rotate, the settings payload the UI reads —
+# went on reading these plain scalars when profiles arrived, so introducing
+# them changed no call sites. MACHINE_CUSTOM_ENABLED is now always true: a
+# profile always states its own bed, so there is no longer a "no custom bed
+# configured" case for the auto-rotate gate to fall through to.
+MACHINE_CUSTOM_ENABLED: bool = True
+MACHINE_WIDTH_MM: float = _MACHINE_PRESETS[1]["width_mm"]
+MACHINE_HEIGHT_MM: float = _MACHINE_PRESETS[1]["height_mm"]
+MACHINE_AUTO_ROTATE: str = "off"
+
+
+def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
+    """Coerce one incoming machine record into storable shape, or None if it
+    can't be salvaged. Ids are made unique here rather than trusted, since
+    they come from the client and a collision would make two profiles
+    indistinguishable to every lookup."""
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    try:
+        width = float(raw.get("width_mm"))
+        height = float(raw.get("height_mm"))
+    except (TypeError, ValueError):
+        return None
+    if not (width > 0 and height > 0):
+        return None
+    auto_rotate = raw.get("auto_rotate")
+    if auto_rotate not in _AUTO_ROTATE_VALUES:
+        auto_rotate = "off"
+    machine_id = str(raw.get("id") or "").strip()
+    while not machine_id or machine_id in used_ids:
+        machine_id = secrets.token_hex(4)
+    used_ids.add(machine_id)
+    return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
+            "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate}
+
+
+def _seed_machines(data: dict) -> tuple[list[dict], str]:
+    """Build the profile list for a config.json written before profiles
+    existed: the stock presets, plus the user's own bed as a real profile if
+    they had the custom-bed checkbox on. Their selected plotter_model picks
+    which preset starts out active, so an install that never touched the
+    custom bed keeps exactly the machine it had."""
+    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", **preset}
+                for i, preset in enumerate(_MACHINE_PRESETS)]
+    try:
+        index = int(data.get("plotter_model")) - 1
+    except (TypeError, ValueError):
+        index = 1
+    if not 0 <= index < len(machines):
+        index = 1
+    active_id = machines[index]["id"]
+
+    if data.get("machine_custom_enabled"):
+        # Auto-rotate only ever applied while the custom bed was on, so an
+        # install with the checkbox off carries no orientation policy over.
+        custom = _normalize_machine({
+            "id": "m0",
+            "name": "My machine",
+            "width_mm": data.get("machine_width_mm"),
+            "height_mm": data.get("machine_height_mm"),
+            "auto_rotate": data.get("machine_auto_rotate"),
+        }, {m["id"] for m in machines})
+        if custom is not None:
+            machines.insert(0, custom)
+            active_id = custom["id"]
+    return machines, active_id
+
+
+def active_machine() -> dict:
+    """The profile every bounds question resolves against. MACHINES is never
+    empty (see _load_machines), so this always answers."""
+    for machine in MACHINES:
+        if machine["id"] == ACTIVE_MACHINE_ID:
+            return machine
+    return MACHINES[0]
+
+
+def _sync_active_machine() -> None:
+    global ACTIVE_MACHINE_ID, MACHINE_WIDTH_MM, MACHINE_HEIGHT_MM, MACHINE_AUTO_ROTATE
+    machine = active_machine()
+    ACTIVE_MACHINE_ID = machine["id"]
+    MACHINE_WIDTH_MM = machine["width_mm"]
+    MACHINE_HEIGHT_MM = machine["height_mm"]
+    MACHINE_AUTO_ROTATE = machine["auto_rotate"]
+
+
+def _load_machines(data: dict) -> None:
+    global MACHINES, ACTIVE_MACHINE_ID
+    raw = data.get("machines")
+    machines: list[dict] = []
+    if isinstance(raw, list):
+        used_ids: set[str] = set()
+        for item in raw:
+            machine = _normalize_machine(item, used_ids)
+            if machine is not None:
+                machines.append(machine)
+    if machines:
+        MACHINES = machines
+        ACTIVE_MACHINE_ID = str(data.get("active_machine_id") or "")
+    else:
+        # No usable list — either a config.json from before profiles, or one
+        # whose every entry was corrupt. Either way, rebuild rather than leave
+        # the app with no machine to measure against.
+        MACHINES, ACTIVE_MACHINE_ID = _seed_machines(data)
+    _sync_active_machine()
+
+
+def _update_machines(machines: Any, active_id: Any) -> None:
+    """Apply a settings edit. A list that normalizes to nothing is ignored
+    outright: an empty machine list has no meaningful bed, and silently
+    accepting one would leave every bounds check with nothing to answer."""
+    global MACHINES, ACTIVE_MACHINE_ID
+    if machines is not None:
+        normalized: list[dict] = []
+        used_ids: set[str] = set()
+        for item in machines if isinstance(machines, list) else []:
+            machine = _normalize_machine(item, used_ids)
+            if machine is not None:
+                normalized.append(machine)
+        if not normalized:
+            log.warning("config: ignoring a machine list with no usable entries")
+        else:
+            MACHINES = normalized
+    if active_id is not None:
+        ACTIVE_MACHINE_ID = str(active_id)
+    _sync_active_machine()
 
 
 def _coerce(s: _Setting, raw: Any) -> Any | None:
@@ -190,6 +349,8 @@ def _load_from_disk() -> None:
         if v is not None:
             _set(s, v)
 
+    _load_machines(data)
+
     api = data.get("api_key")
     if isinstance(api, str) and api.strip():
         API_KEY = api.strip()
@@ -206,9 +367,15 @@ def _save_to_disk() -> None:
 
 
 def snapshot() -> dict:
+    """What gets persisted to config.json. The MACHINE_* mirrors are left out
+    on purpose — the active profile is where that lives, and writing both
+    would make config.json disagree with itself the moment one was edited by
+    hand. main._settings_payload adds them back for the UI."""
     out: dict = {"api_key": API_KEY}
     for s in _SETTINGS:
         out[s.name] = globals()[s.name.upper()]
+    out["machines"] = [dict(m) for m in MACHINES]
+    out["active_machine_id"] = ACTIVE_MACHINE_ID
     return out
 
 
@@ -219,6 +386,8 @@ def update(**kwargs) -> None:
         v = _coerce(s, kwargs[s.name])
         if v is not None:
             _set(s, v)
+    if "machines" in kwargs or "active_machine_id" in kwargs:
+        _update_machines(kwargs.get("machines"), kwargs.get("active_machine_id"))
     _save_to_disk()
 
 

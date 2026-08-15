@@ -78,9 +78,6 @@
   "settings.localization.title": "Language & Units",
   "settings.language.title": "Language",
   "settings.language.label": "Language",
-  "settings.plotter_model.title": "Plotter Model",
-  "settings.plotter_model.label": "Model",
-  "settings.plotter_model.note": "Match this to your AxiDraw hardware — not your paper size.",
   "settings.display.title": "Display",
   "settings.display.unit_label": "Length Unit",
   "settings.display.unit_mm": "Millimetres (mm)",
@@ -252,5 +249,17 @@
   "origin.below_note": "This puts the pen above or to the left of the 0,0 corner, so part of the plot may end up off the paper. Check that the carriage has room to travel that way.",
   "origin.below_confirm": "Move anyway",
   "apierror.jog_below_origin": "That move would go above or left of the origin.",
-  "apierror.nudge_below_origin": "That nudge would go above or left of the origin."
+  "apierror.nudge_below_origin": "That nudge would go above or left of the origin.",
+
+  "settings.machine.title": "Machine",
+  "settings.machine.active_label": "Machine in use",
+  "settings.machine.name_label": "Name",
+  "settings.machine.name_placeholder": "My plotter",
+  "settings.machine.add": "Add",
+  "settings.machine.delete": "Delete",
+  "settings.machine.new_name": "New machine",
+  "settings.machine.unnamed": "Unnamed machine",
+  "settings.machine.auto_rotate_label": "Auto-rotate paper to",
+  "settings.machine.auto_rotate_off": "Off",
+  "settings.machine.note": "Measure what the pen can actually reach — the bed is the whole machine here, and anything past it is clipped at plot time. The presets are only starting points: rename, resize or delete any of them."
 }

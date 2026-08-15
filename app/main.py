@@ -48,12 +48,22 @@ def _coded(status: int, code: str, **params) -> HTTPException:
     return HTTPException(status, detail=detail)
 
 
-def _repair_missing_layers(path: Path, info: dict) -> dict:
-    """If the SVG has no Inkscape layers, some content is likely sitting
+def _normalize_svg_layers(path: Path, info: dict) -> dict:
+    """Make the uploaded SVG's layer structure usable, and re-parse if it was
+    changed. Promotes layerless content into real layers and de-collides layer
+    labels (see svg_utils.normalize_layer_structure); anything it leaves
+    behind still goes through the vpype fallback below.
+
+    If the SVG has no Inkscape layers, some content is likely sitting
     outside any layer group. Fold it into one via a bare vpype read/write
     round-trip and re-parse. Best-effort: on vpype failure, the original
     (empty-layers) info is returned unchanged so the caller's existing
     no-layers handling still applies."""
+    try:
+        if svg_utils.normalize_layer_structure(path):
+            info = svg_utils.parse_layers(path)
+    except Exception:
+        log.exception("layer normalization failed for %s", path.name)
     if info["layers"]:
         return info
     # vpype's `write` infers the output format from the file extension, so
@@ -169,7 +179,7 @@ async def upload(file: UploadFile = File(...)):
     except Exception:
         path.unlink(missing_ok=True)
         raise _coded(400, "invalid_svg")
-    info = _repair_missing_layers(path, info)
+    info = _normalize_svg_layers(path, info)
     # Nothing downstream can use a layerless SVG, and the browser used to
     # discover that for itself and abandon the upload — leaving the file (and
     # a queued optimize task for it) behind forever. Reject it here, before
@@ -270,6 +280,16 @@ class MoveRequest(BaseModel):
     new_index: int = Field(..., ge=0)
 
 
+class MachineProfile(BaseModel):
+    """One entry in the machine list. `id` is absent for a machine the UI has
+    just added; config assigns one (see config._normalize_machine)."""
+    id: str | None = None
+    name: str = Field(..., min_length=1, max_length=60)
+    width_mm: float = Field(..., gt=0)
+    height_mm: float = Field(..., gt=0)
+    auto_rotate: Literal["off", "portrait", "landscape"] = "off"
+
+
 class SettingsUpdate(BaseModel):
     plotter_model: int | None = Field(None, ge=1, le=8)
     pause_between_layers_default: bool | None = None
@@ -289,10 +309,11 @@ class SettingsUpdate(BaseModel):
     optimize_svg_min_length_default: bool | None = None
     optimize_svg_min_length_mm_default: float | None = Field(None, ge=0.01, le=100.0)
     display_unit: Literal["mm", "cm", "in"] | None = None
-    machine_custom_enabled: bool | None = None
-    machine_width_mm: float | None = Field(None, gt=0)
-    machine_height_mm: float | None = Field(None, gt=0)
-    machine_auto_rotate: Literal["off", "portrait", "landscape"] | None = None
+    # Replaces the old machine_custom_enabled/machine_width_mm/
+    # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
+    # of a named machine now, not a global override (see config.MACHINES).
+    machines: list[MachineProfile] | None = None
+    active_machine_id: str | None = None
     webhook_url: str | None = None
     webhook_on_layer_complete: bool | None = None
     webhook_on_job_complete: bool | None = None
@@ -661,7 +682,7 @@ async def api_create_job(file: UploadFile = File(...),
     except Exception as e:
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"invalid SVG: {e}")
-    info = _repair_missing_layers(path, info)
+    info = _normalize_svg_layers(path, info)
     if not info["layers"]:
         path.unlink(missing_ok=True)
         raise HTTPException(400, "SVG contains no Inkscape layers")
@@ -1302,19 +1323,23 @@ def api_camera_status(request: Request):
 # Settings ---------------------------------------------------------------
 
 def _settings_payload() -> dict:
-    """config.snapshot() plus the working area actually reachable.
+    """config.snapshot() plus everything about the machine that is derived
+    from the active profile rather than stored beside it.
 
-    machine_width_mm/machine_height_mm are what the user typed; they say
-    nothing about the plotter model's own travel and mean nothing at all while
-    the custom profile is off. The UI needs the real envelope to warn about a
-    page that won't fit, so hand it the same figure the driver and the jog
-    guards use. Derived, not stored — kept out of config.snapshot() so it
-    never gets written to config.json.
+    The UI needs the reachable envelope to warn about a page that won't fit,
+    and its orientation logic reads the same auto-rotate policy the server
+    renders with — both come off whichever machine is selected. Derived, not
+    stored: kept out of config.snapshot() so config.json keeps exactly one
+    copy of the machine and can't end up disagreeing with itself.
     """
     snap = config.snapshot()
     bed_w_mm, bed_h_mm = plot_worker.machine_bounds_mm()
     snap["machine_effective_width_mm"] = bed_w_mm
     snap["machine_effective_height_mm"] = bed_h_mm
+    snap["machine_custom_enabled"] = config.MACHINE_CUSTOM_ENABLED
+    snap["machine_auto_rotate"] = config.MACHINE_AUTO_ROTATE
+    snap["machine_width_mm"] = config.MACHINE_WIDTH_MM
+    snap["machine_height_mm"] = config.MACHINE_HEIGHT_MM
     return snap
 
 

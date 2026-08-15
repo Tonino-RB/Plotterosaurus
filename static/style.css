@@ -765,6 +765,17 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 }
 .jog-action-btn.jog-flash-err-blink { animation: jog-flash-err-blink 0.4s steps(1, end) 2; }
 
+/* Wide enough that .form-row wraps it onto its own line rather than letting
+   the three-way segmented control overflow and clip its last option — which
+   is exactly what "Landscape" did on a narrow screen, and would do sooner in
+   languages whose labels run longer than English's. */
+.machine-rotate-field { min-width: 15rem; }
+
+.machine-picker { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+.machine-picker > .field { flex: 1 1 14rem; }
+.machine-picker-actions { display: flex; gap: 0.4rem; }
+.machine-picker-actions button { padding: 0.4rem 0.7rem; }
+
 .jog-home-btn { padding: 0.3rem 0.5rem; }
 
 .jog-origin-btn { padding: 0.3rem 0.5rem; display: inline-flex; align-items: center; justify-content: center; }

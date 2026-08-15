@@ -70,9 +70,6 @@
   "settings.localization.title": "Lingua e unità",
   "settings.language.title": "Lingua",
   "settings.language.label": "Lingua",
-  "settings.plotter_model.title": "Modello plotter",
-  "settings.plotter_model.label": "Modello",
-  "settings.plotter_model.note": "Abbinalo al tuo hardware AxiDraw — non al formato della carta.",
   "settings.display.title": "Visualizzazione",
   "settings.display.unit_label": "Unità di lunghezza",
   "settings.display.unit_mm": "Millimetri (mm)",
@@ -226,5 +223,17 @@
   "origin.below_note": "La penna finirà sopra o a sinistra dell'angolo 0,0, quindi una parte del disegno può cadere fuori dal foglio. Controlla che il carrello abbia ancora corsa in quella direzione.",
   "origin.below_confirm": "Sposta comunque",
   "apierror.jog_below_origin": "Questo spostamento andrebbe sopra o a sinistra dell'origine.",
-  "apierror.nudge_below_origin": "Questa regolazione andrebbe sopra o a sinistra dell'origine."
+  "apierror.nudge_below_origin": "Questa regolazione andrebbe sopra o a sinistra dell'origine.",
+
+  "settings.machine.title": "Macchina",
+  "settings.machine.active_label": "Macchina in uso",
+  "settings.machine.name_label": "Nome",
+  "settings.machine.name_placeholder": "Il mio plotter",
+  "settings.machine.add": "Aggiungi",
+  "settings.machine.delete": "Elimina",
+  "settings.machine.new_name": "Nuova macchina",
+  "settings.machine.unnamed": "Macchina senza nome",
+  "settings.machine.auto_rotate_label": "Ruota automaticamente il foglio in",
+  "settings.machine.auto_rotate_off": "No",
+  "settings.machine.note": "Misura ciò che la penna raggiunge davvero: qui il piano è tutta la macchina, e quello che sta oltre viene tagliato al momento del plot. I preset sono solo un punto di partenza: puoi rinominarli, ridimensionarli o eliminarli."
 }
