@@ -112,7 +112,7 @@
   "upload.processing": "Processing {name}…",
   "upload.not_svg": "{name} is not an SVG file.",
   "upload.files_skipped": "{count} files were skipped — only .svg files are accepted.",
-  "upload.no_layers": "This SVG doesn't contain any Inkscape layers. Open it in Inkscape, add at least one layer, and export again.",
+  "apierror.no_layers": "This SVG doesn't contain any Inkscape layers. Open it in Inkscape, add at least one layer, and export again.",
   "upload.failed": "Upload failed: {message}",
 
   "queue.empty": "Drop an SVG above to get started.",
@@ -224,5 +224,33 @@
   "apierror.worker_error": "{detail}",
   "stage_status.pending": "Pending",
   "stage_status.current": "Current",
-  "stage_status.done": "Done"
+  "stage_status.done": "Done",
+
+  "apierror.cannot_connect": "Could not reach the plotter. Check that it is switched on and its USB cable is plugged in.",
+  "apierror.plotter_busy": "The plotter is busy plotting. Pause it first.",
+  "apierror.not_plotting": "That only works while a plot is running.",
+  "apierror.nudge_not_at_pause": "Origin nudge is only available while paused for a pen change.",
+  "apierror.pen_height_not_at_pause": "Pen height can only be adjusted live while paused for a pen change.",
+  "apierror.invalid_calibration_filename": "That calibration file name isn't valid.",
+  "apierror.calibration_file_not_found": "That calibration file no longer exists.",
+  "apierror.camera_not_enabled": "The camera is switched off. Turn it on in Settings.",
+  "apierror.camera_unreachable": "Could not reach the camera service. Check that MediaMTX is running.",
+  "apierror.recording_in_progress": "A recording is already running. Stop it first.",
+  "apierror.invalid_af_mode": "That autofocus mode isn't valid.",
+  "apierror.webhook_not_configured": "Add a notification URL in Settings first.",
+  "card.machine_bounds_warning": "This page is bigger than the plotter can reach ({width} × {height} {unit}). Anything past that edge won't be drawn.",
+  "card.save_failed": "Couldn't save this change: {message}",
+  "controls.recording_status_recording": "Recording",
+  "controls.recording_status_paused": "Recording paused",
+  "settings.machine.auto_rotate_locked_title": "Orientation is set by the machine profile in Settings.",
+  "settings.notifications.test_sent": "Test notification sent.",
+  "settings.notifications.url_required": "Enter a notification URL first.",
+  "job.plan_failed": "estimate unavailable",
+
+  "a11y.jog_set_origin": "Set the origin here",
+  "origin.below_title": "Move past the origin?",
+  "origin.below_note": "This puts the pen above or to the left of the 0,0 corner, so part of the plot may end up off the paper. Check that the carriage has room to travel that way.",
+  "origin.below_confirm": "Move anyway",
+  "apierror.jog_below_origin": "That move would go above or left of the origin.",
+  "apierror.nudge_below_origin": "That nudge would go above or left of the origin."
 }

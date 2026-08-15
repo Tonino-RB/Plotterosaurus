@@ -32,7 +32,12 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     # already cached (the plan queue ran ahead of the user's Plot click).
     # "failed" straight from "queued" covers _run_job's pre-flight bounds
     # check, which can reject a job before optimize/plan ever starts.
-    "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting", "failed"},
+    # "cancelled" straight from "queued" covers a cancel that lands during the
+    # optimize/plan phases: the plan-cache fast path never flips the job to
+    # `planning`, so it is still reading as queued when the worker picks the
+    # flag up (see _run_job / cancel_active).
+    "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting",
+                             "cancelled", "failed"},
     "awaiting_optimize":    {"optimizing", "planning", "plotting", "cancelled", "failed"},
     "optimizing":           {"planning", "plotting", "cancelled", "failed"},
     "planning":             {"plotting", "cancelled"},
@@ -85,14 +90,22 @@ _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
 _error: str | None = None
 # Fine origin nudge dialed in during an awaiting_pen_change pause (see
-# plot_worker.nudge_origin). Session-only: applies to the remaining stages of
-# the current run, reset at the start of each run and when it ends.
+# plot_worker.nudge_origin). Belongs to one run: it applies to that run's
+# remaining stages and is walked back off the carriage when the run ends (see
+# plot_worker._undo_origin_nudge), so the next run starts from the same
+# physical origin this one did.
 _origin_nudge: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Net displacement accumulated by idle-only manual jogging (see
 # plot_worker.manual_jog), so manual_jog_home knows how far to walk back.
 # Session-only, unrelated to _origin_nudge above (that one corrects an active
 # job mid-plot).
 _manual_origin_offset: dict = {"x_mm": 0.0, "y_mm": 0.0}
+# Where on the bed the page's top-left corner has been declared to be (see
+# plot_worker.set_origin) — (0, 0), the machine's own corner, until the user
+# redefines it. _manual_origin_offset above is measured from *this*, not from
+# the machine corner, so only the guard that keeps the carriage clear of the
+# far rail has to add the two back together. Session-only, same as the rest.
+_origin_base: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.
 _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
@@ -290,8 +303,18 @@ def _make_record(data: dict) -> dict:
         "stages": [],
         "current_stage_index": 0,
         "started_at": None,
+        # Start of the span the pen is currently plotting — reset at every
+        # stage boundary and every resume. run_elapsed_seconds banks the spans
+        # already finished, so the two together measure the whole run (see
+        # plot_worker.run_elapsed_seconds); plotting_started_at on its own
+        # would restart the progress bar at each layer.
         "plotting_started_at": None,
+        "run_elapsed_seconds": 0.0,
         "estimated_total_seconds": None,
+        # Denominator for the progress bar. Starts equal to
+        # estimated_total_seconds and is the only one a live speed change
+        # recalibrates, so the displayed estimate stays a plain estimate.
+        "progress_total_seconds": None,
         "distance_pendown_m": None,
         "distance_total_m": None,
         "pen_lifts": None,
@@ -404,6 +427,17 @@ def set_manual_origin_offset(x_mm: float, y_mm: float) -> None:
 
 def manual_origin_offset() -> tuple[float, float]:
     return _manual_origin_offset["x_mm"], _manual_origin_offset["y_mm"]
+
+
+def set_origin_base(x_mm: float, y_mm: float) -> None:
+    global _origin_base
+    if _origin_base["x_mm"] == x_mm and _origin_base["y_mm"] == y_mm:
+        return
+    _origin_base = {"x_mm": x_mm, "y_mm": y_mm}
+
+
+def origin_base() -> tuple[float, float]:
+    return _origin_base["x_mm"], _origin_base["y_mm"]
 
 
 def set_recording(status: str, job_id: str | None) -> None:

@@ -13,8 +13,26 @@ GROUPMODE_ATTR = f"{{{INKSCAPE_NS}}}groupmode"
 LABEL_ATTR = f"{{{INKSCAPE_NS}}}label"
 
 
+PX_PER_MM = 96.0 / 25.4
+
+# Absolute CSS length units, as millimetres per unit. Relative units (%, em,
+# ex, ch) aren't resolvable without a rendering context, so they return None
+# and the caller falls back to the viewBox.
+_UNIT_TO_MM: dict[str, float] = {
+    "mm": 1.0,
+    "cm": 10.0,
+    "in": 25.4,
+    "px": 25.4 / 96.0,
+    "": 25.4 / 96.0,   # unitless == px
+    "pt": 25.4 / 72.0,
+    "pc": 25.4 / 6.0,
+    "q": 0.25,
+}
+
+
 def parse_dim_to_mm(s: str) -> float | None:
-    """Parse an SVG length attribute into millimetres. Accepts mm, cm, in, px (or unitless = px)."""
+    """Parse an SVG length attribute into millimetres. Accepts mm, cm, in, pt,
+    pc, Q, px (or unitless = px)."""
     if not s:
         return None
     m = re.match(r"^\s*([\d.eE+\-]+)\s*([a-zA-Z%]*)\s*$", s)
@@ -22,19 +40,35 @@ def parse_dim_to_mm(s: str) -> float | None:
         return None
     value = float(m.group(1))
     unit = (m.group(2) or "px").lower()
-    if unit == "mm":
-        return value
-    if unit == "cm":
-        return value * 10.0
-    if unit == "in":
-        return value * 25.4
-    if unit == "px" or unit == "":
-        return value * 25.4 / 96.0
-    return None
+    factor = _UNIT_TO_MM.get(unit)
+    return value * factor if factor is not None else None
 
 
 def _top_level_layers(root):
     return [g for g in root if g.tag == LAYER_TAG and g.get(GROUPMODE_ATTR) == "layer"]
+
+
+# Top-level elements that paint something. Anything else at the top level
+# (defs, style, metadata, title, sodipodi:namedview, ...) is structural and
+# must survive filtering untouched or the kept layers stop rendering.
+_DRAWABLE_TAGS = {
+    f"{{{SVG_NS}}}{name}" for name in (
+        "path", "line", "polyline", "polygon", "circle", "ellipse", "rect",
+        "text", "image", "use", "g", "svg", "switch", "foreignObject",
+    )
+}
+
+
+def _top_level_orphans(root):
+    """Drawable top-level elements that sit outside any Inkscape layer.
+
+    Inkscape always wraps content in layers, but plenty of other producers
+    don't. This content has no layer index, so it can't be selected or
+    deselected — and without special handling it would be copied into *every*
+    per-layer stage and drawn once per stage (see filter_to_layers)."""
+    return [el for el in root
+            if el.tag in _DRAWABLE_TAGS
+            and not (el.tag == LAYER_TAG and el.get(GROUPMODE_ATTR) == "layer")]
 
 
 def svg_size_mm(root) -> tuple[float | None, float | None]:
@@ -63,14 +97,7 @@ def parse_layers(svg_path: Path) -> dict:
     root = tree.getroot()
     layers = []
     for i, g in enumerate(_top_level_layers(root)):
-        label = g.get(LABEL_ATTR) or f"Layer {i + 1}"
-        layers.append(
-            {
-                "index": i,
-                "label": label,
-                "addressable": bool(label) and label[0].isdigit(),
-            }
-        )
+        layers.append({"index": i, "label": g.get(LABEL_ATTR) or f"Layer {i + 1}"})
     width_mm, height_mm = svg_size_mm(root)
     return {
         "layers": layers,
@@ -79,17 +106,84 @@ def parse_layers(svg_path: Path) -> dict:
         "viewBox": root.get("viewBox", ""),
         "width_mm": width_mm,
         "height_mm": height_mm,
+        "has_orphan_content": bool(_top_level_orphans(root)),
     }
 
 
-def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path) -> None:
+def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path,
+                     include_orphans: bool = True) -> None:
+    """Write ``out_path`` containing only the layers in ``keep_indices``.
+
+    ``include_orphans`` controls drawable top-level content that belongs to no
+    layer (see _top_level_orphans). A job is plotted as one stage per layer,
+    and each stage re-renders from the same source, so that content has to be
+    included in exactly one stage — pass True for the first stage and False
+    for the rest, or it gets drawn once per stage.
+    """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
     keep = set(keep_indices)
     for i, g in enumerate(_top_level_layers(root)):
         if i not in keep:
             g.getparent().remove(g)
+    if not include_orphans:
+        for el in _top_level_orphans(root):
+            el.getparent().remove(el)
     tree.write(str(out_path), xml_declaration=True, encoding="utf-8")
+
+
+def reconcile_layers(reference_path: Path, target_path: Path) -> None:
+    """Re-align ``target_path``'s layer sequence with ``reference_path``'s.
+
+    vpype drops any layer it found nothing plottable in (a text-only layer, an
+    image, an empty group), so the optimized SVG can have fewer layers than
+    the upload it came from. Layers are addressed by position everywhere
+    downstream (see filter_to_layers), and those positions come from the
+    upload — so a dropped layer silently shifts every later layer down one and
+    the wrong artwork gets plotted.
+
+    Rather than teach every caller about two numbering schemes, restore the
+    original sequence in place: walk the reference's labels in order, matching
+    each to the next same-labelled layer in the target, and splice in an empty
+    placeholder wherever the target has none. Target layers that match nothing
+    (e.g. content vpype folded into a layer of its own) keep their relative
+    order at the end. Rewrites ``target_path`` only if something was missing.
+    """
+    ref_root = etree.parse(str(reference_path)).getroot()
+    tree = etree.parse(str(target_path))
+    root = tree.getroot()
+
+    ref_labels = [g.get(LABEL_ATTR) or f"Layer {i + 1}"
+                  for i, g in enumerate(_top_level_layers(ref_root))]
+    target_layers = _top_level_layers(root)
+    remaining = list(target_layers)
+
+    ordered: list = []
+    inserted = False
+    for label in ref_labels:
+        match = next((g for g in remaining
+                      if (g.get(LABEL_ATTR) or "") == label), None)
+        if match is not None:
+            remaining.remove(match)
+            ordered.append(match)
+        else:
+            placeholder = etree.Element(LAYER_TAG)
+            placeholder.set(GROUPMODE_ATTR, "layer")
+            placeholder.set(LABEL_ATTR, label)
+            ordered.append(placeholder)
+            inserted = True
+    ordered.extend(remaining)
+
+    if not inserted:
+        return
+    # Re-attach in the reference's order, starting where the layers already
+    # were, so the structural siblings (defs/style/namedview) stay put.
+    at = root.index(target_layers[0]) if target_layers else len(root)
+    for g in target_layers:
+        root.remove(g)
+    for offset, g in enumerate(ordered):
+        root.insert(at + offset, g)
+    tree.write(str(target_path), xml_declaration=True, encoding="utf-8")
 
 
 def _content_footprint_mm(
@@ -106,7 +200,7 @@ def _content_footprint_mm(
     machine_custom_enabled: bool,
     machine_auto_rotate: str,
 ) -> tuple[float, float, float, float]:
-    """Sizing math shared by transform_to_paper and content_bounds_mm: the
+    """Sizing math shared by transform_to_paper and ink_bounds_mm: the
     content's on-page footprint (its rotated bounding box, at fit_content's
     scale if enabled). Returns (footprint_w_mm, footprint_h_mm,
     total_rotation_deg, total_mm_scale)."""
@@ -146,39 +240,6 @@ def _content_footprint_mm(
     return bbox_w_per_unit * total_mm_scale, bbox_h_per_unit * total_mm_scale, total_rotation_deg, total_mm_scale
 
 
-def content_bounds_mm(
-    svg_path: Path,
-    paper_width_mm: float,
-    paper_height_mm: float,
-    margin_top_mm: float,
-    margin_right_mm: float,
-    margin_bottom_mm: float,
-    margin_left_mm: float,
-    fit_content: bool,
-    transform_scale: float = 1.0,
-    transform_rotation_deg: float = 0.0,
-    transform_offset_x_mm: float = 0.0,
-    transform_offset_y_mm: float = 0.0,
-    machine_custom_enabled: bool = False,
-    machine_auto_rotate: str = "off",
-) -> tuple[float, float, float, float]:
-    """Where the content's bounding box would land on the page (in mm) under
-    transform_to_paper's placement rules, as (left, top, right, bottom) —
-    without writing an output SVG. Used for pre-flight bounds checks, e.g.
-    nudge_origin verifying a nudge won't push content off the page."""
-    tree = etree.parse(str(svg_path))
-    root = tree.getroot()
-    footprint_w_mm, footprint_h_mm, _, _ = _content_footprint_mm(
-        root, paper_width_mm, paper_height_mm,
-        margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
-        fit_content, transform_scale, transform_rotation_deg,
-        machine_custom_enabled, machine_auto_rotate,
-    )
-    left = margin_left_mm + transform_offset_x_mm
-    top = margin_top_mm + transform_offset_y_mm
-    return left, top, left + footprint_w_mm, top + footprint_h_mm
-
-
 def ink_bounds_mm(
     svg_path: Path,
     layer_indices: list[int],
@@ -197,20 +258,26 @@ def ink_bounds_mm(
     machine_auto_rotate: str = "off",
 ) -> tuple[float, float, float, float] | None:
     """Where the *actual drawn geometry* of the given layers (not the SVG's
-    document canvas — see content_bounds_mm) would land on the page under
-    transform_to_paper's placement rules, in mm: (left, top, right, bottom).
-    None if there's no geometry to measure (no layers selected, or they're
-    empty of drawable content).
+    document canvas) would land on the page under transform_to_paper's
+    placement rules, in mm: (left, top, right, bottom). None if there's no
+    geometry to measure (no layers selected, or they're empty of drawable
+    content).
 
     fit_content's *scale factor* is still driven by the canvas size, exactly
     like transform_to_paper itself — only the reported extent switches to
     the ink's true bounding box. That box is measured with vpype (already a
     dependency — see svg_optimize.py) on a temporary file filtered to just
-    the given layers, then mapped through the same
-    translate/rotate/scale/translate transform_to_paper's <g transform=...>
-    applies, corner by corner, so a rotated design's true footprint (not
-    just its unrotated one) is reported correctly regardless of where the
-    ink sits within its own canvas."""
+    the given layers, then mapped through the same rotate/scale-about-centre
+    that transform_to_paper's <g transform=...> applies, corner by corner, so
+    a rotated design's true footprint (not just its unrotated one) is reported
+    correctly regardless of where the ink sits within its own canvas.
+
+    vpype reports geometry in CSS pixels of the *physical* document (it has
+    already applied the viewBox-to-viewport mapping), not in the SVG's own
+    user units — so the only conversion needed here is px to mm, and the
+    result is a position within the orig_w_mm x orig_h_mm document. Mixing
+    those pixels with user-unit maths inflates every measurement by 96/25.4.
+    """
     import os
     import tempfile
 
@@ -227,15 +294,8 @@ def ink_bounds_mm(
     orig_w_mm, orig_h_mm = svg_size_mm(root)
     orig_w_mm = orig_w_mm or paper_width_mm
     orig_h_mm = orig_h_mm or paper_height_mm
-    vb = root.get("viewBox", "")
-    if vb:
-        parts = vb.split()
-        vb_x, vb_y, vb_w, vb_h = (float(p) for p in parts[:4])
-    else:
-        vb_x, vb_y = 0.0, 0.0
-        vb_w, vb_h = orig_w_mm, orig_h_mm
-    user_scale = total_mm_scale * (orig_w_mm / vb_w) if vb_w else total_mm_scale
-    vb_center_x, vb_center_y = vb_x + vb_w / 2, vb_y + vb_h / 2
+    # transform_to_paper maps the document's own centre onto this point.
+    doc_center_x_mm, doc_center_y_mm = orig_w_mm / 2, orig_h_mm / 2
     center_x_mm = margin_left_mm + footprint_w_mm / 2 + transform_offset_x_mm
     center_y_mm = margin_top_mm + footprint_h_mm / 2 + transform_offset_y_mm
 
@@ -249,13 +309,14 @@ def ink_bounds_mm(
         tmp.unlink(missing_ok=True)
     if bounds is None:
         return None
-    xmin, ymin, xmax, ymax = bounds
+    xmin, ymin, xmax, ymax = (v / PX_PER_MM for v in bounds)
 
     rad = math.radians(total_rotation_deg)
     cos_r, sin_r = math.cos(rad), math.sin(rad)
 
-    def to_page(px: float, py: float) -> tuple[float, float]:
-        dx, dy = (px - vb_center_x) * user_scale, (py - vb_center_y) * user_scale
+    def to_page(x_mm: float, y_mm: float) -> tuple[float, float]:
+        dx = (x_mm - doc_center_x_mm) * total_mm_scale
+        dy = (y_mm - doc_center_y_mm) * total_mm_scale
         return (
             center_x_mm + dx * cos_r - dy * sin_r,
             center_y_mm + dx * sin_r + dy * cos_r,
@@ -311,8 +372,21 @@ def transform_to_paper(
         fit_content, transform_scale, transform_rotation_deg,
         machine_custom_enabled, machine_auto_rotate,
     )
-    # Source user units -> paper mm.
-    user_scale = total_mm_scale * (orig_w_mm / vb_w) if vb_w else total_mm_scale
+    # Source user units -> paper mm. The viewBox-to-viewport mapping is SVG's
+    # default preserveAspectRatio="xMidYMid meet": one uniform scale, the
+    # smaller of the two axis ratios, with the result centred in the viewport.
+    # Taking the x ratio alone stretches any document whose width/height
+    # aspect differs from its viewBox aspect — the browser preview applies
+    # `meet`, so the plot would come out a different size than it showed.
+    # Centring is already handled below: the viewBox centre is translated onto
+    # the viewport (document) centre.
+    if vb_w and vb_h:
+        vb_to_mm = min(orig_w_mm / vb_w, orig_h_mm / vb_h)
+    elif vb_w:
+        vb_to_mm = orig_w_mm / vb_w
+    else:
+        vb_to_mm = 1.0
+    user_scale = total_mm_scale * vb_to_mm
 
     # Rotate/scale the content around its own center; that center lands at
     # (center_x_mm, center_y_mm) on the paper, shifted by the user's offset.

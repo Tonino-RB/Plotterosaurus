@@ -102,6 +102,21 @@ def apply_camera_settings() -> None:
     })
 
 
+def stop_orphaned_recording() -> None:
+    """Tell MediaMTX to stop recording, once, at startup.
+
+    Recording state lives only in this process, so a crash or restart mid-plot
+    leaves MediaMTX happily writing segments with nothing left to ever stop it
+    — it fills the disk. Called from the app's lifespan only; deliberately not
+    folded into apply_camera_settings(), which also runs on every Settings
+    save and would kill a recording in progress.
+    """
+    if not config.CAMERA_ENABLED:
+        return
+    _api_patch(f"/v3/config/paths/patch/{PATH_NAME}", {"record": False})
+    shutil.rmtree(SEGMENTS_DIR, ignore_errors=True)
+
+
 def set_focus(af_mode: str, lens_position: float) -> None:
     """Live focus control for the settings-modal slider. Persists the value
     so it survives a MediaMTX/service restart."""
@@ -150,6 +165,7 @@ def start_recording(job_id: str | None, mode: str | None = None,
         _session = {
             "job_id": job_id,
             "session_id": session_id,
+            "started_at": time.time(),
             "mode": mode,
             "interval_s": timelapse_interval_s or config.CAMERA_TIMELAPSE_INTERVAL_S_DEFAULT,
             "multiplier": speed_multiplier or config.CAMERA_SPEED_MULTIPLIER_DEFAULT,
@@ -207,8 +223,6 @@ def stop_recording() -> None:
             _stop_timelapse_thread()
         else:
             _api_patch(f"/v3/config/paths/patch/{PATH_NAME}", {"record": False})
-            # Let the in-flight segment part flush (recordPartDuration default 1s).
-            time.sleep(1.5)
         state.set_recording("idle", None)
         globals()["_session"] = None
     # Finalize (ffmpeg concat/speedup, optional rclone) off the lock — it can
@@ -239,7 +253,16 @@ def _run_ffmpeg(args: list[str]) -> None:
 def _finalize(session: dict) -> None:
     segments_dir: Path = session["segments_dir"]
     mode = session["mode"]
-    final_path = _output_dir() / f"{session['session_id']}.mp4"
+    # Stamp the time into the name: a job recording is keyed by job_id, and
+    # re-plotting a job would otherwise overwrite the previous take.
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(session["started_at"]))
+    final_path = _output_dir() / f"{session['session_id']}-{stamp}.mp4"
+    if mode != "timelapse":
+        # Let MediaMTX flush the segment part that was in flight when
+        # recording stopped (recordPartDuration defaults to 1s). Waited for
+        # here rather than in stop_recording(), which holds the module lock on
+        # the plot worker's thread while it finishes a job.
+        time.sleep(1.5)
     try:
         if mode == "timelapse":
             frames = sorted(segments_dir.glob("frame_*.jpg"))

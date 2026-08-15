@@ -218,7 +218,8 @@ def _process(task: _Task) -> None:
         return
 
     if estimate:
-        state.update_job(task.job_id, plan_status="ready", **estimate)
+        state.update_job(task.job_id, plan_status="ready",
+                         **plot_worker._estimate_fields(estimate))
         task.ok = True
     else:
         state.update_job_silent(task.job_id, plan_status="failed")

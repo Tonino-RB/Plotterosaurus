@@ -61,10 +61,17 @@ def _repair_missing_layers(path: Path, info: dict) -> dict:
     tmp = path.with_name(f"{path.stem}.tmp.svg")
     try:
         svg_optimize.normalize_layers(path, tmp)
-        tmp.replace(path)
     except svg_optimize.OptimizeError:
         tmp.unlink(missing_ok=True)
         return info
+    # vpype exits 0 but writes no file at all when the document has nothing
+    # plottable in it ("no geometry to save, no file created") — an SVG that is
+    # empty, or holds only text/images. Without this check the replace() below
+    # raises FileNotFoundError, which isn't an OptimizeError, so it escapes as
+    # a 500 instead of the caller's clean "no layers" rejection.
+    if not tmp.exists():
+        return info
+    tmp.replace(path)
     try:
         return svg_utils.parse_layers(path)
     except Exception:
@@ -81,6 +88,10 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
     "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
     "Manual jog only available while idle": "jog_not_idle",
+    # Not failures — the UI turns these two into a confirm/cancel prompt and
+    # retries with confirm_below_origin set.
+    "Jog would go above or left of the origin": "jog_below_origin",
+    "Nudge would go above or left of the origin": "nudge_below_origin",
     "This job has no calibration layers": "no_calibration_layers",
     "Invalid calibration filename": "invalid_calibration_filename",
     "Calibration file not found": "calibration_file_not_found",
@@ -112,6 +123,7 @@ async def lifespan(_app: FastAPI):
     optimize_queue.bootstrap_from_disk()
     plan_queue.bootstrap_from_state()
     camera.apply_camera_settings()
+    camera.stop_orphaned_recording()
     drain_task = asyncio.create_task(state.drain_events())
     try:
         yield
@@ -158,6 +170,13 @@ async def upload(file: UploadFile = File(...)):
         path.unlink(missing_ok=True)
         raise _coded(400, "invalid_svg")
     info = _repair_missing_layers(path, info)
+    # Nothing downstream can use a layerless SVG, and the browser used to
+    # discover that for itself and abandon the upload — leaving the file (and
+    # a queued optimize task for it) behind forever. Reject it here, before
+    # anything is enqueued, so the file goes away with the request.
+    if not info["layers"]:
+        path.unlink(missing_ok=True)
+        raise _coded(400, "no_layers")
     optimize_queue.enqueue_for_upload(svg_id)
     return {"id": svg_id, "filename": file.filename or "upload.svg", **info}
 
@@ -317,10 +336,40 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "record_timelapse_interval_s": (0.5, 3600.0),
     "record_speed_multiplier": (1.1, 60.0),
     "transform_scale": (0.01, 5.0),
-    "transform_rotation_deg": (0.0, 360.0),
+    "transform_rotation_deg": (-360.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
     "optimize_svg_min_length_mm": (0.01, 100.0),
 }
+
+
+# Job fields that must never end up None. They're Optional on JobUpdate so a
+# PATCH can leave them alone, but an *explicit* null is a different thing: it
+# survives exclude_unset, gets written to the record, and later reaches
+# ad.options.speed_pendown as None, where the driver raises a TypeError that
+# isn't the IndexError _run_staged_loop_impl catches — killing the worker
+# thread and stranding the job in `plotting`. The web UI produces exactly this
+# when a number field is cleared (parseInt("") is NaN, which JSON-encodes as
+# null), so drop nulls rather than 400 on them: the user emptied a box, they
+# didn't ask to unset the speed.
+_NON_NULLABLE_JOB_FIELDS = frozenset({
+    "speed_pendown", "speed_penup", "acceleration",
+    "pen_pos_up", "pen_pos_down",
+    "paper_width_mm", "paper_height_mm",
+    "margin_top_mm", "margin_right_mm", "margin_bottom_mm", "margin_left_mm",
+    "transform_scale", "transform_rotation_deg",
+    "transform_offset_x_mm", "transform_offset_y_mm",
+    "fit_content", "pause_between_layers", "pause_after_job",
+    "delete_on_complete", "record_plot", "layer_selections",
+    "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
+    "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
+    "optimize_svg_min_length", "optimize_svg_min_length_mm",
+})
+
+
+def _drop_null_job_fields(d: dict) -> None:
+    for key in list(d):
+        if d[key] is None and key in _NON_NULLABLE_JOB_FIELDS:
+            del d[key]
 
 
 def _clamp_job_fields(d: dict,
@@ -328,6 +377,7 @@ def _clamp_job_fields(d: dict,
                       paper_height_mm: float | None = None) -> None:
     """In-place clamp of numeric job fields. ``paper_*_mm`` (when known)
     bounds the transform offsets to the paper extent."""
+    _drop_null_job_fields(d)
     for key, (lo, hi) in _CLAMP_RANGES.items():
         v = d.get(key)
         if v is not None:
@@ -431,10 +481,13 @@ def update_job(job_id: str, req: JobUpdate):
     # potentially stale. Drop it; plan_queue will recompute.
     updates.update({
         "estimated_total_seconds": None,
+        "progress_total_seconds": None,
         "distance_pendown_m": None,
         "distance_total_m": None,
         "pen_lifts": None,
         "plan_status": None,
+        "plan_error": None,
+        "run_elapsed_seconds": 0.0,
     })
     state.update_job(job_id, **updates)
     fresh = state.get_job(job_id)
@@ -476,8 +529,14 @@ def delete_job(job_id: str):
 
 # Public API (v1) -----------------------------------------------------------
 # Routes under /api/v1/* are intended for external clients (e.g. the macOS
-# companion app). They require the X-API-Key header. The web UI uses the
-# unprefixed routes above (loopback, no auth).
+# companion app). They require the X-API-Key header.
+#
+# The web UI uses the unprefixed routes above, which have NO authentication.
+# The service binds 0.0.0.0:80 (see systemd/plotterosaurus.service), so those
+# routes — including GET /settings, which returns this api_key, and
+# /system/shutdown — are reachable by anything on the same network. That is a
+# deliberate trade for a plotter on a trusted home LAN: it keeps the UI usable
+# from a phone with no login. Do not port-forward this to the internet.
 
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
     if not config.API_KEY:
@@ -603,6 +662,12 @@ async def api_create_job(file: UploadFile = File(...),
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"invalid SVG: {e}")
     info = _repair_missing_layers(path, info)
+    if not info["layers"]:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, "SVG contains no Inkscape layers")
+    # Only enqueue once the SVG is known to be usable — an optimize task that
+    # outlives the file it was queued for writes a .opt.svg nothing will ever
+    # clean up.
     optimize_queue.enqueue_for_upload(svg_id)
 
     paper_width_mm, paper_height_mm, paper_name = _resolve_paper(
@@ -635,9 +700,6 @@ async def api_create_job(file: UploadFile = File(...),
                 sel[key] = int(max(lo, min(hi, val)))
         layer_selections.append(sel)
 
-    if not info["layers"]:
-        path.unlink(missing_ok=True)
-        raise HTTPException(400, "SVG contains no Inkscape layers")
     if not any(s.get("selected", True) for s in layer_selections):
         path.unlink(missing_ok=True)
         raise HTTPException(400, "all layers were deselected")
@@ -850,9 +912,11 @@ def requeue_job(job_id: str):
         raise _coded(409, "cannot_requeue_running")
     state.update_job(job_id, status="queued", error=None, resume_path=None,
                      started_at=None, plotting_started_at=None,
+                     run_elapsed_seconds=0.0,
                      stages=[], current_stage_index=0,
-                     plan_status=None,
+                     plan_status=None, plan_error=None,
                      estimated_total_seconds=None,
+                     progress_total_seconds=None,
                      distance_pendown_m=None,
                      distance_total_m=None,
                      pen_lifts=None,
@@ -959,12 +1023,13 @@ def api_calibrate_file_queue(req: CalibrateFileRequest):
 class NudgeOriginRequest(BaseModel):
     dx_mm: float = 0.0
     dy_mm: float = 0.0
+    confirm_below_origin: bool = False
 
 
 @app.post("/queue/nudge-origin")
 def nudge_origin_queue(req: NudgeOriginRequest):
     try:
-        plot_worker.nudge_origin(req.dx_mm, req.dy_mm)
+        plot_worker.nudge_origin(req.dx_mm, req.dy_mm, req.confirm_below_origin)
     except RuntimeError as e:
         raise _worker_error(e)
     return {"ok": True}
@@ -1083,18 +1148,20 @@ def api_motors_disable():
 
 # Manual jog -------------------------------------------------------------
 # Idle-only: walk the pen carriage into position over the paper before a plot
-# starts, and walk it back home. Distinct from /queue/nudge-origin above,
-# which corrects an active job's remaining stages mid-plot.
+# starts, declare where it sits to be the page corner, and walk it back to
+# that corner. Distinct from /queue/nudge-origin above, which corrects an
+# active job's remaining stages mid-plot.
 
 class ManualJogRequest(BaseModel):
     dx_mm: float = 0.0
     dy_mm: float = 0.0
+    confirm_below_origin: bool = False
 
 
 @app.post("/pen/jog")
 def pen_jog(req: ManualJogRequest):
     try:
-        plot_worker.manual_jog(req.dx_mm, req.dy_mm)
+        plot_worker.manual_jog(req.dx_mm, req.dy_mm, req.confirm_below_origin)
     except RuntimeError as e:
         raise _worker_error(e)
     return {"ok": True}
@@ -1117,6 +1184,20 @@ def pen_jog_home():
 @app.post("/api/v1/pen/jog-home", dependencies=[Depends(require_api_key)])
 def api_pen_jog_home():
     return pen_jog_home()
+
+
+@app.post("/pen/set-origin")
+def pen_set_origin():
+    try:
+        plot_worker.set_origin()
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/pen/set-origin", dependencies=[Depends(require_api_key)])
+def api_pen_set_origin():
+    return pen_set_origin()
 
 
 # Webhook notifications ----------------------------------------------------
@@ -1220,9 +1301,26 @@ def api_camera_status(request: Request):
 
 # Settings ---------------------------------------------------------------
 
+def _settings_payload() -> dict:
+    """config.snapshot() plus the working area actually reachable.
+
+    machine_width_mm/machine_height_mm are what the user typed; they say
+    nothing about the plotter model's own travel and mean nothing at all while
+    the custom profile is off. The UI needs the real envelope to warn about a
+    page that won't fit, so hand it the same figure the driver and the jog
+    guards use. Derived, not stored — kept out of config.snapshot() so it
+    never gets written to config.json.
+    """
+    snap = config.snapshot()
+    bed_w_mm, bed_h_mm = plot_worker.machine_bounds_mm()
+    snap["machine_effective_width_mm"] = bed_w_mm
+    snap["machine_effective_height_mm"] = bed_h_mm
+    return snap
+
+
 @app.get("/settings")
 def get_settings():
-    return config.snapshot()
+    return _settings_payload()
 
 
 @app.patch("/settings")
@@ -1233,7 +1331,7 @@ def patch_settings(req: SettingsUpdate):
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()
-    return config.snapshot()
+    return _settings_payload()
 
 
 # System -----------------------------------------------------------------

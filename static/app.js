@@ -29,6 +29,7 @@ const jogXInput = $("jog-x-input");
 const jogYInput = $("jog-y-input");
 const jogMoveBtn = $("jog-move-btn");
 const jogHomeBtn = $("jog-home-btn");
+const jogOriginBtn = $("jog-origin-btn");
 const calibrationFileRow = $("calibration-file-row");
 const calibrationFileSelect = $("calibration-file-select");
 const calibrationFileRunBtn = $("calibration-file-run-btn");
@@ -186,12 +187,27 @@ function apiErrText(detail) {
 // Pull a readable message out of a fetch Response. FastAPI errors look like
 // {"detail": ...}; plain text is passed through unchanged.
 async function readErr(res) {
+  return (await readErrDetail(res)).text;
+}
+
+// Same, but also exposes the machine-readable code (see _coded in main.py) so
+// a caller can single out one specific rejection instead of just reporting it
+// — the below-origin confirmation needs to tell "not allowed yet" apart from
+// a real failure. A response body can only be read once, so callers that need
+// both take this and use .text.
+async function readErrDetail(res) {
   const text = await res.text();
   try {
     const data = JSON.parse(text);
-    if (data && typeof data === "object" && data.detail != null) return apiErrText(data.detail);
+    if (data && typeof data === "object" && data.detail != null) {
+      const detail = data.detail;
+      return {
+        code: (detail && typeof detail === "object" && detail.code) || null,
+        text: apiErrText(detail),
+      };
+    }
   } catch {}
-  return text;
+  return { code: null, text };
 }
 
 // ───── Upload ────────────────────────────────────────────────────────────
@@ -250,10 +266,8 @@ async function uploadAndQueue(file) {
 
     // Auto-fill layer selections: select all layers on a fresh upload so
     // re-dropping the same file gives a clean reset, regardless of labels.
+    // (A layerless SVG is rejected by /upload itself, so this is never empty.)
     const layer_selections = svg.layers.map((l) => ({ index: l.index, label: l.label }));
-    if (layer_selections.length === 0) {
-      throw new Error(t("upload.no_layers"));
-    }
 
     // Auto-detect paper
     const detected = detectPaper(svg.width_mm, svg.height_mm);
@@ -733,7 +747,7 @@ async function fetchSvgMeta(job_id, svg_id) {
       const mode = child.getAttribute("inkscape:groupmode");
       if (mode !== "layer") continue;
       const label = child.getAttribute("inkscape:label") || t("layer.default_label", { n: index + 1 });
-      layers.push({ index, label, addressable: !!label && /^\d/.test(label) });
+      layers.push({ index, label });
       index++;
     }
     const [width_mm, height_mm] = svgSizeMm(root);
@@ -752,15 +766,19 @@ async function fetchSvgMeta(job_id, svg_id) {
   }
 }
 
+// Absolute CSS length units in mm per unit. Relative units (%, em, ex) aren't
+// resolvable here, so they return null and the caller falls back to the
+// viewBox. Mirrors parse_dim_to_mm() in app/svg_utils.py.
+const UNIT_TO_MM = {
+  mm: 1, cm: 10, in: 25.4, px: 25.4 / 96, "": 25.4 / 96,
+  pt: 25.4 / 72, pc: 25.4 / 6, q: 0.25,
+};
+
 function parseDimToMm(s) {
-  const m = String(s).trim().match(/^([\d.eE+\-]+)\s*(cm|mm|in|px)?$/i);
+  const m = String(s).trim().match(/^([\d.eE+\-]+)\s*([a-z%]*)$/i);
   if (!m) return null;
-  let v = parseFloat(m[1]);
-  const unit = (m[2] || "px").toLowerCase();
-  if (unit === "cm") return v * 10;
-  if (unit === "in") return v * 25.4;
-  if (unit === "mm") return v;
-  return v * 25.4 / 96;
+  const factor = UNIT_TO_MM[(m[2] || "px").toLowerCase()];
+  return factor === undefined ? null : parseFloat(m[1]) * factor;
 }
 
 // Falls back to the viewBox (treated as CSS px at 96dpi) when width/height
@@ -926,6 +944,11 @@ function updateCard(card, job) {
       (job.plan_status === "pending" || job.plan_status === "planning")) {
     subParts.push(job.plan_status === "planning" ? t("job.planning") : t("job.waiting_plan"));
   }
+  // A background plan that failed used to be recorded and never shown, so the
+  // first sign of trouble was the error after clicking Plot.
+  if (job.status === "queued" && job.plan_status === "failed") {
+    subParts.push(t("job.plan_failed"));
+  }
   card.querySelector(".job-sub").textContent = subParts.join(" · ");
 
   const pill = card.querySelector(".job-status-pill");
@@ -1007,6 +1030,14 @@ function updateCard(card, job) {
   renderStages(card, job);
   renderPlotInfo(card, job);
   renderMachineBoundsWarning(card, job);
+  // renderLayers rebuilds the layer checkboxes and move buttons from scratch,
+  // so the blanket disable pass above (which ran before them) never reached
+  // these ones — leaving a plotting job's layers toggleable, with the change
+  // shown as applied while the server refused it. Re-assert the lock now that
+  // every control exists.
+  card.querySelectorAll(".col-form input, .col-form select, .col-form button")
+    .forEach((el) => { el.disabled = activeBlocks; });
+  applyMachineAutoRotateToCard(card, activeBlocks);
 }
 
 // The actual drawn geometry's on-page footprint after rotation/scale/fit-to-
@@ -1048,7 +1079,12 @@ function computeGeometryFootprint(card, job, ctx) {
   const vbW = vb && vb.width ? vb.width : svgW;
   const vbH = vb && vb.height ? vb.height : svgH;
   const vbX = vb ? vb.x : 0, vbY = vb ? vb.y : 0;
-  const mmPerUnit = svgW / vbW;
+  // preserveAspectRatio="xMidYMid meet" (the SVG default): one uniform scale,
+  // the smaller of the two axis ratios. Mirrors transform_to_paper() in
+  // app/svg_utils.py — taking svgW/vbW alone would report a stretched
+  // footprint for any document whose width/height aspect differs from its
+  // viewBox aspect.
+  const mmPerUnit = Math.min(svgW / vbW, svgH / vbH);
 
   const autoRotDeg = computeAutoRotateDeg(job.paper_width_mm, job.paper_height_mm, svgW, svgH);
   const rotDeg = (job.transform_rotation_deg ?? 0) + autoRotDeg;
@@ -1166,21 +1202,29 @@ function renderDeltaOverlay(card, job, footprint) {
   square.style.height = `${(footprint.height / h) * 100}%`;
 }
 
-// Advisory only: pyaxidraw enforces the real AxiDraw travel bounds at plot
-// time regardless — this just gives an earlier heads-up against the custom
-// bed-size profile the user configured in Settings.
+// Advisory only: pyaxidraw clips anything past the travel bounds at plot time
+// regardless — this is the earlier heads-up that it's going to.
+//
+// Measured against the *effective* working area from the server (the plotter
+// model's own travel, shrunk by the custom bed profile if one is set), not
+// against machine_width_mm/machine_height_mm. Those are only what the user
+// typed: they say nothing about the model's real travel, and mean nothing at
+// all while the custom profile is off — so an A3 page on a machine whose Y
+// travel stops at 297 mm used to draw no warning at all while the bottom
+// 123 mm silently went unplotted.
 function renderMachineBoundsWarning(card, job) {
   const el = card.querySelector(".machine-bounds-warning");
   if (!el) return;
-  const exceeds = appSettings.machine_custom_enabled &&
-    (job.paper_width_mm > appSettings.machine_width_mm ||
-     job.paper_height_mm > appSettings.machine_height_mm);
+  const bedW = appSettings.machine_effective_width_mm;
+  const bedH = appSettings.machine_effective_height_mm;
+  const exceeds = bedW > 0 && bedH > 0 &&
+    (job.paper_width_mm > bedW + 0.5 || job.paper_height_mm > bedH + 0.5);
   el.hidden = !exceeds;
   if (exceeds) {
     const u = effectiveDisplayUnit();
     el.textContent = t("card.machine_bounds_warning", {
-      width: formatLengthValue(appSettings.machine_width_mm, u),
-      height: formatLengthValue(appSettings.machine_height_mm, u),
+      width: formatLengthValue(bedW, u),
+      height: formatLengthValue(bedH, u),
       unit: u,
     });
   }
@@ -1705,18 +1749,42 @@ function onPaperChange(card) {
 }
 
 const cardUpdateTimers = new Map();
+// Per card: {explicit, form}. `explicit` holds fields passed in directly
+// (currently only layer_selections), `form` records that some edit wants the
+// whole form re-read. Both have to survive coalescing — the last call used to
+// win outright, so a layer toggle followed within the debounce window by any
+// other edit was never sent, while the card went on showing it as applied.
+const cardUpdatePending = new Map();
 function queueCardUpdate(card, immediateUpdates = null) {
-  // Coalesce rapid updates into one PATCH per ~250ms per card
+  // Coalesce rapid updates into one PATCH per ~150ms per card
   const id = card.dataset.id;
   clearTimeout(cardUpdateTimers.get(id));
-  const doUpdate = () => {
+  const pending = cardUpdatePending.get(id) || { explicit: {}, form: false };
+  if (immediateUpdates) Object.assign(pending.explicit, immediateUpdates);
+  else pending.form = true;
+  cardUpdatePending.set(id, pending);
+  cardUpdateTimers.set(id, setTimeout(() => {
     cardUpdateTimers.delete(id);
-    sendCardUpdate(card, immediateUpdates);
-  };
-  cardUpdateTimers.set(id, setTimeout(doUpdate, 150));
+    cardUpdatePending.delete(id);
+    sendCardUpdate(card, pending);
+  }, 150));
 }
 
-async function sendCardUpdate(card, immediateUpdates) {
+// Pull one job back from the server and redraw its card. Used when a PATCH is
+// refused: the card and serverState have both already been updated locally, so
+// the only reliable "before" state is the server's.
+async function revertCardToServer(card) {
+  try {
+    const res = await fetch(`/jobs/${card.dataset.id}`);
+    if (!res.ok) return;
+    const fresh = await res.json();
+    const i = serverState.queue.findIndex((j) => j.job_id === fresh.job_id);
+    if (i >= 0) serverState.queue[i] = fresh;
+    updateCard(card, fresh);
+  } catch (e) {}
+}
+
+async function sendCardUpdate(card, pending) {
   const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
   if (!job) return;
   // A PATCH on a non-queued job re-queues it server-side. Hide the requeue
@@ -1724,8 +1792,8 @@ async function sendCardUpdate(card, immediateUpdates) {
   // the PATCH and the broadcast landing.
   const requeueBtn = card.querySelector(".job-requeue");
   if (requeueBtn && job.status !== "queued") requeueBtn.hidden = true;
-  const updates = immediateUpdates || {};
-  if (!immediateUpdates) {
+  const updates = {};
+  if (pending.form) {
     const { w, h, paper_size_name } = readPaperFromCard(card);
     updates.paper_width_mm = w;
     updates.paper_height_mm = h;
@@ -1759,14 +1827,43 @@ async function sendCardUpdate(card, immediateUpdates) {
     const minLen = parseFloat(card.querySelector(".optimize-min-length-mm").value);
     if (isFinite(minLen) && minLen > 0) updates.optimize_svg_min_length_mm = minLen;
   }
+  Object.assign(updates, pending.explicit);
+  // An emptied number field parses to NaN, which JSON-encodes as null — and a
+  // null speed or pen height written onto the job crashes the plot worker.
+  // Leave the field out instead; the server keeps its current value.
+  for (const [k, v] of Object.entries(updates)) {
+    if (typeof v === "number" && !Number.isFinite(v)) delete updates[k];
+  }
+  if (!Object.keys(updates).length) return;
+  // A rejected PATCH used to be indistinguishable from a saved one: the card
+  // had already been redrawn from local state, so the screen showed settings
+  // the machine was never told about. Surface the failure and pull the card
+  // back to whatever the server actually holds.
+  const errEl = card.querySelector(".job-save-error");
   try {
-    await fetch(`/jobs/${card.dataset.id}`, {
+    const res = await fetch(`/jobs/${card.dataset.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updates),
     });
+    if (!res.ok) {
+      const msg = await readErr(res);
+      if (errEl) {
+        errEl.textContent = t("card.save_failed", { message: msg });
+        errEl.hidden = false;
+      }
+      // serverState was written to optimistically (see the layer handlers), so
+      // it can't be trusted as the "before" state — re-read the job.
+      await revertCardToServer(card);
+      return;
+    }
+    if (errEl) { errEl.hidden = true; errEl.textContent = ""; }
   } catch (e) {
-    console.error("update failed", e);
+    if (errEl) {
+      errEl.textContent = t("card.save_failed", { message: e.message });
+      errEl.hidden = false;
+    }
+    return;
   }
   // Refresh visuals locally right away (server will broadcast soon too)
   if (updates.paper_width_mm) updatePreviewTransform(card, { ...job, ...updates });
@@ -1803,7 +1900,12 @@ async function nudgeBack(jobId, dxStr, dyStr) {
     const res = await fetch("/pen/jog", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dx_mm: dx, dy_mm: dy }),
+      // Pre-confirmed: this correction can legitimately land above/left of
+      // the origin (the server aims for the design's own baseline overflow,
+      // not for a non-negative delta), and the below-origin prompt exists to
+      // catch aiming blind — the exact distance is printed on the button the
+      // user just clicked, so there's nothing left to warn about.
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy, confirm_below_origin: true }),
     });
     if (!res.ok) throw new Error(await readErr(res));
     const res2 = await fetch(`/jobs/${jobId}/requeue`, { method: "POST" });
@@ -1922,24 +2024,61 @@ cameraPauseBtn.addEventListener("click", () => postCameraAction("/camera/recordi
 cameraResumeBtn.addEventListener("click", () => postCameraAction("/camera/recording/resume"));
 cameraStopBtn.addEventListener("click", () => postCameraAction("/camera/recording/stop"));
 
+// Confirm/cancel prompt for a jog or nudge that lands above or left of the
+// origin. The server allows it, but only on a second ask (see
+// plot_worker.manual_jog): it aims part of the plot off the top-left of the
+// paper, and past the origin the carriage may not have the travel to get
+// there — worth a look before it moves, not worth refusing outright.
+const belowOriginModal = $("below-origin-modal");
+let belowOriginRetry = null;
+
+function askBelowOrigin(retry) {
+  belowOriginRetry = retry;
+  belowOriginModal.hidden = false;
+}
+function closeBelowOrigin() {
+  belowOriginModal.hidden = true;
+  belowOriginRetry = null;
+}
+$("below-origin-cancel").addEventListener("click", closeBelowOrigin);
+belowOriginModal.addEventListener("click", (e) => {
+  if (e.target === belowOriginModal) closeBelowOrigin();
+});
+$("below-origin-confirm").addEventListener("click", () => {
+  const retry = belowOriginRetry;
+  closeBelowOrigin();
+  if (retry) retry();
+});
+
 // Fine origin nudge — only meaningful at an awaiting_pen_change pause (see
 // applyTopControls, which shows/hides #origin-nudge and updates the readouts
 // from the broadcast state).
-originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    const step = parseFloat(btn.dataset.step);
-    const body = btn.dataset.axis === "x" ? { dx_mm: step, dy_mm: 0 } : { dx_mm: 0, dy_mm: step };
-    try {
-      const res = await fetch("/queue/nudge-origin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(await readErr(res));
-    } catch (e) {
-      topMessage.textContent = t("error.request_failed", { message: e.message });
-      topMessage.className = "error";
+async function postNudge(dx, dy, confirmBelowOrigin) {
+  try {
+    const res = await fetch("/queue/nudge-origin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy, confirm_below_origin: !!confirmBelowOrigin }),
+    });
+    if (!res.ok) {
+      const { code, text } = await readErrDetail(res);
+      if (code === "nudge_below_origin") {
+        askBelowOrigin(() => postNudge(dx, dy, true));
+        return;
+      }
+      throw new Error(text);
     }
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+}
+
+originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const step = parseFloat(btn.dataset.step);
+    if (btn.dataset.axis === "x") postNudge(step, 0, false);
+    else postNudge(0, step, false);
   });
 });
 
@@ -1964,22 +2103,33 @@ function flashJogResult(btn, ok) {
   }
 }
 
-jogMoveBtn.addEventListener("click", async () => {
-  const dx = parseFloat(jogXInput.value) || 0;
-  const dy = parseFloat(jogYInput.value) || 0;
+async function postJog(dx, dy, confirmBelowOrigin) {
   try {
     const res = await fetch("/pen/jog", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dx_mm: dx, dy_mm: dy }),
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy, confirm_below_origin: !!confirmBelowOrigin }),
     });
-    if (!res.ok) throw new Error(await readErr(res));
+    if (!res.ok) {
+      const { code, text } = await readErrDetail(res);
+      // Not a failure — don't blink the button red for a move the user is
+      // about to be asked about; the retry reports its own outcome.
+      if (code === "jog_below_origin") {
+        askBelowOrigin(() => postJog(dx, dy, true));
+        return;
+      }
+      throw new Error(text);
+    }
     flashJogResult(jogMoveBtn, true);
     jogXInput.value = "";
     jogYInput.value = "";
   } catch (e) {
     flashJogResult(jogMoveBtn, false);
   }
+}
+
+jogMoveBtn.addEventListener("click", () => {
+  postJog(parseFloat(jogXInput.value) || 0, parseFloat(jogYInput.value) || 0, false);
 });
 
 jogHomeBtn.addEventListener("click", async () => {
@@ -1989,6 +2139,19 @@ jogHomeBtn.addEventListener("click", async () => {
     flashJogResult(jogHomeBtn, true);
   } catch (e) {
     flashJogResult(jogHomeBtn, false);
+  }
+});
+
+// Declare where the carriage sits now to be the page's top-left corner: the
+// delta readout goes back to 0, 0 and nothing moves (see plot_worker.
+// set_origin). From here on Return to Origin comes back to this spot.
+jogOriginBtn.addEventListener("click", async () => {
+  try {
+    const res = await fetch("/pen/set-origin", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    flashJogResult(jogOriginBtn, true);
+  } catch (e) {
+    flashJogResult(jogOriginBtn, false);
   }
 });
 
@@ -2123,6 +2286,7 @@ function applyTopControls() {
   jogYInput.disabled = jogDisabled;
   jogMoveBtn.disabled = jogDisabled;
   jogHomeBtn.disabled = jogDisabled;
+  jogOriginBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
   jogYReadout.textContent = (s.manual_origin_offset_y_mm ?? 0).toFixed(1);
 
@@ -2166,10 +2330,16 @@ function applyTopControls() {
     ? t("a11y.shutdown_busy")
     : t("a11y.shutdown");
 
-  // Sticky progress bar
-  if (active && active.status === "plotting" && active.plotting_started_at && active.estimated_total_seconds > 0) {
+  // Sticky progress bar. The denominator is progress_total_seconds (the one a
+  // live speed change recalibrates), falling back to the plain estimate for
+  // job records written before that field existed.
+  const progressTotal = active
+    ? (active.progress_total_seconds || active.estimated_total_seconds)
+    : 0;
+  if (active && active.status === "plotting" && active.plotting_started_at && progressTotal > 0) {
     queueProgress.hidden = false;
-    startSharedElapsed(active.plotting_started_at, active.estimated_total_seconds);
+    startSharedElapsed(active.plotting_started_at,
+                       active.run_elapsed_seconds || 0, progressTotal);
   } else {
     queueProgress.hidden = true;
     stopSharedElapsed();
@@ -2197,12 +2367,16 @@ function applyCameraControls() {
 
 // ───── Elapsed / progress timer ──────────────────────────────────────────
 
-function startSharedElapsed(startedAt, estTotal) {
+// `startedAt` marks the span the pen is plotting right now, which restarts at
+// every layer and every resume; `bankedSecs` is everything this run already
+// spent plotting before that (see run_elapsed_seconds in plot_worker.py).
+// Adding them is what makes the bar measure the job instead of the layer.
+function startSharedElapsed(startedAt, bankedSecs, estTotal) {
   stopSharedElapsed();
   const fill = queueProgress.querySelector(".progress-fill");
   const timeEl = queueProgress.querySelector(".progress-time");
   const render = () => {
-    const secs = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+    const secs = Math.max(0, Math.floor(bankedSecs + Date.now() / 1000 - startedAt));
     const pct = estTotal > 0 ? Math.min(100, (secs / estTotal) * 100) : 0;
     fill.style.width = `${pct}%`;
     const remaining = Math.max(0, estTotal - secs);
@@ -2444,6 +2618,8 @@ function applyAppSettings(data) {
     machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
     machine_height_mm: data.machine_height_mm ?? appSettings.machine_height_mm,
     machine_auto_rotate: data.machine_auto_rotate ?? appSettings.machine_auto_rotate,
+    machine_effective_width_mm: data.machine_effective_width_mm ?? appSettings.machine_effective_width_mm,
+    machine_effective_height_mm: data.machine_effective_height_mm ?? appSettings.machine_effective_height_mm,
     webhook_url: data.webhook_url ?? appSettings.webhook_url,
     webhook_on_layer_complete: data.webhook_on_layer_complete ?? appSettings.webhook_on_layer_complete,
     webhook_on_job_complete: data.webhook_on_job_complete ?? appSettings.webhook_on_job_complete,

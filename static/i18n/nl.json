@@ -108,7 +108,7 @@
   "upload.processing": "Bezig met verwerken van {name}…",
   "upload.not_svg": "{name} is geen SVG-bestand.",
   "upload.files_skipped": "{count} bestanden zijn overgeslagen — alleen .svg-bestanden worden geaccepteerd.",
-  "upload.no_layers": "Deze SVG bevat geen Inkscape-lagen. Open hem in Inkscape, voeg minstens één laag toe en exporteer opnieuw.",
+  "apierror.no_layers": "Deze SVG bevat geen Inkscape-lagen. Open hem in Inkscape, voeg minstens één laag toe en exporteer opnieuw.",
   "upload.failed": "Uploaden mislukt: {message}",
 
   "queue.empty": "Sleep hierboven een SVG om te beginnen.",
@@ -216,5 +216,33 @@
   "apierror.worker_error": "{detail}",
   "stage_status.pending": "In afwachting",
   "stage_status.current": "Bezig",
-  "stage_status.done": "Klaar"
+  "stage_status.done": "Klaar",
+
+  "apierror.cannot_connect": "Plotter niet bereikbaar. Controleer of hij aan staat en de USB-kabel is aangesloten.",
+  "apierror.plotter_busy": "De plotter is aan het plotten. Pauzeer hem eerst.",
+  "apierror.not_plotting": "Dit werkt alleen tijdens een lopende plot.",
+  "apierror.nudge_not_at_pause": "De oorsprong bijstellen kan alleen tijdens een pauze voor een penwissel.",
+  "apierror.pen_height_not_at_pause": "De penhoogte is alleen live aan te passen tijdens een pauze voor een penwissel.",
+  "apierror.invalid_calibration_filename": "Die bestandsnaam voor kalibratie is ongeldig.",
+  "apierror.calibration_file_not_found": "Dat kalibratiebestand bestaat niet meer.",
+  "apierror.camera_not_enabled": "De camera staat uit. Zet hem aan bij Instellingen.",
+  "apierror.camera_unreachable": "Cameradienst niet bereikbaar. Controleer of MediaMTX draait.",
+  "apierror.recording_in_progress": "Er loopt al een opname. Stop die eerst.",
+  "apierror.invalid_af_mode": "Die autofocusstand is ongeldig.",
+  "apierror.webhook_not_configured": "Voeg eerst een meldings-URL toe bij Instellingen.",
+  "card.machine_bounds_warning": "Deze pagina is groter dan de plotter kan bereiken ({width} × {height} {unit}). Wat daarbuiten valt wordt niet getekend.",
+  "card.save_failed": "Wijziging niet opgeslagen: {message}",
+  "controls.recording_status_recording": "Opname",
+  "controls.recording_status_paused": "Opname gepauzeerd",
+  "settings.machine.auto_rotate_locked_title": "De oriëntatie wordt bepaald door het machineprofiel bij Instellingen.",
+  "settings.notifications.test_sent": "Testmelding verstuurd.",
+  "settings.notifications.url_required": "Voer eerst een meldings-URL in.",
+  "job.plan_failed": "schatting niet beschikbaar",
+
+  "a11y.jog_set_origin": "Oorsprong hier instellen",
+  "origin.below_title": "Voorbij de oorsprong bewegen?",
+  "origin.below_note": "Hiermee komt de pen boven of links van de hoek 0,0 te staan, dus een deel van de plot kan naast het papier vallen. Controleer of de slede die kant op nog ruimte heeft.",
+  "origin.below_confirm": "Toch bewegen",
+  "apierror.jog_below_origin": "Deze beweging zou boven of links van de oorsprong uitkomen.",
+  "apierror.nudge_below_origin": "Deze bijstelling zou boven of links van de oorsprong uitkomen."
 }

@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import config, state, svg_optimize
+from . import config, state, svg_optimize, svg_utils
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def settings_from_job(job: dict) -> dict:
 
 class _Task:
     __slots__ = ("svg_id", "settings", "settings_key", "kind",
-                 "started", "done", "ok", "error", "cancelled")
+                 "started", "done", "ok", "error", "cancelled", "waiters")
 
     def __init__(self, svg_id: str, settings: dict, sk: str, kind: str) -> None:
         self.svg_id = svg_id
@@ -89,6 +89,11 @@ class _Task:
         self.ok = False
         self.error: str | None = None
         self.cancelled = False
+        # How many request_for_job callers are blocked on this task. Tasks are
+        # deduplicated (see _enqueue), so the plot worker and the plan queue
+        # can be waiting on the *same* task — one of them giving up must not
+        # kill the vpype run the other still needs.
+        self.waiters = 0
 
 
 _pending: list[_Task] = []
@@ -207,16 +212,21 @@ def request_for_job(svg_id: str,
     """
     task = _enqueue(svg_id, settings, kind="job")
     fired = False
-
-    while not task.done.is_set():
-        if cancel_flag.is_set():
-            _cancel_task(task)
-            break
-        if task.started.is_set() and not fired and on_running is not None:
-            on_running()
-            fired = True
-        # Short timeout so we re-check cancel_flag promptly.
-        task.done.wait(timeout=0.1)
+    with _lock:
+        task.waiters += 1
+    try:
+        while not task.done.is_set():
+            if cancel_flag.is_set():
+                _cancel_task(task)
+                break
+            if task.started.is_set() and not fired and on_running is not None:
+                on_running()
+                fired = True
+            # Short timeout so we re-check cancel_flag promptly.
+            task.done.wait(timeout=0.1)
+    finally:
+        with _lock:
+            task.waiters -= 1
 
     # If the task finished before we noticed `started` (cache fast-path), still
     # fire the callback so the caller doesn't see the status flicker past
@@ -321,9 +331,15 @@ def _enqueue(svg_id: str, settings: dict, kind: str) -> _Task:
 
 
 def _cancel_task(task: _Task) -> None:
-    """Remove ``task`` if pending, or kill it if it's running."""
+    """Remove ``task`` if pending, or kill it if it's running.
+
+    No-op when another caller is still waiting on the same (deduplicated)
+    task — we're only withdrawing this caller's interest, not everyone's.
+    """
     drop_status = False
     with _lock:
+        if task.waiters > 1:
+            return
         if task in _pending:
             _pending.remove(task)
             task.cancelled = True
@@ -417,6 +433,20 @@ def _process(task: _Task) -> None:
         task.ok = False
         task.error = "cancelled"
         state.clear_svg_status(task.svg_id)
+        return
+
+    # vpype drops any layer it found nothing plottable in, which would shift
+    # every later layer's index and make the job plot the wrong artwork.
+    # Restore the upload's layer sequence before anyone reads the result.
+    try:
+        svg_utils.reconcile_layers(src, opt)
+    except Exception:
+        log.exception("optimize_queue: layer reconcile failed for %s", task.svg_id)
+        opt.unlink(missing_ok=True)
+        task.ok = False
+        task.error = "could not re-align layers after optimization"
+        state.set_svg_status(task.svg_id, "failed",
+                             settings_key=task.settings_key, error=task.error)
         return
 
     task.ok = True

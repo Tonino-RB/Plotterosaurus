@@ -66,6 +66,12 @@
         <div class="jog-actions">
           <button id="jog-move-btn" type="button" class="jog-action-btn" data-i18n="controls.move" title="Move" aria-label="Move" data-i18n-title="controls.move" data-i18n-aria-label="controls.move">Move</button>
           <button id="jog-home-btn" type="button" class="jog-action-btn jog-home-btn" title="Return to Origin" aria-label="Return to origin" data-i18n-title="a11y.jog_home" data-i18n-aria-label="a11y.jog_home">⌂</button>
+          <button id="jog-origin-btn" type="button" class="jog-action-btn jog-origin-btn" title="Set origin here" aria-label="Set origin here" data-i18n-title="a11y.jog_set_origin" data-i18n-aria-label="a11y.jog_set_origin">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="8" y="7" width="12" height="13" rx="1.5"></rect>
+              <circle cx="8" cy="7" r="3" fill="currentColor" stroke="none"></circle>
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -134,6 +140,17 @@
         <button id="shutdown-confirm" class="danger" data-i18n="shutdown.confirm">Shut down</button>
       </div>
       <div id="shutdown-message" class="muted"></div>
+    </div>
+  </div>
+
+  <div id="below-origin-modal" class="modal" hidden>
+    <div class="modal-card">
+      <h2 data-i18n="origin.below_title">Move past the origin?</h2>
+      <p class="muted" data-i18n="origin.below_note">This puts the pen above or to the left of the 0,0 corner, so part of the plot may end up off the paper. Check that the carriage has room to travel that way.</p>
+      <div class="actions">
+        <button id="below-origin-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
+        <button id="below-origin-confirm" class="primary" data-i18n="origin.below_confirm">Move anyway</button>
+      </div>
     </div>
   </div>
 
@@ -727,6 +744,7 @@
         <span class="job-error-text"></span>
         <button type="button" class="secondary job-error-nudge-btn" hidden></button>
       </div>
+      <div class="job-error job-save-error" hidden></div>
       <div class="job-body" hidden>
         <div class="columns">
           <div class="col-preview">
@@ -897,8 +915,8 @@
                   <label>
                     <span data-i18n="card.rotation">Rotation (°)</span>
                     <div class="slider-row">
-                      <input type="range" class="transform-rotation-slider" step="1" min="0" max="360" value="0" />
-                      <input type="number" class="transform-rotation" step="1" min="0" max="360" value="0" />
+                      <input type="range" class="transform-rotation-slider" step="1" min="-360" max="360" value="0" />
+                      <input type="number" class="transform-rotation" step="1" min="-360" max="360" value="0" />
                     </div>
                   </label>
                   <label>

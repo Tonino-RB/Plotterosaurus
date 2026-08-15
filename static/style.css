@@ -767,6 +767,9 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 
 .jog-home-btn { padding: 0.3rem 0.5rem; }
 
+.jog-origin-btn { padding: 0.3rem 0.5rem; display: inline-flex; align-items: center; justify-content: center; }
+.jog-origin-btn > svg { width: 0.95rem; height: 0.95rem; display: block; }
+
 .recording-indicator { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-soft); }
 .recording-indicator::before {
   content: "";

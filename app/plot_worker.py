@@ -8,6 +8,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+from axidrawinternal import axidraw_conf
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
@@ -109,6 +110,12 @@ def _preview_cache_key(svg_path: Path, layer_indices: list[int], job: dict) -> s
         "sd": job["speed_pendown"],
         "su": job["speed_penup"],
         "acc": job["acceleration"],
+        # Per-layer speed overrides (API-set) don't change the geometry, but
+        # they do change the timing, so two jobs that differ only in an
+        # override must not share a cached estimate.
+        "ovr": [[s.get("index"), s.get("speed_pendown"), s.get("speed_penup"),
+                 s.get("acceleration")]
+                for s in job.get("layer_selections") or []],
     }
     h.update(json.dumps(payload, sort_keys=True).encode())
     return h.hexdigest()
@@ -256,24 +263,44 @@ _MODEL_TRAVEL_PARAMS = {
 }
 
 
-def _apply_custom_bed_size(ad: axidraw.AxiDraw) -> None:
-    """Make the custom bed size (config.MACHINE_*_MM) a real travel-bounds
-    limit, not just a UI paper-fit warning: override the driver's own
-    per-model params.x_travel_*/y_travel_* (read by AxiDraw.update_options()
-    to build self.bounds, which clips out-of-bounds pen-down moves).
+def machine_bounds_mm() -> tuple[float, float]:
+    """The working area the carriage can actually reach, in mm.
 
-    Only ever shrinks the working area, never grows it past the model's real
-    hardware travel — a custom size larger than the actual machine would let
-    the carriage be driven into its physical end stops.
+    A configured custom bed profile is taken at face value, in both
+    directions. The stock AxiDraw models are all landscape (the long axis is
+    X), so clamping a custom profile down to the selected model's travel
+    silently amputates any machine built to a different shape — a portrait
+    build with a tall Y axis ends up cut off at the model's short one, and
+    everything past that is dropped at plot time with nothing but the
+    paper-too-big warning to explain it. The model dropdown is a stand-in for
+    the machine only while the custom profile is switched off; once it's on,
+    the profile is the more specific answer and the one to believe. That does
+    mean an over-stated profile lets the carriage be driven into its end
+    stops — the number describes the user's own machine, so it's theirs to
+    get right.
+
+    This is the single answer every bounds question has to use: the driver's
+    clip limits (_apply_bed_size), the jog/nudge guards, and the card's
+    paper-too-big warning.
     """
-    if not config.MACHINE_CUSTOM_ENABLED:
-        return
+    if config.MACHINE_CUSTOM_ENABLED:
+        return config.MACHINE_WIDTH_MM, config.MACHINE_HEIGHT_MM
     x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
         config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
-    hw_x_in = getattr(ad.params, x_attr)
-    hw_y_in = getattr(ad.params, y_attr)
-    setattr(ad.params, x_attr, min(config.MACHINE_WIDTH_MM / 25.4, hw_x_in))
-    setattr(ad.params, y_attr, min(config.MACHINE_HEIGHT_MM / 25.4, hw_y_in))
+    return (getattr(axidraw_conf, x_attr) * 25.4,
+            getattr(axidraw_conf, y_attr) * 25.4)
+
+
+def _apply_bed_size(ad: axidraw.AxiDraw) -> None:
+    """Make machine_bounds_mm() a real travel-bounds limit: override the
+    driver's own per-model params.x_travel_*/y_travel_* (read by
+    AxiDraw.update_options() to build self.bounds, which clips out-of-bounds
+    pen-down moves)."""
+    x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
+        config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
+    bed_x_mm, bed_y_mm = machine_bounds_mm()
+    setattr(ad.params, x_attr, bed_x_mm / 25.4)
+    setattr(ad.params, y_attr, bed_y_mm / 25.4)
 
 
 class _LiveAdjustAxiDraw(axidraw.AxiDraw):
@@ -337,7 +364,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # rotation) and the physical plot disagree. We always hand pyaxidraw a
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
-        _apply_custom_bed_size(ad)
+        _apply_bed_size(ad)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -650,21 +677,62 @@ def _delta_correction_mm(job: dict, svg_path: Path,
     return corr_x, corr_y
 
 
-def nudge_origin(dx_mm: float, dy_mm: float) -> None:
+def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
+    """Physically move the carriage by (dx_mm, dy_mm), pen up, relative to
+    wherever it currently is.
+
+    connect() resets the driver's position trackers to (0, 0) — which is also
+    its software travel-bounds *minimum* — and ad.move() clips any move whose
+    target falls outside those bounds while still recording the unclipped
+    target as the new position. Seeding from the bounds minimum therefore makes
+    every negative move a silent no-op; seeding from the centre (what this used
+    to do) silently truncates anything longer than half the bed while the app
+    goes on reporting the full distance in the jog readout and the preview
+    overlay.
+
+    So park each axis at the end of the bounds the move travels *away* from —
+    that leaves the entire bed length available, and since the guards already
+    keep the accumulated offset inside the bed, nothing can be clipped.
+    `pen.turtle` (the target/bounds tracker) and `pen.phys` (what the actual
+    hardware move is computed from) are separate and must be seeded together,
+    or the carriage jumps to the seeded point instead of moving relative to
+    where it really is.
+    """
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.units = 2  # millimeters
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    _apply_bed_size(ad)
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    try:
+        ad.pen.turtle.xpos = ad.pen.phys.xpos = (
+            ad.bounds[0][0] if dx_mm >= 0 else ad.bounds[1][0])
+        ad.pen.turtle.ypos = ad.pen.phys.ypos = (
+            ad.bounds[0][1] if dy_mm >= 0 else ad.bounds[1][1])
+        ad.move(dx_mm, dy_mm)
+    finally:
+        ad.disconnect()
+
+
+def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:
     """Shift the origin of the remaining (not-yet-plotted) stages by a small
     delta, to compensate for paper drift between layers during a pen-change
-    pause. Session-only: added on top of the job's own transform offset when
-    rendering each remaining stage (see _run_staged_loop /
-    _run_calibration_phase), never written back to the job record, and reset
-    at the start of the next run.
+    pause. Belongs to this run only: added on top of the job's own transform
+    offset when rendering each remaining stage (see _run_staged_loop /
+    _run_calibration_phase), never written back to the job record, and walked
+    back off the carriage when the run ends (see _undo_origin_nudge).
 
     Also physically jogs the carriage by the same delta (pen-up, relative),
     the same way manual_pen/manual_motors do, so the user sees/feels the
     correction against the paper before continuing.
 
     Rejected outright — nothing is moved or stored — if the resulting delta
-    would push the paper past the machine bed's physical travel limits, or
-    the content's bounding box past the page edge."""
+    would push the paper past the machine bed's far edge, or the content's
+    bounding box past the page edge. A delta that lands *above/left of* the
+    origin needs confirm_below_origin (see manual_jog for why that one is a
+    confirmation rather than a refusal)."""
     job = state.active_job()
     if job is None or job["status"] != "awaiting_pen_change":
         raise RuntimeError("Origin nudge only available at a pen-change pause")
@@ -672,20 +740,26 @@ def nudge_origin(dx_mm: float, dy_mm: float) -> None:
         raise RuntimeError("Plotter busy")
     x, y = state.origin_nudge()
     new_x, new_y = x + dx_mm, y + dy_mm
-    # AxiDraw has no negative travel range — a move toward negative
-    # coordinates is silently clipped rather than actually moving (see the
-    # connect()/ad.move() comment below) — so the paper's origin corner
-    # itself must stay within the bed's [0, machine_width] x
-    # [0, machine_height] travel envelope. Overshoot on the *far* side is
-    # comparatively benign (pyaxidraw clips it, same as artwork that runs
-    # past the page edge — see _delta_correction_mm), so this only guards
-    # the bed's own outer extent, not the paper size on top of it.
-    if new_x < 0 or new_x > config.MACHINE_WIDTH_MM or new_y < 0 or new_y > config.MACHINE_HEIGHT_MM:
+    # Overshoot on the far side runs the carriage into its own end stops, so
+    # the paper's origin corner has to stay inside the bed's travel envelope.
+    # (Overshoot of the *page* is comparatively benign — pyaxidraw clips it,
+    # same as artwork that runs past the page edge, see _delta_correction_mm —
+    # so this only guards the bed's own outer extent, not the paper size on
+    # top of it.)
+    bed_w_mm, bed_h_mm = machine_bounds_mm()
+    if new_x > bed_w_mm or new_y > bed_h_mm:
         raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
+    if (new_x < 0 or new_y < 0) and not confirm_below_origin:
+        raise RuntimeError("Nudge would go above or left of the origin")
     x, y = new_x, new_y
 
+    # The delta the run actually plots at is the idle manual jog plus this
+    # nudge (nothing re-homes the carriage between them), so the artwork check
+    # has to see both — checking the nudge alone lets two individually-fine
+    # deltas add up to one that runs off the page.
+    manual_x, manual_y = state.manual_origin_offset()
     svg_path = _uploads() / f"{job['svg_id']}.svg"
-    correction = _delta_correction_mm(job, svg_path, x, y)
+    correction = _delta_correction_mm(job, svg_path, manual_x + x, manual_y + y)
     if correction is not None:
         cx, cy = correction
         raise RuntimeError(
@@ -693,37 +767,38 @@ def nudge_origin(dx_mm: float, dy_mm: float) -> None:
             f"({cx:+.1f}, {cy:+.1f}) mm to bring it back onto the page."
         )
     state.set_origin_nudge(x, y)
-
-    ad = axidraw.AxiDraw()
-    ad.interactive()
-    ad.options.model = config.PLOTTER_MODEL
-    ad.options.units = 2  # millimeters
-    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
-    if not ad.connect():
-        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
-    try:
-        # connect() resets the AxiDraw driver's internal "turtle" position
-        # tracker to (0, 0), which coincides with its software travel-bounds
-        # minimum. ad.move() clips any relative move whose target falls
-        # outside those bounds, so a move away from (0, 0) is accepted while
-        # a move toward negative coordinates is silently clipped to zero -
-        # regardless of where the carriage physically already is. Re-center
-        # the turtle first so a nudge in either direction has room to move.
-        # ad.move()'s actual hardware move is computed from `pen.phys`, a
-        # *separate* position tracker from `pen.turtle` (used only for the
-        # target/bounds math) — recenter both together, or the carriage jumps
-        # to the recentered target instead of moving by (dx_mm, dy_mm) from
-        # wherever it actually is.
-        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
-        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
-        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
-        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
-        ad.move(dx_mm, dy_mm)
-    finally:
-        ad.disconnect()
+    _jog_carriage(dx_mm, dy_mm)
 
 
-def manual_jog(dx_mm: float, dy_mm: float) -> None:
+def _undo_origin_nudge() -> None:
+    """Walk the carriage back by whatever this run's pen-change pauses nudged
+    it, and clear the stored nudge.
+
+    A nudge aligns the pen that's in the holder *now* against paper that has
+    drifted mid-run (see nudge_origin) — it belongs to this run, not to the
+    machine. Leaving the carriage where the last nudge put it would quietly
+    hand the next run a different physical origin than this one started from,
+    since nothing re-homes an AxiDraw between jobs, and each run would inherit
+    the sum of every nudge before it. Clearing the stored value without
+    actually moving would cause the same drift while also hiding it from the
+    readout.
+
+    The manual jog (see manual_jog) is deliberately left alone: that one is
+    the user's aim at the paper and is meant to outlive a run.
+
+    Failures are logged, not raised — the run is over and the caller is a
+    finally block tidying up after an outcome (completed / cancelled / failed)
+    that must not be replaced by a homing error."""
+    x, y = state.origin_nudge()
+    if x or y:
+        try:
+            _jog_carriage(-x, -y)
+        except Exception:
+            log.exception("could not walk the origin nudge back to the run's origin")
+    state.set_origin_nudge(0.0, 0.0)
+
+
+def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:
     """Physically move the pen carriage by a small relative amount (pen-up),
     for aligning it to the paper before a plot starts. Idle-only — unlike
     nudge_origin, which corrects an active job's remaining stages mid-plot,
@@ -731,8 +806,13 @@ def manual_jog(dx_mm: float, dy_mm: float) -> None:
     the net displacement in session state so manual_jog_home knows how far
     to walk back.
 
-    Rejected outright — nothing is moved or stored — if it would push the
-    paper past the machine bed's physical travel limits.
+    Rejected outright — nothing is moved or stored — if it would run the
+    carriage past the machine bed's far edge. Landing *above/left of* the
+    origin is allowed, but only with confirm_below_origin: it puts the page's
+    top-left corner off the paper the plot was aimed at, and the bed's own
+    near edge is only an assumption anyway (the AxiDraw has no home switches,
+    so "0" is wherever the carriage happened to sit at startup, not a place
+    the machine knows) — so it's the user's call to make, not ours to refuse.
 
     Deliberately doesn't also check the next queued job's artwork bounds the
     way nudge_origin does: this is a free physical-alignment tool (walking
@@ -749,43 +829,48 @@ def manual_jog(dx_mm: float, dy_mm: float) -> None:
     x, y = state.manual_origin_offset()
     new_x, new_y = x + dx_mm, y + dy_mm
 
-    # AxiDraw has no negative travel range — a move toward negative
-    # coordinates is silently clipped rather than actually moving (see
-    # manual_jog's ad.move() comment below) — so the paper's origin corner
-    # itself must stay within the bed's [0, machine_width] x
-    # [0, machine_height] travel envelope. Overshoot on the *far* side is
-    # comparatively benign (pyaxidraw clips it, same as artwork that runs
-    # past the page edge — see _delta_correction_mm), so this only guards
-    # the bed's own outer extent, not the paper size on top of it.
-    if new_x < 0 or new_x > config.MACHINE_WIDTH_MM or new_y < 0 or new_y > config.MACHINE_HEIGHT_MM:
+    # The offset is measured from the declared origin (see set_origin), which
+    # isn't necessarily the machine's own corner — so the far-edge guard has
+    # to add the two back together to get a real bed coordinate. Past that
+    # edge the carriage hits its own end stops, so it's a hard refusal.
+    base_x, base_y = state.origin_base()
+    bed_w_mm, bed_h_mm = machine_bounds_mm()
+    if base_x + new_x > bed_w_mm or base_y + new_y > bed_h_mm:
         raise RuntimeError("Jog rejected: would move past the machine bed edge.")
-    x, y = new_x, new_y
+    if (new_x < 0 or new_y < 0) and not confirm_below_origin:
+        raise RuntimeError("Jog would go above or left of the origin")
 
-    state.set_manual_origin_offset(x, y)
+    state.set_manual_origin_offset(new_x, new_y)
+    _jog_carriage(dx_mm, dy_mm)
 
-    ad = axidraw.AxiDraw()
-    ad.interactive()
-    ad.options.model = config.PLOTTER_MODEL
-    ad.options.units = 2  # millimeters
-    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
-    if not ad.connect():
-        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
-    try:
-        # See nudge_origin: re-center the turtle *and* phys together so a
-        # move in either direction has room and actually moves by the
-        # requested delta from the carriage's real current position.
-        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
-        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
-        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
-        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
-        ad.move(dx_mm, dy_mm)
-    finally:
-        ad.disconnect()
+
+def set_origin() -> None:
+    """Declare wherever the carriage currently sits to be the page's top-left
+    corner. Nothing moves: the accumulated manual jog is folded into the
+    origin base and the offset resets to zero, so from here on the readout,
+    the preview overlay and _run_job's pre-flight check all measure from this
+    spot — a plot started now puts the design's own (0, 0) right under the pen
+    instead of treating the jog as a shift away from the page corner.
+
+    Idle-only for the same reason manual_jog is: mid-run the physical origin
+    is already baked into the plot that's underway, and moving the page corner
+    out from under it would desynchronise the remaining stages. Touches no
+    hardware, so unlike manual_jog it has nothing to guard against — the
+    carriage is where it already was, and the offset it leaves behind (zero)
+    is trivially inside the bed."""
+    if state.snapshot()["status"] != "idle":
+        raise RuntimeError("Manual jog only available while idle")
+    x, y = state.manual_origin_offset()
+    base_x, base_y = state.origin_base()
+    state.set_origin_base(base_x + x, base_y + y)
+    state.set_manual_origin_offset(0.0, 0.0)
 
 
 def manual_jog_home() -> None:
-    """Physically walk the pen carriage back to (0, 0) — undoing the net
-    displacement accumulated by manual_jog. Idle-only, same as manual_jog."""
+    """Physically walk the pen carriage back to the origin — undoing the net
+    displacement accumulated by manual_jog, which is measured from wherever
+    set_origin last put the origin, not necessarily the machine's own corner.
+    Idle-only, same as manual_jog."""
     if state.snapshot()["status"] != "idle":
         raise RuntimeError("Manual jog only available while idle")
     if _current_ad is not None:
@@ -793,24 +878,7 @@ def manual_jog_home() -> None:
     x, y = state.manual_origin_offset()
     if x == 0.0 and y == 0.0:
         return
-
-    ad = axidraw.AxiDraw()
-    ad.interactive()
-    ad.options.model = config.PLOTTER_MODEL
-    ad.options.units = 2  # millimeters
-    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
-    if not ad.connect():
-        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
-    try:
-        # See manual_jog: re-center the turtle *and* phys together so the
-        # move back to (0, 0) has room and actually covers the full distance.
-        center_x = (ad.bounds[0][0] + ad.bounds[1][0]) / 2
-        center_y = (ad.bounds[0][1] + ad.bounds[1][1]) / 2
-        ad.pen.turtle.xpos = ad.pen.phys.xpos = center_x
-        ad.pen.turtle.ypos = ad.pen.phys.ypos = center_y
-        ad.move(-x, -y)
-    finally:
-        ad.disconnect()
+    _jog_carriage(-x, -y)
     state.set_manual_origin_offset(0.0, 0.0)
 
 
@@ -887,32 +955,67 @@ def _schedule_live_estimate_recompute(job_id: str) -> None:
     threading.Thread(target=_recompute_live_estimate, args=(job_id, token), daemon=True).start()
 
 
+def run_elapsed_seconds(job: dict) -> float:
+    """How long this run has actually been plotting: every span already banked
+    by _bank_run_time, plus the one currently in progress. plotting_started_at
+    on its own only measures the current stage — it's reset at every stage
+    boundary and on every resume."""
+    banked = job.get("run_elapsed_seconds") or 0.0
+    started = job.get("plotting_started_at")
+    if started and job.get("status") == "plotting":
+        banked += max(0.0, time.time() - started)
+    return banked
+
+
+def _bank_run_time(job_id: str) -> None:
+    """Close the current plotting span and fold it into run_elapsed_seconds.
+    Called whenever a stage stops driving the pen, for any reason."""
+    job = state.get_job(job_id)
+    if job is None or not job.get("plotting_started_at"):
+        return
+    state.update_job(job_id,
+                     run_elapsed_seconds=run_elapsed_seconds(job),
+                     plotting_started_at=None)
+
+
+def _estimate_fields(estimate: dict) -> dict:
+    """The estimate columns to write onto a job.
+
+    ``progress_total_seconds`` starts as a copy of the estimate and is the
+    only one _recompute_live_estimate rewrites, so ``estimated_total_seconds``
+    stays a plain "how long this job takes" figure for the card to display
+    instead of turning into an elapsed-plus-remaining hybrid that means
+    something different depending on when you read it.
+    """
+    return {**estimate, "progress_total_seconds": estimate["estimated_total_seconds"]}
+
+
 def _recompute_live_estimate(job_id: str, token: int) -> None:
     """Re-run the full-document preview under the job's now-current speed/
-    acceleration and recalibrate estimated_total_seconds so the sticky
-    progress bar / remaining-time readout (see startSharedElapsed in
-    app.js) reflect the new pace — without touching plotting_started_at, so
-    the elapsed clock itself keeps running uninterrupted.
+    acceleration, so the card's estimate and the sticky progress bar (see
+    startSharedElapsed in app.js) both reflect the new pace — without
+    disturbing the elapsed clock.
 
-    The recompute re-estimates the whole document from scratch, which would
-    on its own throw away however much has already been plotted under the
-    old (slower/faster) settings. To avoid that, the fraction of the OLD
-    estimate already elapsed is treated as the fraction of the job that's
-    behind us, and only the remaining fraction is rescaled to the new total.
+    The fresh figure lands in estimated_total_seconds as-is. The progress
+    bar's denominator can't just take it, though: the recompute re-estimates
+    the whole document, which would throw away however much has already been
+    plotted at the old pace. So the fraction of the OLD denominator already
+    elapsed is treated as the fraction of the job behind us, and only the
+    remaining fraction is rescaled to the new total.
 
     Coalesced via _live_estimate_token: a superseded request (an even newer
     live-setting change landed) drops its result rather than clobbering one
     that's more current, checked both before the slow preview subprocess
     runs and after.
     """
-    trigger_time = time.time()
     job = state.get_job(job_id)
     if job is None:
         return
-    old_estimate = job.get("estimated_total_seconds")
+    old_total = job.get("progress_total_seconds") or job.get("estimated_total_seconds")
     started_at = job.get("plotting_started_at")
-    if not old_estimate or not started_at:
+    if not old_total or not started_at:
         return
+    elapsed_at_trigger = run_elapsed_seconds(job)
 
     with _live_estimate_lock:
         if token != _live_estimate_token:
@@ -931,9 +1034,10 @@ def _recompute_live_estimate(job_id: str, token: int) -> None:
     if job is None or job.get("status") != "plotting" or job.get("plotting_started_at") != started_at:
         return  # job finished, paused, or moved on while we were computing
 
-    progress_frac = min(1.0, max(0.0, trigger_time - started_at) / old_estimate)
+    progress_frac = min(1.0, max(0.0, elapsed_at_trigger) / old_total)
     remaining = max(0.0, (1 - progress_frac) * estimate["estimated_total_seconds"])
-    state.update_job(job_id, estimated_total_seconds=(time.time() - started_at) + remaining)
+    state.update_job(job_id, **estimate,
+                     progress_total_seconds=run_elapsed_seconds(job) + remaining)
 
 
 def trigger_calibration() -> None:
@@ -1021,6 +1125,11 @@ def cancel_active() -> None:
         # task out of the queue (or kill the inflight subprocess if it's ours)
         # without disturbing unrelated upload-time optimizations.
         _cancel_flag.set()
+    elif st == "queued":
+        # The plan-cache fast path skips the `planning` status, so a job can be
+        # active and still reading as `queued` for the moment it takes to
+        # optimize/plan. _run_job checks the flag before it touches hardware.
+        _cancel_flag.set()
     elif st == "awaiting_pen_change":
         _cancel_flag.set()
         _continue_event.set()
@@ -1086,17 +1195,25 @@ def _queue_loop() -> None:
                 _cancel_flag.clear()
                 continue  # loop; user may still have more queued
 
-            # Between jobs: pause if the just-finished job asked for it and more queued
+            # Between jobs: pause if the just-finished job asked for it and more
+            # queued. Read the flag off the job we were handed rather than
+            # re-fetching it — a job with delete_on_complete has already removed
+            # itself from the queue by now, and looking it up would come back
+            # None and silently skip the pause the user asked for.
             if state.next_queued_job() is not None:
-                last = state.get_job(job["job_id"])
-                if last and last.get("pause_after_job", True):
+                if job.get("pause_after_job", True):
                     state.set_awaiting_next_job(True)
                     _continue_event.wait()
                     _continue_event.clear()
                     state.set_awaiting_next_job(False)
                     if _cancel_flag.is_set():
+                        # Cancel from the between-jobs pause means "stop the
+                        # queue", not "skip this job" like the per-job cancels
+                        # above — the pause exists so the user can change the
+                        # paper, so continuing here would plot the next job on
+                        # whatever is still on the bed.
                         _cancel_flag.clear()
-                        continue
+                        return
     except Exception:
         log.exception("queue loop crashed")
     finally:
@@ -1222,7 +1339,9 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
     output_svg = ""
     stopped = STOPPED_COMPLETED
     try:
-        svg_utils.filter_to_layers(svg_path, cal_indices, filt)
+        # A calibration side-plot is not part of the deliverable, so it must
+        # not drag along the document's un-layered content.
+        svg_utils.filter_to_layers(svg_path, cal_indices, filt, include_orphans=False)
         # Reflect any pending origin nudge so the calibration plot shows the
         # alignment the user is about to commit the next stage to.
         nudge_x, nudge_y = state.origin_nudge()
@@ -1428,10 +1547,11 @@ def _run_job(job_id: str) -> None:
                          current_stage_index=0,
                          started_at=time.time(),
                          plotting_started_at=None,
+                         run_elapsed_seconds=0.0,
                          resume_path=None,
                          error=None,
                          plan_status="ready",
-                         **cached_estimate)
+                         **_estimate_fields(cached_estimate))
     else:
         state.update_job(job_id,
                          stages=stages,
@@ -1439,9 +1559,11 @@ def _run_job(job_id: str) -> None:
                          status="planning",
                          started_at=time.time(),
                          plotting_started_at=None,
+                         run_elapsed_seconds=0.0,
                          resume_path=None,
                          error=None,
                          estimated_total_seconds=None,
+                         progress_total_seconds=None,
                          distance_pendown_m=None,
                          distance_total_m=None,
                          pen_lifts=None)
@@ -1453,7 +1575,15 @@ def _run_job(job_id: str) -> None:
             return
 
         if estimate:
-            state.update_job(job_id, plan_status="ready", **estimate)
+            state.update_job(job_id, plan_status="ready", **_estimate_fields(estimate))
+
+    # A cancel that landed during the optimize/plan phases while the job was
+    # still showing as `queued` (the plan-cache fast path never flips it to
+    # `planning`) has nothing else to act on — catch it before touching hardware.
+    if _cancel_flag.is_set():
+        _cancel_flag.clear()
+        state.update_job(job_id, status="cancelled")
+        return
 
     # --- Stages -------------------------------------------------------------
     _run_staged_loop(job_id, svg_path, first_mode="plot")
@@ -1477,12 +1607,12 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
             log.warning("camera: could not start recording for job %s", job_id, exc_info=True)
 
     # Origin nudge is session-only: whatever the pen-change pauses in this run
-    # accumulated, it's gone as soon as the run ends (completed/cancelled/
+    # accumulated is undone as soon as the run ends (completed/cancelled/
     # failed) so the next run starts from the job's own saved offset again.
     try:
         _run_staged_loop_impl(job_id, svg_path, first_mode)
     finally:
-        state.set_origin_nudge(0.0, 0.0)
+        _undo_origin_nudge()
         if camera.is_recording_job(job_id):
             camera.stop_recording()
 
@@ -1504,7 +1634,12 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
             current_svg = Path(job["resume_path"])
         else:
             filtered = svg_path.with_name(f"{job['svg_id']}.s{i}.filt.svg")
-            svg_utils.filter_to_layers(svg_path, stage["layer_indices"], filtered)
+            # Drawable content that belongs to no layer has no stage of its
+            # own, and every stage re-renders from the same source — so it
+            # goes in the first stage only, or it gets drawn once per stage,
+            # over itself, while the preview shows it once.
+            svg_utils.filter_to_layers(svg_path, stage["layer_indices"], filtered,
+                                       include_orphans=(i == 0))
             current_svg = svg_path.with_name(f"{job['svg_id']}.s{i}.svg")
             # A fine origin nudge dialed in at a pen-change pause (see
             # nudge_origin) shifts every subsequently-rendered stage on top of
@@ -1540,6 +1675,10 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
             state.update_job(job_id, status="failed",
                              error="Plotter not ready. Wait a moment after power-on and try again.")
             return
+        # The pen has stopped moving for this stage, whatever the outcome —
+        # close the span so the progress bar keeps counting the run rather
+        # than restarting at the next stage boundary.
+        _bank_run_time(job_id)
 
         if stopped in _PAUSED_CODES:
             resume_path = svg_path.with_name(f"{job['svg_id']}.s{i}.resume.svg")
