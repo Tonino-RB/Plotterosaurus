@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from app import main, state, svg_utils
+
+from .conftest import placement_with_ink
 # main.UPLOAD_DIR is read through the module, never from-imported: the
 # sandbox fixture in conftest.py rebinds it (see _sandbox_server_state).
 
@@ -85,8 +87,8 @@ def test_ink_is_opt_in(client, job):
 def test_all_numbers_are_plain_json(client, job):
     """vpype measures with numpy. np.float64 happens to serialize, but the
     wire contract is plain numbers and must not depend on that."""
-    body = client.post(f"/jobs/{job['job_id']}/placement", json={**A4, **WITH_INK}).json()
-    numeric = [v for k, v in body.items() if k != "ink"]
+    body = placement_with_ink(client, job, A4)
+    numeric = [v for k, v in body.items() if k not in ("ink", "ink_measured")]
     assert all(isinstance(v, (int, float)) for v in numeric)
     assert all(isinstance(v, float) for v in body["ink"].values())
 
@@ -103,8 +105,8 @@ def test_ink_matches_what_the_plot_will_do(client, job, overrides):
     about where the pen goes — which is the class of bug it exists to end."""
     from app import config
 
-    query = {**A4, **overrides, **WITH_INK}
-    body = client.post(f"/jobs/{job['job_id']}/placement", json=query).json()
+    query = {**A4, **overrides}
+    body = placement_with_ink(client, job, query)
     ink = body["ink"]
     assert ink is not None
 
@@ -129,7 +131,7 @@ def test_ink_matches_what_the_plot_will_do(client, job, overrides):
 def test_nothing_plottable_reports_null_ink(client, job):
     """A7: a document of live text draws nothing. The UI has to be able to
     tell that apart from a document it simply hasn't measured yet."""
-    body = client.post(f"/jobs/{job['job_id']}/placement", json={**A4, **WITH_INK}).json()
+    body = placement_with_ink(client, job, A4)
     assert body["ink_measured"] is True   # measured, and found nothing
     assert body["ink"] is None
     # The placement itself is still valid — only the ink is absent.
@@ -137,8 +139,7 @@ def test_nothing_plottable_reports_null_ink(client, job):
 
 
 def test_empty_layer_selection_reports_null_ink(client, job):
-    body = client.post(f"/jobs/{job['job_id']}/placement",
-                       json={**A4, **WITH_INK, "layer_indices": []}).json()
+    body = placement_with_ink(client, job, {**A4, "layer_indices": []})
     assert body["ink"] is None
 
 

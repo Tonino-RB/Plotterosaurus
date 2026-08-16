@@ -22,8 +22,8 @@ from pydantic import BaseModel, Field, ValidationError
 from lxml import etree
 
 from . import (
-    camera, config, notify, optimize_queue, placement, plan_queue, plot_worker,
-    state, svg_optimize, svg_utils, updates,
+    camera, config, ink_cache, notify, optimize_queue, placement, plan_queue,
+    plot_worker, state, svg_optimize, svg_utils, updates,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -195,6 +195,11 @@ async def upload(file: UploadFile = File(...)):
         path.unlink(missing_ok=True)
         raise _coded(400, "no_layers")
     optimize_queue.enqueue_for_upload(svg_id)
+    # Start measuring now, in the background. The size readout and the bounds
+    # overlay both want this, and on a real drawing it takes long enough that
+    # beginning at upload rather than at first glance is the difference between
+    # the number being there and the user watching a spinner.
+    ink_cache.request(path)
     return {"id": svg_id, "filename": file.filename or "upload.svg", **info}
 
 
@@ -255,24 +260,7 @@ class PlacementQuery(BaseModel):
     include_ink: bool = False
 
 
-# The vpype measurement behind ink_rect_doc_mm costs tens of milliseconds and
-# depends only on the file and the selected layers — never on the placement
-# being previewed. Caching it here is what keeps this endpoint cheap enough to
-# answer a slider drag; without it every mouse move would re-parse the SVG.
-_ink_rect_cache: "OrderedDict[tuple, tuple | None]" = OrderedDict()
-_INK_RECT_CACHE_MAX = 64
-# This endpoint is a sync def, so FastAPI runs it in the anyio threadpool and
-# several requests can be inside it at once — a slider drag from two open tabs
-# is enough. Individual dict operations are atomic under the GIL but the
-# sequences here are not: a `key in cache` that passes can still have its key
-# evicted by another thread's popitem before move_to_end runs, which raises
-# KeyError. The lock covers the bookkeeping only; the slow vpype measurement
-# is deliberately left outside it so one cold parse can't stall every other
-# request. The cost is that two threads may measure the same file at once,
-# which wastes a little work and is otherwise harmless.
-_ink_rect_lock = threading.Lock()
-
-
+_doc_geom_lock = threading.Lock()
 _doc_geom_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 _DOC_GEOM_CACHE_MAX = 64
 
@@ -286,7 +274,7 @@ def _doc_geometry(path: Path, stamp: int) -> tuple:
     file changing, so the mtime is the whole cache key.
     """
     key = (str(path), stamp)
-    with _ink_rect_lock:
+    with _doc_geom_lock:
         hit = _doc_geom_cache.get(key)
         if hit is not None:
             _doc_geom_cache.move_to_end(key)
@@ -294,31 +282,12 @@ def _doc_geometry(path: Path, stamp: int) -> tuple:
     root = etree.parse(str(path)).getroot()
     doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
     geom = (doc_w_mm, doc_h_mm, svg_utils.parse_viewbox(root.get("viewBox", "")))
-    with _ink_rect_lock:
+    with _doc_geom_lock:
         _doc_geom_cache[key] = geom
         _doc_geom_cache.move_to_end(key)
         while len(_doc_geom_cache) > _DOC_GEOM_CACHE_MAX:
             _doc_geom_cache.popitem(last=False)
     return geom
-
-
-def _ink_rect_cached(path: Path, layer_indices: list[int]) -> tuple | None:
-    try:
-        stamp = path.stat().st_mtime_ns
-    except OSError:
-        raise _coded(404, "svg_not_found")
-    key = (str(path), stamp, tuple(sorted(layer_indices)))
-    with _ink_rect_lock:
-        if key in _ink_rect_cache:
-            _ink_rect_cache.move_to_end(key)
-            return _ink_rect_cache[key]
-    rect = svg_utils.ink_rect_doc_mm(path, layer_indices)
-    with _ink_rect_lock:
-        _ink_rect_cache[key] = rect
-        _ink_rect_cache.move_to_end(key)
-        while len(_ink_rect_cache) > _INK_RECT_CACHE_MAX:
-            _ink_rect_cache.popitem(last=False)
-    return rect
 
 
 @app.post("/jobs/{job_id}/placement")
@@ -361,9 +330,15 @@ def get_job_placement(job_id: str, req: PlacementQuery):
     )
 
     # `ink: null` means two different things, and the caller has to be able to
-    # tell them apart: "this document draws nothing" versus "not measured".
+    # tell them apart: "this document draws nothing" versus "not measured yet".
     # ink_measured says which.
-    rect = _ink_rect_cached(path, indices) if req.include_ink else None
+    #
+    # Never measured inline. The read behind this takes up to 75 seconds on a
+    # real drawing, and occupying a request thread for that long — repeatedly,
+    # because the UI re-asks on every state broadcast — is what brought the Pi
+    # down. ink_cache answers from memory or starts one background measurement
+    # and says "not yet"; the client asks again.
+    measured, rect = ink_cache.rect_for(path, indices) if req.include_ink else (False, None)
     if rect is None:
         ink = None
     else:
@@ -395,7 +370,7 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         # size for artwork that will not be drawn. Also None whenever
         # include_ink was false; ink_measured distinguishes the two.
         "ink": ink,
-        "ink_measured": req.include_ink,
+        "ink_measured": measured,
     }
 
 

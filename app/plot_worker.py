@@ -410,9 +410,28 @@ def _run_preview(preview_svg_path: Path, job: dict,
     global _preview_proc
     runner = Path(__file__).parent / "preview_runner.py"
     x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
-    # Everything _run_stage sets on the real plot, handed to the simulation as
-    # one blob. The estimate is only meaningful if it measures the same plot:
-    # same travel envelope, same orientation (see no_rotate in the runner).
+    # Measure the whole drawing, even the part that will not fit.
+    #
+    # The driver clips pen-down moves to the travel bounds, and clipped moves
+    # are simply absent from its totals. Handing it the real bed therefore made
+    # the estimate describe the clip rather than the artwork: a 1313x928mm
+    # drawing on a 297x420mm bed came back as "0 metres, 0 seconds, 0 pen
+    # lifts" for what is really 152 metres and close to three hours. A figure
+    # of zero for a drawing full of ink reads as a broken app, and it hid the
+    # thing actually worth knowing.
+    #
+    # So the envelope is widened to hold the page when the page is larger. Note
+    # what this does *not* change: whenever the artwork fits the machine — the
+    # normal case — max(bed, page) is the bed, and the estimate is identical to
+    # before. It only diverges when the plot was going to be clipped anyway,
+    # and there the honest number is the one describing the work. That the plot
+    # will be cut short is real and separate, and is what the machine-bounds
+    # warning on the card is for.
+    bed_x_in = max(bed_x_in, job["paper_width_mm"] / 25.4)
+    bed_y_in = max(bed_y_in, job["paper_height_mm"] / 25.4)
+    # Everything else mirrors _run_stage exactly: the estimate is only
+    # meaningful if it measures the same plot at the same speeds and the same
+    # orientation (see no_rotate in the runner).
     options = {
         "model": config.PLOTTER_MODEL,
         "speed_pendown": job["speed_pendown"],

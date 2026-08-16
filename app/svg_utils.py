@@ -374,6 +374,51 @@ def ink_rect_doc_mm(svg_path: Path,
     return xmin, ymin, xmax, ymax
 
 
+def ink_rects_by_layer(svg_path: Path) -> dict[int, tuple[float, float, float, float]]:
+    """Every layer's ink bounding box in document mm, keyed by layer index.
+
+    One vpype read of the whole document, versus one per layer combination the
+    user might select. That difference is the whole point: on an 8MB drawing a
+    single read costs 15-75 seconds, and ``ink_rect_doc_mm`` was being asked
+    for a fresh one on every layer toggle — and, because the UI re-requests on
+    every state broadcast while an answer is outstanding, several at once.
+    Four cores of Raspberry Pi disappear quickly that way.
+
+    Any selection's rectangle is the union of its layers', so measuring each
+    layer once answers every question that can be asked about the file. Layers
+    vpype found nothing plottable in are absent rather than present-and-empty,
+    which is the same thing ``ink_rect_doc_mm`` reports as None.
+
+    No temp file either. ``ink_rect_doc_mm`` writes a filtered copy of the
+    document first — multiple megabytes onto an SD card, per call, and orphaned
+    entirely if the service restarts mid-parse.
+    """
+    import vpype
+
+    document = vpype.read_multilayer_svg(str(svg_path), quantization=0.1)
+    # vpype numbers layers by its own rule, not by document order; replicate it
+    # to get back to the indices everything else addresses layers by.
+    root = etree.parse(str(svg_path)).getroot()
+    rects: dict[int, tuple[float, float, float, float]] = {}
+    for index, group in enumerate(_top_level_layers(root)):
+        vpype_id = _vpype_layer_id(group.get(LABEL_ATTR) or "",
+                                   group.get("id") or "", index + 1)
+        layer = document.layers.get(vpype_id)
+        bounds = layer.bounds() if layer is not None else None
+        if bounds is not None:
+            rects[index] = tuple(v / PX_PER_MM for v in bounds)
+    return rects
+
+
+def union_rect(rects) -> tuple[float, float, float, float] | None:
+    """The bounding box of several (xmin, ymin, xmax, ymax) boxes, or None."""
+    rects = [r for r in rects if r is not None]
+    if not rects:
+        return None
+    return (min(r[0] for r in rects), min(r[1] for r in rects),
+            max(r[2] for r in rects), max(r[3] for r in rects))
+
+
 def ink_bounds_mm(
     svg_path: Path,
     layer_indices: list[int],

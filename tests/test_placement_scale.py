@@ -25,6 +25,8 @@ import pytest
 from lxml import etree
 
 from app import config, main, svg_utils
+
+from .conftest import placement_with_ink
 # main.UPLOAD_DIR is read through the module, never from-imported: the
 # sandbox fixture in conftest.py rebinds it (see _sandbox_server_state).
 
@@ -146,7 +148,7 @@ def test_ink_at_scale_is_correct_and_cached(client, heavy_job):
     request here is what the size readout hits while the user nudges the
     artwork around: the placement changed, the ink never did.
     """
-    body = placement(client, heavy_job, **WITH_INK)
+    body = placement_with_ink(client, heavy_job, A4)
     assert body["ink_measured"] is True
     ink = body["ink"]
     assert ink is not None and ink["width_mm"] > 0
@@ -162,3 +164,48 @@ def test_ink_at_scale_is_correct_and_cached(client, heavy_job):
     start = time.perf_counter()
     placement(client, heavy_job, transform_offset_x_mm=5.0, **WITH_INK)
     assert time.perf_counter() - start < 0.100, "ink was re-measured for the same file"
+
+
+def test_asking_for_ink_never_blocks_the_request(client, heavy_job):
+    """The crash, as a test.
+
+    Measuring took up to 75 seconds on a real drawing, and it used to happen
+    inside the handler. The browser re-asks on every WebSocket state broadcast,
+    and aborting a fetch does not stop the server thread already inside vpype —
+    so parses stacked up, several deep, across a threadpool 40 wide, until four
+    cores of Raspberry Pi had nothing left for the event loop or the plotter.
+
+    An unmeasured file must therefore come back immediately saying so, not
+    eventually saying the answer.
+    """
+    start = time.perf_counter()
+    body = placement(client, heavy_job, include_ink=True)
+    elapsed = time.perf_counter() - start
+    assert body["ink_measured"] is False
+    assert elapsed < 0.5, f"cold ink request blocked for {elapsed:.2f}s"
+    # And the placement half is fully answered regardless.
+    assert body["layout_width_mm"] > 0
+
+
+def test_repeated_asks_do_not_stack_up_measurements(client, heavy_job, monkeypatch):
+    """The UI asks again on every broadcast. Each ask must be a lookup, not a
+    new parse — one measurement per file, however many times it is requested.
+    """
+    from app import ink_cache
+
+    calls = []
+    real = svg_utils.ink_rects_by_layer
+
+    def counting(path):
+        calls.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(ink_cache.svg_utils, "ink_rects_by_layer", counting)
+
+    for _ in range(25):                       # 25 broadcasts' worth of asking
+        placement(client, heavy_job, include_ink=True)
+    placement_with_ink(client, heavy_job, A4)  # let the one measurement finish
+    for _ in range(25):
+        placement(client, heavy_job, include_ink=True)
+
+    assert len(calls) == 1, f"{len(calls)} vpype reads for one file"

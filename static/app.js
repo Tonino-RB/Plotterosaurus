@@ -466,6 +466,7 @@ function placementKey(job) {
 // the final value matters, so settling once the drag stops is exactly right.
 const PLACEMENT_INTERVAL_MS = 60;    // drives the preview; a steady ~16fps confirm
 const INK_DEBOUNCE_MS = 400;         // drives the size readout; settles after a drag
+const INK_RETRY_MS = 1500;           // while the server measures in the background
 
 function fetchPlacement(card, job, { wantInk }, onReady) {
   const id = job.job_id;
@@ -517,6 +518,19 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
       const fresh = cardCtx.get(id);
       if (!fresh) return;
       if (wantInk) {
+        // Not measured yet: the server has started a background read and is
+        // telling us to come back. Leave inkKey unset so this stays stale, and
+        // schedule the retry ourselves — a state broadcast might be a long way
+        // off on an idle plotter, and without one the readout never fills in.
+        if (body.ink_measured === false) {
+          clearTimeout(fresh.inkRetry);
+          fresh.inkRetry = setTimeout(() => {
+            const j = serverState.queue.find((x) => x.job_id === id);
+            if (j) requestInk(card, j, onReady);
+          }, INK_RETRY_MS);
+          if (onReady) onReady();       // let the status badge say "measuring"
+          return;
+        }
         fresh.ink = body.ink;          // null = nothing plottable in this document
         fresh.inkKey = key;
       } else {
@@ -526,6 +540,7 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
         // the editor's drift from it.
         fresh.placementAt = {
           scale: job.transform_scale ?? 1,
+          rot: job.transform_rotation_deg ?? 0,
           offx: job.transform_offset_x_mm ?? 0,
           offy: job.transform_offset_y_mm ?? 0,
         };
@@ -555,20 +570,31 @@ function requestPlacement(card, job, onReady) {
 // by HTTP. What this does is move an answer the server already gave along the
 // two axes the engine guarantees are linear:
 //
-//   offset — enters the computation once, additively, and touches nothing
-//            else, so a drag is a pure translation of the whole answer;
-//   scale  — multiplies the footprint while pinning its top-left corner,
-//            since the anchor is the margin box's corner and fit_scale is
-//            computed per unit of scale.
+//   offset   — enters the computation once, additively, and touches nothing
+//              else, so a drag is a pure translation of the whole answer;
+//   scale    — multiplies the footprint, since fit_scale is computed per unit
+//              of scale and so does not move underneath it;
+//   rotation — turns the canvas, and the on-page extent of a rotated rectangle
+//              is its axis-aligned bounding box. Skipped when "fit to page" is
+//              on, because then the angle feeds back into fit_scale, and that
+//              *is* placement policy. Fit is the one case that waits.
 //
-// Both are asserted in tests/test_placement_engine.py (see "Properties the
-// browser extrapolates along"), so this cannot quietly stop being valid.
+// In all three the anchor does the rest of the work: the footprint's top-left
+// corner sits at (margin + offset), which does not depend on angle or scale,
+// so recentring is the same arithmetic whichever input moved.
+//
+// Two things are deliberately recovered from the server's answer rather than
+// recomputed. The machine's auto-rotate contribution is `rotation_deg` minus
+// the job's own angle — it does not depend on that angle, so subtraction gets
+// it without re-implementing the policy. The document's resolved size is
+// `layout / fit_scale`, which avoids restating the fallback for documents that
+// declare no size. Every property relied on here is asserted in
+// tests/test_placement_engine.py, and this function itself runs under quickjs
+// in tests/test_static_js.py.
 //
 // The extrapolation is provisional by construction: it is measured as drift
 // from the inputs the cached answer was computed at, so the next reply — 60ms
-// away at most — collapses it to zero. Rotation, margins, paper and fit are
-// not extrapolated; they wait for the server, which is why the confirm is
-// throttled rather than debounced.
+// away at most — collapses it to zero.
 function effectivePlacement(job) {
   const ctx = cardCtx.get(job.job_id);
   const place = ctx?.placement;
@@ -576,18 +602,36 @@ function effectivePlacement(job) {
   const at = ctx.placementAt;
   if (!at) return place;
 
-  const k = at.scale ? (job.transform_scale ?? 1) / at.scale : 1;
+  const scale = job.transform_scale ?? 1;
+  const rot = job.transform_rotation_deg ?? 0;
+  const k = at.scale ? scale / at.scale : 1;
+  const dRot = rot - at.rot;
   const dx = (job.transform_offset_x_mm ?? 0) - at.offx;
   const dy = (job.transform_offset_y_mm ?? 0) - at.offy;
-  if (k === 1 && dx === 0 && dy === 0) return place;
+  if (k === 1 && dRot === 0 && dx === 0 && dy === 0) return place;
 
-  const fw = place.footprint_width_mm * k;
-  const fh = place.footprint_height_mm * k;
+  let rotationDeg = place.rotation_deg;
+  let fw = place.footprint_width_mm * k;
+  let fh = place.footprint_height_mm * k;
+
+  if (dRot !== 0 && !job.fit_content && place.fit_scale > 0) {
+    rotationDeg = rot + (place.rotation_deg - at.rot);   // keep the auto-rotate part
+    const rad = (rotationDeg * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    const docW = place.layout_width_mm / place.fit_scale;
+    const docH = place.layout_height_mm / place.fit_scale;
+    const unit = place.fit_scale * scale;
+    fw = (docW * cos + docH * sin) * unit;
+    fh = (docW * sin + docH * cos) * unit;
+  }
+
   return {
     ...place,
+    rotation_deg: rotationDeg,
     footprint_width_mm: fw,
     footprint_height_mm: fh,
-    // Scale about the pinned top-left corner, then translate by the offset.
+    // The footprint's top-left corner is the fixed point; resize about it,
+    // then translate by however far the offset has moved.
     center_x_mm: place.center_x_mm - place.footprint_width_mm / 2 + fw / 2 + dx,
     center_y_mm: place.center_y_mm - place.footprint_height_mm / 2 + fh / 2 + dy,
   };

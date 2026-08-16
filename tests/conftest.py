@@ -18,6 +18,7 @@ document thinks to produce.
 """
 import math
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -199,6 +200,27 @@ def job_from_svg():
         state.remove_job(job_id)
         for leftover in main.UPLOAD_DIR.glob(f"{svg_id}*"):
             leftover.unlink()
+
+
+def placement_with_ink(client, job, query, timeout=180.0):
+    """POST /placement and wait for the ink measurement to actually land.
+
+    Ink is measured off the request path now — the endpoint answers
+    `ink_measured: false` and starts a background read, exactly as it does for
+    the browser. Tests have to poll the same way the UI does, so this is not a
+    test-only convenience: if this loop never terminates, neither does the
+    size readout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        res = client.post(f"/jobs/{job['job_id']}/placement",
+                          json={**query, "include_ink": True})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        if body["ink_measured"]:
+            return body
+        assert time.monotonic() < deadline, "ink measurement never completed"
+        time.sleep(0.05)
 
 
 @pytest.fixture

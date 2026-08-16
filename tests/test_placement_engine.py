@@ -229,3 +229,46 @@ def test_scale_is_linear_and_pins_the_footprints_top_left(fit_content, rotation)
             == pytest.approx(base.center_x_mm - base.footprint_w_mm / 2))
     assert (scaled.center_y_mm - scaled.footprint_h_mm / 2
             == pytest.approx(base.center_y_mm - base.footprint_h_mm / 2))
+
+
+def test_auto_rotate_does_not_depend_on_the_jobs_own_angle():
+    """The browser recovers the machine's auto-rotate contribution by
+    subtracting the job's angle from the answer's `rotation_deg`. That is only
+    valid because the policy looks at the paper and the document, never at the
+    angle the user is dragging."""
+    for policy in ("off", "portrait", "landscape"):
+        contributions = {
+            place(150.0, 100.0, transform_rotation_deg=angle,
+                  machine_auto_rotate=policy).rotation_deg - angle
+            for angle in (0.0, 17.0, 90.0, 213.5, -45.0)
+        }
+        assert len(contributions) == 1, (policy, contributions)
+
+
+@pytest.mark.parametrize("rotation", [0.0, 30.0, 90.0, 145.0, -60.0])
+def test_footprint_is_the_rotated_canvas_bounding_box(rotation):
+    """With fit off, the footprint follows straight from the canvas size and
+    the angle — which is what lets the browser follow a rotation drag without
+    a round trip. With fit on it does not, because the angle feeds back into
+    fit_scale; the browser skips extrapolation in that case."""
+    doc_w, doc_h, scale = 150.0, 100.0, 1.4
+    p = place(doc_w, doc_h, transform_rotation_deg=rotation, transform_scale=scale)
+    rad = math.radians(rotation)
+    cos, sin = abs(math.cos(rad)), abs(math.sin(rad))
+    assert p.fit_scale == 1.0
+    assert p.footprint_w_mm == pytest.approx((doc_w * cos + doc_h * sin) * scale)
+    assert p.footprint_h_mm == pytest.approx((doc_w * sin + doc_h * cos) * scale)
+
+
+@pytest.mark.parametrize("rotation", [0.0, 30.0, 90.0])
+@pytest.mark.parametrize("scale", [1.0, 0.4, 2.2])
+def test_the_footprints_top_left_is_the_anchor_whatever_the_transform(rotation, scale):
+    """The one fact the browser's recentring rests on: the footprint's
+    top-left corner sits at (margin + offset) and moves for no other reason.
+    Rotation and scale resize the box about that corner."""
+    p = placement.compute(
+        150.0, 100.0, None, 210.0, 297.0, 7.0, 0.0, 0.0, 11.0, False,
+        transform_scale=scale, transform_rotation_deg=rotation,
+        transform_offset_x_mm=4.0, transform_offset_y_mm=-6.0)
+    assert p.center_x_mm - p.footprint_w_mm / 2 == pytest.approx(11.0 + 4.0)
+    assert p.center_y_mm - p.footprint_h_mm / 2 == pytest.approx(7.0 - 6.0)
