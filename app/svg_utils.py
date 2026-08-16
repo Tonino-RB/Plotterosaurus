@@ -1,9 +1,10 @@
 import itertools
-import math
 import re
 
 from lxml import etree
 from pathlib import Path
+
+from . import placement
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
@@ -301,7 +302,7 @@ def reconcile_layers(reference_path: Path, target_path: Path) -> None:
     tree.write(str(target_path), xml_declaration=True, encoding="utf-8")
 
 
-def _content_footprint_mm(
+def _placement_for(
     root,
     paper_width_mm: float,
     paper_height_mm: float,
@@ -312,47 +313,28 @@ def _content_footprint_mm(
     fit_content: bool,
     transform_scale: float,
     transform_rotation_deg: float,
-    machine_custom_enabled: bool,
+    transform_offset_x_mm: float,
+    transform_offset_y_mm: float,
     machine_auto_rotate: str,
-) -> tuple[float, float, float, float]:
-    """Sizing math shared by transform_to_paper and ink_bounds_mm: the
-    content's on-page footprint (its rotated bounding box, at fit_content's
-    scale if enabled). Returns (footprint_w_mm, footprint_h_mm,
-    total_rotation_deg, total_mm_scale)."""
-    orig_w_mm, orig_h_mm = svg_size_mm(root)
-    orig_w_mm = orig_w_mm or paper_width_mm
-    orig_h_mm = orig_h_mm or paper_height_mm
+) -> placement.Placement:
+    """Read the document's own geometry off ``root`` and resolve a placement.
 
-    # A custom machine bed with auto-rotate forces the paper into a fixed
-    # orientation (see caller); the artwork must turn with it too, or it just
-    # sits undersized/sideways on the swapped page. Add 90 deg whenever the
-    # content's own natural orientation doesn't match the paper's — mirrors
-    # the same decision made client-side for the preview (app.js).
-    auto_rotate_deg = 0.0
-    if machine_custom_enabled and machine_auto_rotate != "off":
-        page_landscape = paper_width_mm > paper_height_mm
-        content_landscape = orig_w_mm > orig_h_mm
-        if page_landscape != content_landscape:
-            auto_rotate_deg = 90.0
-    total_rotation_deg = transform_rotation_deg + auto_rotate_deg
-
-    available_w = max(0.0, paper_width_mm - margin_left_mm - margin_right_mm)
-    available_h = max(0.0, paper_height_mm - margin_top_mm - margin_bottom_mm)
-
-    # fit_content sizes content against its *rotated* bounding box (at the
-    # combined auto + manual rotation), so "Fit to page" keeps the content
-    # within the page at any rotation angle instead of only the unrotated one.
-    rot_rad = math.radians(total_rotation_deg)
-    cos_r, sin_r = abs(math.cos(rot_rad)), abs(math.sin(rot_rad))
-    bbox_w_per_unit = orig_w_mm * cos_r + orig_h_mm * sin_r
-    bbox_h_per_unit = orig_w_mm * sin_r + orig_h_mm * cos_r
-    if fit_content and bbox_w_per_unit > 0 and bbox_h_per_unit > 0 and available_w > 0 and available_h > 0:
-        fit_scale = min(available_w / bbox_w_per_unit, available_h / bbox_h_per_unit)
-    else:
-        fit_scale = 1.0
-
-    total_mm_scale = fit_scale * transform_scale
-    return bbox_w_per_unit * total_mm_scale, bbox_h_per_unit * total_mm_scale, total_rotation_deg, total_mm_scale
+    The only thing this adds over ``placement.compute`` is pulling the size
+    and viewBox out of the XML — the placement engine is kept free of lxml so
+    it stays a pure function that can be reasoned about and tested on its own.
+    """
+    doc_w_mm, doc_h_mm = svg_size_mm(root)
+    return placement.compute(
+        doc_w_mm, doc_h_mm, parse_viewbox(root.get("viewBox", "")),
+        paper_width_mm, paper_height_mm,
+        margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
+        fit_content,
+        transform_scale=transform_scale,
+        transform_rotation_deg=transform_rotation_deg,
+        transform_offset_x_mm=transform_offset_x_mm,
+        transform_offset_y_mm=transform_offset_y_mm,
+        machine_auto_rotate=machine_auto_rotate,
+    )
 
 
 def ink_bounds_mm(
@@ -369,50 +351,35 @@ def ink_bounds_mm(
     transform_rotation_deg: float = 0.0,
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
-    machine_custom_enabled: bool = False,
-    machine_auto_rotate: str = "off",
+    machine_auto_rotate: str = placement.AUTO_ROTATE_OFF,
 ) -> tuple[float, float, float, float] | None:
-    """Where the *actual drawn geometry* of the given layers (not the SVG's
-    document canvas) would land on the page under transform_to_paper's
-    placement rules, in mm: (left, top, right, bottom). None if there's no
-    geometry to measure (no layers selected, or they're empty of drawable
-    content).
+    """Where the *actual drawn geometry* of the given layers lands on the
+    page, in mm: (left, top, right, bottom). None if there is nothing
+    drawable to measure.
 
-    fit_content's *scale factor* is still driven by the canvas size, exactly
-    like transform_to_paper itself — only the reported extent switches to
-    the ink's true bounding box. That box is measured with vpype (already a
-    dependency — see svg_optimize.py) on a temporary file filtered to just
-    the given layers, then mapped through the same rotate/scale-about-centre
-    that transform_to_paper's <g transform=...> applies, corner by corner, so
-    a rotated design's true footprint (not just its unrotated one) is reported
-    correctly regardless of where the ink sits within its own canvas.
+    This differs from the placement of the document itself only in what gets
+    mapped: the canvas still drives the scale (see placement.compute), but the
+    reported extent is the ink's true bounding box, which for most designs
+    sits well inside the canvas.
 
-    vpype reports geometry in CSS pixels of the *physical* document (it has
-    already applied the viewBox-to-viewport mapping), not in the SVG's own
-    user units — so the only conversion needed here is px to mm, and the
-    result is a position within the orig_w_mm x orig_h_mm document. Mixing
-    those pixels with user-unit maths inflates every measurement by 96/25.4.
+    vpype reports geometry in CSS pixels of the *physical* document — it has
+    already applied the viewBox-to-viewport mapping — so the only conversion
+    needed is px to mm, and the result is a position in document millimetres,
+    which is exactly what Placement.doc_mm_rect_to_page consumes. Mixing those
+    pixels with user-unit maths inflates every measurement by 96/25.4.
     """
     import os
     import tempfile
 
     import vpype
 
-    tree = etree.parse(str(svg_path))
-    root = tree.getroot()
-    footprint_w_mm, footprint_h_mm, total_rotation_deg, total_mm_scale = _content_footprint_mm(
+    root = etree.parse(str(svg_path)).getroot()
+    place = _placement_for(
         root, paper_width_mm, paper_height_mm,
         margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
         fit_content, transform_scale, transform_rotation_deg,
-        machine_custom_enabled, machine_auto_rotate,
+        transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
-    orig_w_mm, orig_h_mm = svg_size_mm(root)
-    orig_w_mm = orig_w_mm or paper_width_mm
-    orig_h_mm = orig_h_mm or paper_height_mm
-    # transform_to_paper maps the document's own centre onto this point.
-    doc_center_x_mm, doc_center_y_mm = orig_w_mm / 2, orig_h_mm / 2
-    center_x_mm = margin_left_mm + footprint_w_mm / 2 + transform_offset_x_mm
-    center_y_mm = margin_top_mm + footprint_h_mm / 2 + transform_offset_y_mm
 
     fd, tmp_name = tempfile.mkstemp(dir=svg_path.parent, suffix=".svg")
     tmp = Path(tmp_name)
@@ -425,21 +392,7 @@ def ink_bounds_mm(
     if bounds is None:
         return None
     xmin, ymin, xmax, ymax = (v / PX_PER_MM for v in bounds)
-
-    rad = math.radians(total_rotation_deg)
-    cos_r, sin_r = math.cos(rad), math.sin(rad)
-
-    def to_page(x_mm: float, y_mm: float) -> tuple[float, float]:
-        dx = (x_mm - doc_center_x_mm) * total_mm_scale
-        dy = (y_mm - doc_center_y_mm) * total_mm_scale
-        return (
-            center_x_mm + dx * cos_r - dy * sin_r,
-            center_y_mm + dx * sin_r + dy * cos_r,
-        )
-
-    corners = [to_page(x, y) for x in (xmin, xmax) for y in (ymin, ymax)]
-    xs, ys = [c[0] for c in corners], [c[1] for c in corners]
-    return min(xs), min(ys), max(xs), max(ys)
+    return place.doc_mm_rect_to_page(xmin, ymin, xmax, ymax)
 
 
 def transform_to_paper(
@@ -456,70 +409,22 @@ def transform_to_paper(
     transform_rotation_deg: float = 0.0,
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
-    machine_custom_enabled: bool = False,
-    machine_auto_rotate: str = "off",
+    machine_auto_rotate: str = placement.AUTO_ROTATE_OFF,
 ) -> None:
-    """Write a new SVG sized to the paper, with the source SVG's content wrapped in
-    a <g transform="..."> that centers it within the margin box, optionally scales
-    it to fit, and applies the user's scale/rotation/offset around the content center.
+    """Write a new SVG sized to the paper, with the source content wrapped in
+    the ``<g transform>`` that places it (see app/placement.py).
 
-    The output SVG uses mm as its user-unit coordinate space (viewBox = 0 0 paper_w paper_h)
-    so pyaxidraw renders it 1:1 on the plotter bed.
+    The output uses mm as its user-unit coordinate space
+    (viewBox = 0 0 paper_w paper_h) so pyaxidraw renders it 1:1 on the bed.
     """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
-
-    orig_w_mm, orig_h_mm = svg_size_mm(root)
-    orig_w_mm = orig_w_mm or paper_width_mm
-    orig_h_mm = orig_h_mm or paper_height_mm
-
-    vb = parse_viewbox(root.get("viewBox", ""))
-    if vb is not None:
-        vb_x, vb_y, vb_w, vb_h = vb
-    else:
-        # No viewBox, or one that doesn't hold four numbers. Falling back to
-        # the document's own size treats user units as mm, which is the same
-        # assumption the no-viewBox case already made.
-        vb_x, vb_y = 0.0, 0.0
-        vb_w, vb_h = orig_w_mm, orig_h_mm
-
-    footprint_w_mm, footprint_h_mm, total_rotation_deg, total_mm_scale = _content_footprint_mm(
+    place = _placement_for(
         root, paper_width_mm, paper_height_mm,
         margin_top_mm, margin_right_mm, margin_bottom_mm, margin_left_mm,
         fit_content, transform_scale, transform_rotation_deg,
-        machine_custom_enabled, machine_auto_rotate,
+        transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
-    # Source user units -> paper mm. The viewBox-to-viewport mapping is SVG's
-    # default preserveAspectRatio="xMidYMid meet": one uniform scale, the
-    # smaller of the two axis ratios, with the result centred in the viewport.
-    # Taking the x ratio alone stretches any document whose width/height
-    # aspect differs from its viewBox aspect — the browser preview applies
-    # `meet`, so the plot would come out a different size than it showed.
-    # Centring is already handled below: the viewBox centre is translated onto
-    # the viewport (document) centre.
-    if vb_w and vb_h:
-        vb_to_mm = min(orig_w_mm / vb_w, orig_h_mm / vb_h)
-    elif vb_w:
-        vb_to_mm = orig_w_mm / vb_w
-    else:
-        vb_to_mm = 1.0
-    user_scale = total_mm_scale * vb_to_mm
-
-    # Rotate/scale the content around its own center; that center lands at
-    # (center_x_mm, center_y_mm) on the paper, shifted by the user's offset.
-    # Anchor the content's own *rotated* top-left corner (at its rendered,
-    # fit_scale'd size) to the margin box's top-left corner rather than
-    # centering it — so a design's own (0,0) lines up with the page's origin
-    # by default, whether or not "Fit to page" scaled it down. Using the
-    # rotated footprint instead of the raw orig_w_mm/orig_h_mm matters once
-    # total_rotation_deg != 0/180: for non-square content the rotated
-    # footprint is a different size than the unrotated one, so anchoring off
-    # the unrotated size drifts the content off the page edge. Mirrors
-    # offX/offY/cX/cY in updatePreviewTransform() (app.js).
-    center_x_mm = margin_left_mm + footprint_w_mm / 2 + transform_offset_x_mm
-    center_y_mm = margin_top_mm + footprint_h_mm / 2 + transform_offset_y_mm
-    vb_center_x = vb_x + vb_w / 2
-    vb_center_y = vb_y + vb_h / 2
 
     nsmap = {k: v for k, v in root.nsmap.items() if k}
     nsmap[None] = SVG_NS
@@ -529,13 +434,7 @@ def transform_to_paper(
     new_root.set("viewBox", f"0 0 {paper_width_mm} {paper_height_mm}")
 
     group = etree.SubElement(new_root, f"{{{SVG_NS}}}g")
-    group.set(
-        "transform",
-        f"translate({center_x_mm},{center_y_mm}) "
-        f"rotate({total_rotation_deg}) "
-        f"scale({user_scale}) "
-        f"translate({-vb_center_x},{-vb_center_y})",
-    )
+    group.set("transform", place.group_transform())
     for child in list(root):
         group.append(child)
 

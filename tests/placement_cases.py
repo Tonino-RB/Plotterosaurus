@@ -113,7 +113,6 @@ def run_case(case_id: str, workdir: Path) -> dict:
         transform_scale=scenario["scale"],
         transform_rotation_deg=scenario["rot"],
         transform_offset_x_mm=off_x, transform_offset_y_mm=off_y,
-        machine_custom_enabled=True,
         machine_auto_rotate=scenario["auto_rotate"],
     )
 
@@ -161,10 +160,5 @@ OPEN_FINDINGS: dict[str, dict] = {
         "summary": "a document with nothing plottable is accepted and plots nothing; "
                    "ink_bounds_mm returns None and no warning is raised",
         "fixtures": ["text-only"],
-    },
-    "A9": {
-        "summary": "square and near-square artwork takes a pointless 90-degree "
-                   "auto-rotation, because content_landscape is a strict >",
-        "fixtures": ["square", "near-square"],
     },
 }

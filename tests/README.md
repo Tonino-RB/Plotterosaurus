@@ -119,6 +119,14 @@ file updated on autopilot is worse than no test, because it looks like coverage.
 | `placement_cases.py` | The 10 scenarios, and the pipeline one case runs through |
 | `golden/placement.json` | 180 recorded answers — generated, never hand-edited |
 | `regen_golden.py` | Rewrites the golden file from current behaviour |
+| `test_placement_engine.py` | Unit specs for `app/placement.py` |
+
+`test_placement_engine.py` is a different kind of test from the rest of this
+directory. The golden suite asserts only that behaviour hasn't *changed*;
+these assert that the placement rules are what we decided they should be —
+the canvas is the composition, anchor at the margin box's top-left,
+auto-rotate turns the artwork with the page, `meet` rather than stretch. When
+the two disagree, the specs are right and the golden file needs regenerating.
 
 Each case runs the sequence the app really runs — `normalize_layer_structure`
 → `parse_layers` → `filter_to_layers` → `transform_to_paper` → `ink_bounds_mm`
@@ -148,6 +156,11 @@ that demonstrate it. It is documentation, not an assertion: when you fix one,
 those are the rows expected to move, and a diff reaching further than that list
 means the fix reached further than intended.
 
-Currently recorded: **A6** (canvas crop only applied when Optimize SVG is on),
-**A7** (documents with nothing plottable are accepted silently), **A9**
-(square artwork takes a pointless 90° auto-rotation).
+Currently recorded: **A6** (canvas crop only applied when Optimize SVG is on)
+and **A7** (documents with nothing plottable are accepted silently).
+
+A9 was the first entry retired, and it is the worked example of why this file
+exists. Extracting `app/placement.py` rewrote every line of the placement
+math; the corpus reported a two-line behavioural diff, and both lines were the
+A9 fix the entry predicted. A refactor that large landing that precisely is
+only checkable because the baseline existed first.

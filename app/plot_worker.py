@@ -496,7 +496,6 @@ def compute_preview(job: dict, svg_path: Path,
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
-            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
     except Exception:
@@ -674,7 +673,6 @@ def _delta_correction_mm(job: dict, svg_path: Path,
         transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
         transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
         transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
-        machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
         machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
     )
     if ink_bounds is None:
@@ -1377,7 +1375,6 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
-            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
@@ -1438,7 +1435,6 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
-            machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
         stopped, output_svg = _run_stage(scratch, "plot", job)
@@ -1687,7 +1683,6 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
                     transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
                     transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
-                    machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
                 )
             except Exception:

@@ -1787,7 +1787,7 @@
       200.02,
       200.0
     ],
-    "transform": "translate(100,100.01) rotate(90) scale(1) translate(-100.01,-100)"
+    "transform": "translate(100.01,100) rotate(0) scale(1) translate(-100.01,-100)"
   },
   "no-size-at-all|a4l-fit": {
     "ink_bounds_mm": [
@@ -3545,7 +3545,7 @@
       200.0,
       200.0
     ],
-    "transform": "translate(100,100) rotate(90) scale(1) translate(-100,-100)"
+    "transform": "translate(100,100) rotate(0) scale(1) translate(-100,-100)"
   },
   "square|portraitbed-autorotate": {
     "ink_bounds_mm": [
