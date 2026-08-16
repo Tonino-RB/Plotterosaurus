@@ -103,9 +103,22 @@ def get_status(force: bool = False) -> dict:
     if _UPDATES_DISABLED:
         # error=False deliberately: this is a disabled feature, not a failed
         # check, so the UI shouldn't show a "check failed" indicator for it.
+        #
+        # `enabled` says the feature is off. Every other field below is
+        # indistinguishable from a healthy "you are up to date" answer, so
+        # without it a caller cannot tell a disabled checker from a passing
+        # one, and pressing Check now returns a permanently reassuring result
+        # that means nothing.
+        #
+        # NOTE: nothing consumes it yet. `renderUpdateStatus` in static/app.js
+        # reads `update_available`, `skipped`, `current` and `error`, but not
+        # this — so the banner, the pill and the Check now button are still
+        # live over a feature that cannot do anything. The field is the honest
+        # half of the fix; hiding the surface on it is still to do.
         return {
             "current": config.APP_VERSION, "latest": None, "update_available": False,
             "skipped": False, "checked_at": time.time(), "error": False,
+            "enabled": False,
         }
     global _cache_latest, _cache_error, _cache_at
     now = time.time()
@@ -127,6 +140,7 @@ def get_status(force: bool = False) -> dict:
         "skipped": bool(latest) and latest == config.SKIPPED_VERSION,
         "checked_at": _cache_at,
         "error": _cache_error,
+        "enabled": True,
     }
 
 

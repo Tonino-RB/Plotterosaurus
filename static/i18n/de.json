@@ -169,7 +169,6 @@
   "optimize.linesort": "Für weniger Wege umsortieren (linesort)",
   "optimize.reloop": "Startpunkt geschlossener Pfade zufällig wählen (reloop)",
   "optimize.tolerance_label": "Toleranz (mm) — verwendet von linemerge + linesimplify",
-  "layer.default_label": "Ebene {n}",
   "layer_type.pattern": "Muster",
   "layer_type.text": "Text",
   "layer_type.svg": "svg",

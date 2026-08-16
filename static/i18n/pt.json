@@ -169,7 +169,6 @@
   "optimize.linesort": "Reordenar para menos deslocação (linesort)",
   "optimize.reloop": "Aleatorizar início de caminhos fechados (reloop)",
   "optimize.tolerance_label": "Tolerância (mm) — usada por linemerge + linesimplify",
-  "layer.default_label": "Camada {n}",
   "layer_type.pattern": "padrão",
   "layer_type.text": "texto",
   "layer_type.svg": "svg",

@@ -169,7 +169,6 @@
   "optimize.linesort": "Réordonner pour moins de déplacement (linesort)",
   "optimize.reloop": "Démarrage aléatoire des tracés fermés (reloop)",
   "optimize.tolerance_label": "Tolérance (mm) — utilisée par linemerge + linesimplify",
-  "layer.default_label": "Calque {n}",
   "layer_type.pattern": "motif",
   "layer_type.text": "texte",
   "layer_type.svg": "svg",

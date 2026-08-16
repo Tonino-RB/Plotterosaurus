@@ -194,7 +194,6 @@
   "optimize.min_length": "Drop segments shorter than a minimum length",
   "optimize.min_length_label": "Minimum segment length (mm)",
 
-  "layer.default_label": "Layer {n}",
   "layer_type.pattern": "pattern",
   "layer_type.text": "text",
   "layer_type.svg": "svg",

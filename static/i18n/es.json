@@ -169,7 +169,6 @@
   "optimize.linesort": "Reordenar para menos recorrido (linesort)",
   "optimize.reloop": "Aleatorizar el inicio de trazados cerrados (reloop)",
   "optimize.tolerance_label": "Tolerancia (mm) — usada por linemerge + linesimplify",
-  "layer.default_label": "Capa {n}",
   "layer_type.pattern": "patrón",
   "layer_type.text": "texto",
   "layer_type.svg": "svg",

@@ -151,3 +151,57 @@ def test_nonpositive_paper_is_rejected(client, job):
     res = client.post(f"/jobs/{job['job_id']}/placement",
                       json={"paper_width_mm": 0, "paper_height_mm": 297})
     assert res.status_code == 422
+
+
+# Document metadata ----------------------------------------------------------
+
+def test_svg_meta_describes_the_file_that_svg_serves(client, job):
+    """The browser stopped re-deriving the layer list and page size — a full
+    DOMParser pass over megabytes on the UI thread, 281-368ms measured, to
+    rebuild fields the server already computes. It reads them from here now.
+
+    They have to describe the *same* file `/jobs/{id}/svg` returns. With
+    Optimize SVG on that is the optimized copy, whose layer sequence vpype can
+    change; describing the raw upload instead would hand the layer panel
+    indices that do not match the artwork it is showing, and those indices
+    choose what gets plotted.
+    """
+    from lxml import etree
+
+    meta = client.get(f"/jobs/{job['job_id']}/svg-meta")
+    assert meta.status_code == 200, meta.text
+    body = meta.json()
+
+    served = client.get(f"/jobs/{job['job_id']}/svg")
+    assert served.status_code == 200
+    root = etree.fromstring(served.content)
+
+    groups = [g for g in root
+              if g.tag == svg_utils.LAYER_TAG
+              and g.get(svg_utils.GROUPMODE_ATTR) == "layer"]
+    assert [l["index"] for l in body["layers"]] == list(range(len(groups)))
+    assert [l["label"] for l in body["layers"]] == [
+        g.get(svg_utils.LABEL_ATTR) or f"Layer {i + 1}" for i, g in enumerate(groups)]
+    assert body["viewBox"] == root.get("viewBox", "")
+    assert body["width"] == root.get("width", "")
+
+
+def test_svg_meta_carries_every_field_the_client_stopped_deriving(client, job):
+    for field in ("layers", "width", "height", "width_mm", "height_mm", "viewBox"):
+        assert field in client.get(f"/jobs/{job['job_id']}/svg-meta").json(), field
+
+
+def test_svg_meta_is_not_reparsed_per_request(client, job, monkeypatch):
+    """It is a full lxml parse of the whole document — 200ms on a real drawing.
+    Cached on (path, mtime), like the placement geometry beside it."""
+    calls = []
+    real = svg_utils.parse_layers
+    monkeypatch.setattr(main.svg_utils, "parse_layers",
+                        lambda p: (calls.append(str(p)), real(p))[1])
+    for _ in range(5):
+        client.get(f"/jobs/{job['job_id']}/svg-meta")
+    assert len(calls) == 1, f"{len(calls)} parses for one unchanged file"
+
+
+def test_svg_meta_for_an_unknown_job_is_404(client):
+    assert client.get("/jobs/nope/svg-meta").status_code == 404

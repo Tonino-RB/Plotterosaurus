@@ -95,6 +95,11 @@ _last_active_id: str | None = None
 _awaiting_next_job: bool = False
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
+# Always None: nothing sets it, and the setter that used to has been removed as
+# dead code. The field stays in snapshot() because API.md publishes it in the
+# WebSocket state payload, so dropping it is a wire-format change for external
+# clients (the macOS companion app) to gain one line. Per-job failures are
+# reported on the job's own `error` instead, which is what the UI reads.
 _error: str | None = None
 # Fine origin nudge dialed in during an awaiting_pen_change pause (see
 # plot_worker.nudge_origin). Belongs to one run: it applies to that run's
@@ -459,12 +464,6 @@ def recording() -> tuple[str, str | None]:
     return _recording["status"], _recording["job_id"]
 
 
-def set_error(err: str | None) -> None:
-    global _error
-    _error = err
-    _broadcast()
-
-
 def set_svg_status(svg_id: str, status: str,
                    settings_key: str | None = None,
                    error: str | None = None) -> None:
@@ -521,14 +520,6 @@ def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
         return
     payload = {"type": "position", "x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
     _loop.call_soon_threadsafe(_event_queue.put_nowait, payload)
-
-
-def clear_last_pen_position() -> None:
-    global _last_pen_position
-    if _last_pen_position is None:
-        return
-    _last_pen_position = None
-    _broadcast()
 
 
 async def drain_events() -> None:

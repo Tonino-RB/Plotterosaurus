@@ -169,7 +169,6 @@
   "optimize.linesort": "이동 최소화를 위해 재정렬 (linesort)",
   "optimize.reloop": "닫힌 경로 시작점 무작위화 (reloop)",
   "optimize.tolerance_label": "허용 오차 (mm) — linemerge + linesimplify에서 사용",
-  "layer.default_label": "레이어 {n}",
   "layer_type.pattern": "패턴",
   "layer_type.text": "텍스트",
   "layer_type.svg": "svg",

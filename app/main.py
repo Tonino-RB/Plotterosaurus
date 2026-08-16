@@ -44,6 +44,38 @@ PAPER_PRESETS: dict[str, tuple[float, float]] = {
 
 LENGTH_UNIT_TO_MM: dict[str, float] = {"mm": 1.0, "cm": 10.0, "in": 25.4}
 
+# Ceiling on an uploaded SVG, in bytes. Nothing else in the stack caps this —
+# there is no reverse proxy, and uvicorn does not limit a request body — so
+# without it one POST is read whole into the memory of a 3.7GB board that is
+# also running a browser, and a stream of them fills the SD card.
+#
+# 32MB is deliberately generous: the largest drawings this is built for are
+# around 8MB (see tests/conftest.py), so the limit only ever catches something
+# that was never going to plot anyway.
+MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+_UPLOAD_CHUNK = 1024 * 1024
+
+
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read an upload, refusing anything past ``MAX_UPLOAD_BYTES``.
+
+    Chunked so an oversized body is rejected while it arrives rather than
+    after it has already been materialized in full — which is the entire
+    point, since holding it is the failure being prevented.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise _coded(413, "file_too_large",
+                         limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 # Web-UI-facing errors carry a stable {code, params} detail instead of an
 # English string, so the browser can localize them (see apiErrText in app.js).
@@ -167,7 +199,21 @@ app = FastAPI(lifespan=lifespan)
 #
 # 1KB floor so the compression does not cost more than it saves on the small
 # JSON the UI polls with.
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+#
+# Level 1, not Starlette's default of 9. That default is a bad trade on this
+# hardware and was measured making the largest files *slower to arrive than
+# sending them uncompressed* — total time to deliver an 8MB drawing over a
+# 40Mb/s link:
+#
+#     level 1     0.28s to compress   3.19 MB    0.92s   <- chosen
+#     none        0.00s               8.04 MB    1.61s
+#     level 6     1.46s               2.78 MB    2.02s
+#     level 9     2.63s               2.75 MB    3.18s
+#
+# SVG is repetitive enough that level 1 already captures most of the ratio —
+# 39.7% of the original against 34.3% at level 9 — and the CPU it does not
+# spend is CPU the plotter and the background queues are competing for.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
 
 
 class _ImmutableStatic(StaticFiles):
@@ -202,7 +248,7 @@ def index():
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    data = await file.read()
+    data = await _read_capped(file)
     # Sniff the bytes before writing: SVG starts with '<' (optionally after a
     # UTF-8 BOM and whitespace). Anything binary (JPG/PNG/PDF/...) fails fast
     # with a clean message rather than the lxml parse trace.
@@ -255,6 +301,56 @@ def get_job_svg(job_id: str):
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(str(path), media_type="image/svg+xml")
+
+
+_svg_meta_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+_SVG_META_CACHE_MAX = 32
+
+
+@app.get("/jobs/{job_id}/svg-meta")
+def get_job_svg_meta(job_id: str):
+    """Layer list and page size for the SVG that ``/jobs/{job_id}/svg`` serves.
+
+    The browser used to reconstruct this itself: fetch the document, run it
+    through DOMParser a second time, walk the top-level groups for their
+    labels, and read width/height/viewBox off the root. That is a full parse of
+    a multi-megabyte file on the UI thread — measured at 281ms on a 2.4MB
+    curved drawing and 368ms on a 4.5MB hatched one, blocking everything for
+    the duration — to recompute six fields ``svg_utils.parse_layers`` already
+    produces, field for field, and already returns from ``/upload``.
+
+    Deliberately resolved through ``_effective_svg_path``, the same way the
+    document itself is: with "Optimize SVG" on, the served file is the
+    optimized one, whose layer sequence vpype can change (see
+    ``reconcile_layers``). Describing the raw upload instead would hand the
+    layer panel indices that do not match the artwork it is displaying — and
+    those indices choose what gets plotted.
+    """
+    job = state.get_job(job_id)
+    if job is None:
+        raise HTTPException(404)
+    path = plot_worker._effective_svg_path(job)
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        raise HTTPException(404)
+
+    key = (str(path), stamp)
+    with _doc_geom_lock:
+        hit = _svg_meta_cache.get(key)
+        if hit is not None:
+            _svg_meta_cache.move_to_end(key)
+            return hit
+    try:
+        info = svg_utils.parse_layers(path)
+    except etree.XMLSyntaxError:
+        raise _coded(422, "invalid_svg")
+    with _doc_geom_lock:
+        _svg_meta_cache[key] = info
+        _svg_meta_cache.move_to_end(key)
+        while len(_svg_meta_cache) > _SVG_META_CACHE_MAX:
+            _svg_meta_cache.popitem(last=False)
+    return info
 
 
 # Placement ----------------------------------------------------------------

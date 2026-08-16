@@ -169,7 +169,6 @@
   "optimize.linesort": "重排以减少移动 (linesort)",
   "optimize.reloop": "随机化闭合路径起点 (reloop)",
   "optimize.tolerance_label": "容差 (mm)——用于 linemerge + linesimplify",
-  "layer.default_label": "图层 {n}",
   "layer_type.pattern": "图案",
   "layer_type.text": "文字",
   "layer_type.svg": "svg",

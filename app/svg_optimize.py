@@ -133,12 +133,19 @@ def optimize_svg(
         # Keep it short — multi-line tracebacks just bloat the UI error pill.
         first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
         raise OptimizeError(first_line)
+    if not tmp.exists():
+        # See normalize_layers: vpype exits 0 and writes nothing when the
+        # document holds no plottable geometry. Raising the queue's own error
+        # type means _process reports it as a failed optimization rather than
+        # letting a FileNotFoundError escape as "internal error".
+        raise OptimizeError("the document contains no plottable geometry")
     # Only now does the optimized file become visible under its real name.
     os.replace(tmp, dst)
 
 
-def normalize_layers(src: Path, dst: Path) -> None:
+def normalize_layers(src: Path, dst: Path) -> bool:
     """Write ``dst`` from ``src`` via a bare vpype read/write round-trip.
+    Returns True if ``dst`` was written, False if there was nothing to write.
 
     vpype's ``read`` imports any top-level SVG content that isn't already
     inside an Inkscape layer group into layer 1 (see its own docs), and
@@ -146,6 +153,15 @@ def normalize_layers(src: Path, dst: Path) -> None:
     Used to repair SVGs that have elements sitting outside any layer, which
     ``svg_utils.parse_layers`` otherwise reports as having no layers at all.
     Raises ``OptimizeError`` on vpype failure.
+
+    A document with nothing plottable in it — empty, or holding only
+    text/images/defs — is not a failure and is not an empty output either:
+    vpype exits 0 and declines to create the file at all ("no geometry to
+    save, no file created"). Renaming unconditionally turned that into a
+    FileNotFoundError, which is not an OptimizeError, so it escaped the
+    caller's handler and surfaced as a 500 on /upload while leaving the
+    uploaded file orphaned on disk. Report it as False and let the caller
+    fall back to its own no-layers rejection.
     """
     cmd = _vpype_cmd() + [
         "read", str(src),
@@ -161,7 +177,10 @@ def normalize_layers(src: Path, dst: Path) -> None:
                f"vpype exited with code {proc.returncode}")
         first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
         raise OptimizeError(first_line)
+    if not _partial(dst).exists():
+        return False
     os.replace(_partial(dst), dst)
+    return True
 
 
 def cancel_current() -> None:

@@ -169,7 +169,6 @@
   "optimize.linesort": "移動を減らすため並べ替え (linesort)",
   "optimize.reloop": "閉じたパスの開始点をランダム化 (reloop)",
   "optimize.tolerance_label": "許容値 (mm) — linemerge + linesimplify で使用",
-  "layer.default_label": "レイヤー {n}",
   "layer_type.pattern": "パターン",
   "layer_type.text": "テキスト",
   "layer_type.svg": "svg",

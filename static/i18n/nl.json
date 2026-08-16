@@ -187,7 +187,6 @@
   "optimize.reloop": "Startpunt van gesloten paden willekeurig maken (reloop)",
   "optimize.tolerance_label": "Tolerantie (mm) — gebruikt door linemerge + linesimplify",
 
-  "layer.default_label": "Laag {n}",
   "layer_type.pattern": "patroon",
   "layer_type.text": "tekst",
   "layer_type.svg": "svg",
