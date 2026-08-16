@@ -220,7 +220,8 @@ Before upgrading (either way), it's cleanest to wait until the queue is idle (or
 | Plotter control | `pyaxidraw` Python API (not the `axicli` CLI) |
 | Optimization | `vpype` CLI invoked as a subprocess (cancel-killable) for optional pre-plot path optimization; run ahead of time by a background queue and cached per job, reused across re-plots |
 | Camera (optional) | [MediaMTX](https://mediamtx.org), its own systemd service, reads a Pi Camera Module 3 directly and serves RTSP/HLS/WebRTC + recording segments; `app/camera.py` drives its local Control API and post-processes segments with ffmpeg (optional `rclone copy` afterward) |
-| Frontend | Vanilla HTML + CSS + JavaScript, no build step; `static/i18n.js` + `static/i18n/*.json` for the 10-language UI |
+| Placement | `app/placement.py` — one pure function decides where artwork lands on paper; the SVG writer, the bounds check and the browser preview all consume it |
+| Frontend | Vanilla HTML + CSS + JavaScript, no build step; `static/i18n.js` + `static/i18n/*.json` for the 10-language UI. The browser derives no geometry — it asks `POST /jobs/{id}/placement` and renders the reply |
 | Transport | HTTP + WebSocket |
 | State | In-memory, broadcast via `asyncio.Queue` |
 | Process mgmt | systemd (`plotterosaurus.service`, plus `mediamtx.service` when the camera is enabled) |
@@ -242,13 +243,18 @@ app/
   plan_queue.py     # single-worker FIFO queue that pre-computes each queued
                     # job's time/distance estimate in the background
   svg_optimize.py   # vpype subprocess wrapper for optional pre-plot optimization
-  svg_utils.py      # Inkscape-layer parsing, filter, paper transform
+  placement.py      # THE placement engine: where ink lands on paper. Pure
+                    # (floats in, floats out); every other module and the web
+                    # UI consume its answer rather than deriving their own
+  svg_utils.py      # Inkscape-layer parsing, filtering, and rendering a
+                    # placement into an SVG (see placement.py)
   camera.py         # plot recording via a Camera Module 3 + MediaMTX (opt-in)
   notify.py         # outgoing webhook delivery on layer/job completion
   state.py          # in-memory state + WebSocket broadcast
   config.py         # plotter / camera / webhook / display settings, persisted to config.json
   updates.py        # self-update: remote version check + guarded apply (opt-in)
 static/             # index.html, app.js, style.css, i18n.js + i18n/ (10 languages)
+tests/              # placement corpus + engine specs — see tests/README.md
 systemd/            # plotterosaurus.service + mediamtx.service (templates)
 scripts/            # plotterosaurus-update.in (self-update helper template)
 install.sh          # idempotent installer
@@ -277,6 +283,18 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 
 - No live progress while `plot_run` is in its ~18s pre-motion setup phase (EBB version query, servo init, path planning) — pyaxidraw doesn't expose progress events until motion starts.
 - Remote update checks are hardcoded off in `app/updates.py` (`_UPDATES_DISABLED = True`) on this checkout, since it's an actively-changing personal fork — the update banner never appears regardless of `ENABLE_SELF_UPDATE`. `git pull && ./install.sh` always works as the manual update path.
+- **Content outside the SVG canvas is only dropped when "Optimize SVG" is on.** The canvas is treated as the composition, so anything outside it is meant to be excluded — but that rule is currently enforced by vpype's page crop, which only runs as part of optimization. With optimization off, out-of-canvas geometry is plotted wherever it lands on the sheet.
+- **A document with nothing plottable is accepted and plots nothing.** Live text and raster images are dropped on the way to the plotter (they aren't strokes), but the upload succeeds and the job runs to "completed" without drawing. Convert text to paths before uploading.
+- The machine profile isn't snapshotted onto a job, so switching the active machine changes how already-queued jobs are placed.
+
+## Testing
+
+```bash
+venv/bin/pip install -r requirements-dev.txt
+venv/bin/python -m pytest tests/ -q
+```
+
+Test dependencies are kept out of `requirements.txt` so `install.sh` never puts a test runner on a plotter host. See [tests/README.md](tests/README.md) for what the suite covers and how to regenerate the placement corpus.
 
 ## License
 

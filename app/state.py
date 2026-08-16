@@ -142,7 +142,7 @@ def _load_from_disk() -> None:
     resume SVG is on disk, OR if it was a clean awaiting_pen_change boundary)
     or 'failed' otherwise, never as 'plotting'.
     """
-    global _queue, _active_id, _svgs
+    global _queue, _active_id
     if not STATE_PATH.exists():
         return
     try:

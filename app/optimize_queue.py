@@ -22,7 +22,6 @@ tell whether the on-disk file still matches.
 """
 import logging
 import threading
-import time
 from pathlib import Path
 from typing import Callable
 

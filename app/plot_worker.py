@@ -11,7 +11,7 @@ from pathlib import Path
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import camera, config, notify, optimize_queue, state, svg_optimize, svg_utils
+from . import camera, config, notify, optimize_queue, state, svg_utils
 
 log = logging.getLogger(__name__)
 
@@ -1165,7 +1165,6 @@ def cancel_active() -> None:
 
 
 def shutdown_gracefully(timeout_s: float = 30.0) -> None:
-    snap = state.snapshot()
     job = state.active_job()
     if job and job["status"] in ("plotting", "homing") and _current_ad is not None:
         log.info("graceful shutdown: pausing active job %s", job["job_id"])
