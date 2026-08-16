@@ -32,7 +32,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from . import svg_utils
+from . import svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,36 @@ _worker: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
 
+def sweep_orphaned_temps(uploads: Path) -> int:
+    """Delete leaked ``tmp*.svg`` scratch files. Returns how many went.
+
+    ``ink_rect_doc_mm`` writes a filtered copy of the document before reading
+    it and unlinks it in a ``finally``. That finally does not run when the
+    service is killed mid-parse, and a parse of a real drawing lasts long
+    enough that restarts land inside one regularly: 234MB had accumulated.
+
+    Only ``tmp*`` is touched, and only in the uploads directory. Everything
+    else there is load-bearing — ``.opt.svg`` is what gets plotted when
+    optimization is on, and ``.s0.svg`` / ``.resume.svg`` are how an
+    interrupted plot picks up where it stopped. Those are never candidates.
+    """
+    removed = 0
+    # tmp*.svg  — scratch from an interrupted ink measurement.
+    # .*.partial.svg — a half-written optimize/normalize output whose rename never
+    #              happened (see svg_optimize). The real file, if there is one,
+    #              is untouched next to it.
+    for pattern in ("tmp*.svg", ".*.partial.svg"):
+        for leftover in uploads.glob(pattern):
+            try:
+                leftover.unlink()
+                removed += 1
+            except OSError:
+                log.debug("ink_cache: could not remove %s", leftover, exc_info=True)
+    if removed:
+        log.info("ink_cache: removed %d orphaned scratch file(s)", removed)
+    return removed
+
+
 def _key(path: Path) -> tuple | None:
     try:
         return (str(path), path.stat().st_mtime_ns)
@@ -61,11 +91,16 @@ def _run() -> None:
     Serial on purpose. Two concurrent vpype reads of an 8MB document do not
     finish in half the time on a four-core Pi — they finish in twice the time
     each, while starving the event loop that is meant to be driving a plotter.
+    The shared budget in `workload` extends that across the optimize and plan
+    queues too, so three drawings uploaded together are measured one at a time
+    rather than three abreast.
     """
+    workload.deprioritize()
     while True:
         key = _work.get()
         try:
-            rects = svg_utils.ink_rects_by_layer(Path(key[0]))
+            with workload.heavy("ink"):
+                rects = svg_utils.ink_rects_by_layer(Path(key[0]))
         except Exception:
             log.exception("ink_cache: could not measure %s", key[0])
             rects = {}

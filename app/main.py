@@ -16,6 +16,7 @@ from fastapi import (
     Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -141,6 +142,8 @@ async def lifespan(_app: FastAPI):
     plan_queue.bootstrap_from_state()
     camera.apply_camera_settings()
     camera.stop_orphaned_recording()
+    # Scratch files leaked by a measurement the last shutdown interrupted.
+    ink_cache.sweep_orphaned_temps(UPLOAD_DIR)
     drain_task = asyncio.create_task(state.drain_events())
     try:
         yield
@@ -155,7 +158,35 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# SVG is XML: the most compressible thing this server owns, and the biggest.
+# An 8MB drawing goes over the wire at 2.78MB, a 4.5MB one at 0.88MB, and
+# app.js at roughly a quarter of its size. Nothing about the bytes changes —
+# the browser reconstructs them exactly, and the plot never touches this path
+# at all, since the machine is driven from the file on disk.
+#
+# 1KB floor so the compression does not cost more than it saves on the small
+# JSON the UI polls with.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+class _ImmutableStatic(StaticFiles):
+    """Static assets, cached hard.
+
+    Asset URLs already carry ``__ASSET_VERSION__`` (see the index handler), so
+    a file's URL changes whenever the file does. That makes the content
+    genuinely immutable per URL, and the default — an ETag with no
+    Cache-Control — means the browser instead asks about every asset on every
+    load and waits for four 304s before it can start.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.mount("/static", _ImmutableStatic(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
@@ -279,7 +310,14 @@ def _doc_geometry(path: Path, stamp: int) -> tuple:
         if hit is not None:
             _doc_geom_cache.move_to_end(key)
             return hit
-    root = etree.parse(str(path)).getroot()
+    try:
+        root = etree.parse(str(path)).getroot()
+    except etree.XMLSyntaxError:
+        # A document that will not parse is not a server fault, and answering
+        # 500 turns it into an unexplained red box in the UI. The optimized
+        # file is written atomically now, so this should mean a genuinely
+        # malformed upload rather than one caught mid-write.
+        raise _coded(422, "invalid_svg")
     doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
     geom = (doc_w_mm, doc_h_mm, svg_utils.parse_viewbox(root.get("viewBox", "")))
     with _doc_geom_lock:

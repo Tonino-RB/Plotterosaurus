@@ -63,6 +63,25 @@ def build_pipeline(
     return cmd
 
 
+def _partial(dst: Path) -> Path:
+    """The sibling scratch name a file is built under before it is renamed.
+
+    The ``.svg`` stays last: vpype's ``write`` picks its output format from the
+    file extension, and a name ending ``.partial`` makes it write nothing at
+    all — successfully, with return code 0, which is a memorably unhelpful way
+    to fail. Leading dot so the scratch file sorts out of the way and cannot
+    collide with the ``{svg_id}.*`` globs used to clean up a job.
+    """
+    return dst.with_name(f".{dst.stem}.partial{dst.suffix}")
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """Copy so ``dst`` never exists in a partial state — see optimize_svg."""
+    tmp = _partial(dst)
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+
+
 def optimize_svg(
     src: Path,
     dst: Path,
@@ -74,12 +93,26 @@ def optimize_svg(
     min_length_enabled: bool = False,
     min_length_mm: float = 1.0,
 ) -> None:
-    """Produce ``dst`` from ``src``. Raises ``OptimizeError`` on vpype failure."""
+    """Produce ``dst`` from ``src``. Raises ``OptimizeError`` on vpype failure.
+
+    ``dst`` appears atomically. vpype used to write it in place, which meant
+    the optimized file existed — empty, then half-parsed — for the whole run.
+    Every reader resolves the optimized path by asking whether it exists
+    (``plot_worker._effective_svg_path``), so during those seconds the preview
+    could load a truncated document, and so could a plot. A partially written
+    SVG handed to the plotter is the worst failure this program has: the
+    machine would faithfully draw whatever fragment parsed.
+
+    Writing to a sibling temp file and renaming closes that window. ``rename``
+    within a directory is atomic on POSIX, so a reader sees the previous
+    complete file or the new complete one, never the middle of one.
+    """
     if not any([linemerge, linesimplify, linesort, reloop, min_length_enabled]):
         # No-op pipeline: copy source to keep downstream code uniform.
-        shutil.copyfile(src, dst)
+        _atomic_copy(src, dst)
         return
-    cmd = build_pipeline(src, dst, tolerance_mm, linemerge, linesimplify, linesort, reloop,
+    tmp = _partial(dst)
+    cmd = build_pipeline(src, tmp, tolerance_mm, linemerge, linesimplify, linesort, reloop,
                          min_length_enabled, min_length_mm)
     log.info("optimize: %s", " ".join(cmd))
     env = {**os.environ, "VPYPE_NO_COLOR": "1"}
@@ -94,11 +127,14 @@ def optimize_svg(
         with _proc_lock:
             _current_proc = None
     if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
         msg = (stderr.strip() or stdout.strip() or
                f"vpype exited with code {proc.returncode}")
         # Keep it short — multi-line tracebacks just bloat the UI error pill.
         first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
         raise OptimizeError(first_line)
+    # Only now does the optimized file become visible under its real name.
+    os.replace(tmp, dst)
 
 
 def normalize_layers(src: Path, dst: Path) -> None:
@@ -114,16 +150,18 @@ def normalize_layers(src: Path, dst: Path) -> None:
     cmd = _vpype_cmd() + [
         "read", str(src),
         "name", "--layer", "1", "Vpype Auto Layer",
-        "write", str(dst),
+        "write", str(_partial(dst)),
     ]
     log.info("normalize_layers: %s", " ".join(cmd))
     env = {**os.environ, "VPYPE_NO_COLOR": "1"}
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
+        _partial(dst).unlink(missing_ok=True)
         msg = (proc.stderr.strip() or proc.stdout.strip() or
                f"vpype exited with code {proc.returncode}")
         first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
         raise OptimizeError(first_line)
+    os.replace(_partial(dst), dst)
 
 
 def cancel_current() -> None:

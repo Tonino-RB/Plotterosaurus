@@ -3,3 +3,10 @@ uvicorn[standard]
 python-multipart
 https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip
 vpype
+
+# Imported directly by app/svg_utils.py and app/main.py. It currently arrives
+# anyway as a dependency of vpype, which is exactly why it belongs here: a
+# fresh install works today by luck, and would break the moment vpype changed
+# its own dependencies. Declared, not pinned — the version vpype settles on is
+# the one this should use.
+lxml

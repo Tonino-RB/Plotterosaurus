@@ -79,3 +79,36 @@ def test_the_simulation_still_mirrors_the_plots_own_settings(captured_options):
     assert options["acceleration"] == 75
     assert options["model"] == config.PLOTTER_MODEL
     assert len(options["travel_params"]) == 2
+
+
+# Atomic writes -------------------------------------------------------------
+
+def test_the_optimized_file_is_never_visible_half_written(tmp_path):
+    """A reader resolves the optimized path by asking whether it exists, so a
+    file being written in place is a file that can be read mid-write — by the
+    preview, and by a plot. vpype writes to a scratch name and the result is
+    renamed into place, which on POSIX is atomic.
+
+    The scratch name has to keep its .svg extension: vpype picks its output
+    format from the extension and writes nothing at all, successfully, when it
+    does not recognise one.
+    """
+    from lxml import etree
+
+    from app import svg_optimize
+
+    src = tmp_path / "in.svg"
+    src.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="100mm" '
+                   'height="100mm" viewBox="0 0 100 100">'
+                   '<path d="M10 10 L90 90" stroke="#000" fill="none"/></svg>')
+    dst = tmp_path / "out.opt.svg"
+
+    assert svg_optimize._partial(dst).suffix == ".svg"
+    assert svg_optimize._partial(dst).name.startswith(".")
+
+    svg_optimize.optimize_svg(src, dst, tolerance_mm=0.1, linemerge=True,
+                              linesimplify=True, linesort=True, reloop=False)
+
+    assert dst.exists(), "optimize produced no output"
+    assert etree.parse(str(dst)).getroot() is not None, "output does not parse"
+    assert not svg_optimize._partial(dst).exists(), "scratch file left behind"

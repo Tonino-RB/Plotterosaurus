@@ -305,6 +305,17 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 }
 .paper-content {
   position: absolute;
+  /* Give the artwork its own compositor layer.
+     This element carries a translate/rotate/scale transform that changes on
+     every tick of every transform slider, and it contains the whole drawing —
+     14,592 elements on a real plot file. Without promotion the browser
+     re-rasterizes that entire subtree each frame; with it, the compositor
+     moves a texture it already has. Nothing about the geometry changes, so
+     this is purely how the same picture gets drawn on screen.
+     `contain: paint` also tells the browser nothing inside can paint outside
+     the box, which lets it skip the subtree entirely when it is offscreen. */
+  will-change: transform;
+  contain: paint;
 }
 .paper-content svg { width: 100%; height: 100%; display: block; }
 

@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Iterable
 
-from . import optimize_queue, plot_worker, state
+from . import optimize_queue, plot_worker, state, workload
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +142,9 @@ def cancel_for_svg(svg_id: str) -> None:
 
 def _loop() -> None:
     global _inflight
+    # Background work yields to the plotter and the event loop; see
+    # app/workload.py for why that also protects what lands on paper.
+    workload.deprioritize()
     while True:
         if _shutdown.is_set():
             return
@@ -207,7 +210,10 @@ def _process(task: _Task) -> None:
     task.started.set()
 
     svg_path = plot_worker._effective_svg_path(job)
-    estimate = plot_worker.compute_preview(job, svg_path, cancel_event=task.cancel_event)
+    # One heavy job at a time across all three queues (app/workload.py).
+    with workload.heavy("plan"):
+        estimate = plot_worker.compute_preview(job, svg_path,
+                                               cancel_event=task.cancel_event)
 
     if task.cancel_event.is_set():
         return

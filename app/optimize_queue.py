@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from . import config, state, svg_optimize, svg_utils
+from . import config, state, svg_optimize, svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -361,6 +361,9 @@ def _cancel_task(task: _Task) -> None:
 
 def _loop() -> None:
     global _inflight
+    # Background work yields to the plotter and the event loop; see
+    # app/workload.py for why that also protects what lands on paper.
+    workload.deprioritize()
     while True:
         if _shutdown.is_set():
             return
@@ -402,7 +405,9 @@ def _process(task: _Task) -> None:
 
     opt = _opt_path(task.svg_id)
     try:
-        svg_optimize.optimize_svg(src, opt, **task.settings)
+        # One heavy job at a time across all three queues (app/workload.py).
+        with workload.heavy("optimize"):
+            svg_optimize.optimize_svg(src, opt, **task.settings)
     except svg_optimize.OptimizeError as e:
         # Clean up a partial file if vpype died mid-write.
         if opt.exists():
