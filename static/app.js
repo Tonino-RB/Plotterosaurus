@@ -436,12 +436,11 @@ function applyMachineAutoRotate({ w, h }) {
 // live in app/placement.py. This file renders the answer and derives none of
 // it.
 
-const placementInflight = new Map();   // job_id -> AbortController
-const placementTimers = new Map();     // job_id -> debounce timer
+const placementInflight = new Map();   // job_id -> {geom, ink} AbortControllers
+const placementTimers = new Map();     // job_id -> {geom, ink} debounce timers
 
 // Everything the answer depends on. A card refetches only when one of these
-// actually changes, so dragging a slider back to where it started costs
-// nothing.
+// actually changes, so dragging a slider back where it started costs nothing.
 function placementKey(job) {
   return JSON.stringify([
     job.paper_width_mm, job.paper_height_mm,
@@ -452,25 +451,31 @@ function placementKey(job) {
   ]);
 }
 
-// Debounced because it fires on every slider tick. The server caches the
-// expensive half (the vpype ink measurement, which no placement input can
-// change), so the warm round trip is a millisecond or two and 40ms is enough
-// to coalesce a drag without the preview feeling detached from the handle.
-const PLACEMENT_DEBOUNCE_MS = 40;
+// Two requests, because the two halves of the answer cost wildly different
+// amounts. Placement is arithmetic over the document's size and viewBox and
+// comes back in microseconds. The ink rectangle needs vpype to re-read the
+// whole file — seconds on a real drawing. The preview only needs the first,
+// so it must never wait on the second: asking for both together left the
+// canvas blank for the length of the parse.
+const PLACEMENT_DEBOUNCE_MS = 40;    // drives the preview; must feel immediate
+const INK_DEBOUNCE_MS = 400;         // drives the size readout; settles after a drag
 
-function requestPlacement(card, job, onReady) {
+function fetchPlacement(card, job, { wantInk }, onReady) {
   const id = job.job_id;
   const ctx = cardCtx.get(id);
   if (!ctx) return;
   const key = placementKey(job);
-  if (ctx.placementKey === key && ctx.placement) return;   // already current
+  const slot = wantInk ? "ink" : "geom";
+  if ((wantInk ? ctx.inkKey : ctx.placementKey) === key) return;   // already current
 
-  clearTimeout(placementTimers.get(id));
-  placementTimers.set(id, setTimeout(async () => {
-    placementTimers.delete(id);
-    placementInflight.get(id)?.abort();
+  const timers = placementTimers.get(id) || {};
+  clearTimeout(timers[slot]);
+  timers[slot] = setTimeout(async () => {
+    const inflight = placementInflight.get(id) || {};
+    inflight[slot]?.abort();
     const ctrl = new AbortController();
-    placementInflight.set(id, ctrl);
+    inflight[slot] = ctrl;
+    placementInflight.set(id, inflight);
     try {
       const res = await fetch(`/jobs/${id}/placement`, {
         method: "POST",
@@ -490,28 +495,48 @@ function requestPlacement(card, job, onReady) {
           transform_offset_y_mm: job.transform_offset_y_mm ?? 0,
           layer_indices: (job.layer_selections || [])
             .filter((l) => l.selected !== false).map((l) => l.index),
+          include_ink: wantInk,
         }),
       });
       if (!res.ok) return;
+      const body = await res.json();
       const fresh = cardCtx.get(id);
       if (!fresh) return;
-      fresh.placement = await res.json();
-      fresh.placementKey = key;
+      if (wantInk) {
+        fresh.ink = body.ink;          // null = nothing plottable in this document
+        fresh.inkKey = key;
+      } else {
+        fresh.placement = body;
+        fresh.placementKey = key;
+      }
       if (onReady) onReady();
     } catch (e) {
       if (e.name !== "AbortError") console.warn("placement fetch failed", e);
     } finally {
-      if (placementInflight.get(id) === ctrl) placementInflight.delete(id);
+      const cur = placementInflight.get(id);
+      if (cur && cur[slot] === ctrl) delete cur[slot];
     }
-  }, PLACEMENT_DEBOUNCE_MS));
+  }, wantInk ? INK_DEBOUNCE_MS : PLACEMENT_DEBOUNCE_MS);
+  placementTimers.set(id, timers);
 }
 
-// The ink's on-page rectangle in mm, or null when the server hasn't answered
-// yet or the selected layers hold nothing plottable (a document of live text
-// or raster images draws nothing, and saying "null" is how the UI avoids
-// reporting a size for artwork that will never exist).
+// Geometry for the preview. Fast, and nothing blocks on anything slow.
+function requestPlacement(card, job, onReady) {
+  fetchPlacement(card, job, { wantInk: false }, onReady);
+}
+
+// The measured ink rectangle, for the size readout and the bounds overlay.
+// Deliberately lower priority: it can arrive late without the preview caring.
+function requestInk(card, job, onReady) {
+  fetchPlacement(card, job, { wantInk: true }, onReady);
+}
+
+// The ink's on-page rectangle in mm, or null when it hasn't been measured yet
+// or the selected layers hold nothing plottable (a document of live text or
+// raster images draws nothing, and the UI must not report a size for artwork
+// that will never exist).
 function inkFootprint(job) {
-  const ink = cardCtx.get(job.job_id)?.placement?.ink;
+  const ink = cardCtx.get(job.job_id)?.ink;
   if (!ink) return null;
   return { left: ink.left_mm, top: ink.top_mm, width: ink.width_mm, height: ink.height_mm };
 }
@@ -960,9 +985,9 @@ function updateCard(card, job) {
   if (layerCount) {
     subParts.push(tn("job.layers", layerCount));
   }
-  requestPlacement(card, job, () => {
+  requestInk(card, job, () => {
     const fresh = serverState.queue.find((j) => j.job_id === job.job_id);
-    if (fresh) { updateCard(card, fresh); updatePreviewTransform(card, fresh); }
+    if (fresh) updateCard(card, fresh);
   });
   const geomFootprint = inkFootprint(job);
   if (geomFootprint) {

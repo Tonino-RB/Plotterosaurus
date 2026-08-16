@@ -246,6 +246,13 @@ class PlacementQuery(BaseModel):
     transform_offset_x_mm: float = 0.0
     transform_offset_y_mm: float = 0.0
     layer_indices: list[int] | None = None
+    # Off by default, and that default is load-bearing. Placement itself is
+    # arithmetic over the document's size and viewBox — microseconds. The ink
+    # rectangle needs vpype to re-read the whole file, which on a real drawing
+    # is seconds, not milliseconds (6.8s for a 4.5MB, 8,000-element plot on a
+    # Pi 3B+). The preview needs only the former, so asking for both in one
+    # request left the canvas blank until the slow half finished.
+    include_ink: bool = False
 
 
 # The vpype measurement behind ink_rect_doc_mm costs tens of milliseconds and
@@ -264,6 +271,35 @@ _INK_RECT_CACHE_MAX = 64
 # request. The cost is that two threads may measure the same file at once,
 # which wastes a little work and is otherwise harmless.
 _ink_rect_lock = threading.Lock()
+
+
+_doc_geom_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+_DOC_GEOM_CACHE_MAX = 64
+
+
+def _doc_geometry(path: Path, stamp: int) -> tuple:
+    """The document's own size and viewBox: (width_mm, height_mm, viewbox).
+
+    Cached because reading three attributes off the root element still costs a
+    full lxml parse, and on a 4.5MB drawing that is ~76ms — per request, on a
+    path that fires on every slider tick. The values cannot change without the
+    file changing, so the mtime is the whole cache key.
+    """
+    key = (str(path), stamp)
+    with _ink_rect_lock:
+        hit = _doc_geom_cache.get(key)
+        if hit is not None:
+            _doc_geom_cache.move_to_end(key)
+            return hit
+    root = etree.parse(str(path)).getroot()
+    doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
+    geom = (doc_w_mm, doc_h_mm, svg_utils.parse_viewbox(root.get("viewBox", "")))
+    with _ink_rect_lock:
+        _doc_geom_cache[key] = geom
+        _doc_geom_cache.move_to_end(key)
+        while len(_doc_geom_cache) > _DOC_GEOM_CACHE_MAX:
+            _doc_geom_cache.popitem(last=False)
+    return geom
 
 
 def _ink_rect_cached(path: Path, layer_indices: list[int]) -> tuple | None:
@@ -306,10 +342,13 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         indices = [s["index"] for s in job.get("layer_selections") or []
                    if s.get("selected", True)]
 
-    root = etree.parse(str(path)).getroot()
-    doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        raise _coded(404, "svg_not_found")
+    doc_w_mm, doc_h_mm, viewbox = _doc_geometry(path, stamp)
     place = placement.compute(
-        doc_w_mm, doc_h_mm, svg_utils.parse_viewbox(root.get("viewBox", "")),
+        doc_w_mm, doc_h_mm, viewbox,
         req.paper_width_mm, req.paper_height_mm,
         req.margin_top_mm, req.margin_right_mm,
         req.margin_bottom_mm, req.margin_left_mm,
@@ -321,7 +360,10 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
     )
 
-    rect = _ink_rect_cached(path, indices)
+    # `ink: null` means two different things, and the caller has to be able to
+    # tell them apart: "this document draws nothing" versus "not measured".
+    # ink_measured says which.
+    rect = _ink_rect_cached(path, indices) if req.include_ink else None
     if rect is None:
         ink = None
     else:
@@ -350,8 +392,10 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         "center_y_mm": place.center_y_mm,
         # None when the selected layers hold nothing plottable — a document of
         # live text or raster images. The UI says so rather than showing a
-        # size for artwork that will not be drawn.
+        # size for artwork that will not be drawn. Also None whenever
+        # include_ink was false; ink_measured distinguishes the two.
         "ink": ink,
+        "ink_measured": req.include_ink,
     }
 
 

@@ -23,8 +23,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 REQUIRED_FIELDS = {
     "doc_width_mm", "doc_height_mm", "rotation_deg", "fit_scale", "user_scale",
     "layout_width_mm", "layout_height_mm", "footprint_width_mm",
-    "footprint_height_mm", "center_x_mm", "center_y_mm", "ink",
+    "footprint_height_mm", "center_x_mm", "center_y_mm", "ink", "ink_measured",
 }
+
+# Asking for ink costs a full vpype re-read of the file — seconds on a real
+# drawing. The preview must never pay that, so it is opt-in.
+WITH_INK = {"include_ink": True}
 
 A4 = {"paper_width_mm": 210.0, "paper_height_mm": 297.0}
 
@@ -65,10 +69,22 @@ def test_returns_every_field_the_preview_reads(client, job):
     assert REQUIRED_FIELDS <= set(body)
 
 
+def test_ink_is_opt_in(client, job):
+    """Regression guard. The preview render path asks for placement only; if
+    ink ever becomes part of the default response again, every preview waits
+    on a vpype parse of the whole document before it can draw anything —
+    seconds of blank canvas on a real drawing."""
+    body = client.post(f"/jobs/{job['job_id']}/placement", json=A4).json()
+    assert body["ink_measured"] is False
+    assert body["ink"] is None
+    # Placement itself is still fully answered.
+    assert body["layout_width_mm"] > 0
+
+
 def test_all_numbers_are_plain_json(client, job):
     """vpype measures with numpy. np.float64 happens to serialize, but the
     wire contract is plain numbers and must not depend on that."""
-    body = client.post(f"/jobs/{job['job_id']}/placement", json=A4).json()
+    body = client.post(f"/jobs/{job['job_id']}/placement", json={**A4, **WITH_INK}).json()
     numeric = [v for k, v in body.items() if k != "ink"]
     assert all(isinstance(v, (int, float)) for v in numeric)
     assert all(isinstance(v, float) for v in body["ink"].values())
@@ -86,7 +102,7 @@ def test_ink_matches_what_the_plot_will_do(client, job, overrides):
     about where the pen goes — which is the class of bug it exists to end."""
     from app import config
 
-    query = {**A4, **overrides}
+    query = {**A4, **overrides, **WITH_INK}
     body = client.post(f"/jobs/{job['job_id']}/placement", json=query).json()
     ink = body["ink"]
     assert ink is not None
@@ -112,7 +128,8 @@ def test_ink_matches_what_the_plot_will_do(client, job, overrides):
 def test_nothing_plottable_reports_null_ink(client, job):
     """A7: a document of live text draws nothing. The UI has to be able to
     tell that apart from a document it simply hasn't measured yet."""
-    body = client.post(f"/jobs/{job['job_id']}/placement", json=A4).json()
+    body = client.post(f"/jobs/{job['job_id']}/placement", json={**A4, **WITH_INK}).json()
+    assert body["ink_measured"] is True   # measured, and found nothing
     assert body["ink"] is None
     # The placement itself is still valid — only the ink is absent.
     assert body["doc_width_mm"] == pytest.approx(210.0)
@@ -120,7 +137,7 @@ def test_nothing_plottable_reports_null_ink(client, job):
 
 def test_empty_layer_selection_reports_null_ink(client, job):
     body = client.post(f"/jobs/{job['job_id']}/placement",
-                       json={**A4, "layer_indices": []}).json()
+                       json={**A4, **WITH_INK, "layer_indices": []}).json()
     assert body["ink"] is None
 
 
