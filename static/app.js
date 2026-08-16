@@ -457,7 +457,14 @@ function placementKey(job) {
 // whole file — seconds on a real drawing. The preview only needs the first,
 // so it must never wait on the second: asking for both together left the
 // canvas blank for the length of the parse.
-const PLACEMENT_DEBOUNCE_MS = 40;    // drives the preview; must feel immediate
+//
+// Geometry is *throttled*, not debounced, and the difference is the whole
+// reason a drag feels alive. A debounce re-arms its timer on every input
+// event, so a slider held down and moved continuously never fires at all and
+// the artwork sits frozen until the mouse comes up. A throttle fires on a
+// steady cadence throughout. Ink keeps its debounce: it is expensive and only
+// the final value matters, so settling once the drag stops is exactly right.
+const PLACEMENT_INTERVAL_MS = 60;    // drives the preview; a steady ~16fps confirm
 const INK_DEBOUNCE_MS = 400;         // drives the size readout; settles after a drag
 
 function fetchPlacement(card, job, { wantInk }, onReady) {
@@ -469,8 +476,15 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
   if ((wantInk ? ctx.inkKey : ctx.placementKey) === key) return;   // already current
 
   const timers = placementTimers.get(id) || {};
+  // Debounce waits out the drag; the throttle's deadline is measured from the
+  // last send, so re-arming it on each event keeps the same cadence instead of
+  // pushing the request further away.
+  const wait = wantInk
+    ? INK_DEBOUNCE_MS
+    : Math.max(0, PLACEMENT_INTERVAL_MS - (performance.now() - (timers.geomSentAt || 0)));
   clearTimeout(timers[slot]);
   timers[slot] = setTimeout(async () => {
+    if (!wantInk) timers.geomSentAt = performance.now();
     const inflight = placementInflight.get(id) || {};
     inflight[slot]?.abort();
     const ctrl = new AbortController();
@@ -508,6 +522,13 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
       } else {
         fresh.placement = body;
         fresh.placementKey = key;
+        // The transform this answer describes. effectivePlacement() measures
+        // the editor's drift from it.
+        fresh.placementAt = {
+          scale: job.transform_scale ?? 1,
+          offx: job.transform_offset_x_mm ?? 0,
+          offy: job.transform_offset_y_mm ?? 0,
+        };
       }
       if (onReady) onReady();
     } catch (e) {
@@ -516,13 +537,60 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
       const cur = placementInflight.get(id);
       if (cur && cur[slot] === ctrl) delete cur[slot];
     }
-  }, wantInk ? INK_DEBOUNCE_MS : PLACEMENT_DEBOUNCE_MS);
+  }, wait);
   placementTimers.set(id, timers);
 }
 
 // Geometry for the preview. Fast, and nothing blocks on anything slow.
 function requestPlacement(card, job, onReady) {
   fetchPlacement(card, job, { wantInk: false }, onReady);
+}
+
+// The server's last answer, carried forward to the transform the editor is
+// showing *right now*.
+//
+// The server owns placement, and that is not weakened here: nothing below
+// re-derives any of it. No viewBox mapping, no `meet`, no fit-to-page, no
+// auto-rotate policy — those exist in exactly one place and still arrive only
+// by HTTP. What this does is move an answer the server already gave along the
+// two axes the engine guarantees are linear:
+//
+//   offset — enters the computation once, additively, and touches nothing
+//            else, so a drag is a pure translation of the whole answer;
+//   scale  — multiplies the footprint while pinning its top-left corner,
+//            since the anchor is the margin box's corner and fit_scale is
+//            computed per unit of scale.
+//
+// Both are asserted in tests/test_placement_engine.py (see "Properties the
+// browser extrapolates along"), so this cannot quietly stop being valid.
+//
+// The extrapolation is provisional by construction: it is measured as drift
+// from the inputs the cached answer was computed at, so the next reply — 60ms
+// away at most — collapses it to zero. Rotation, margins, paper and fit are
+// not extrapolated; they wait for the server, which is why the confirm is
+// throttled rather than debounced.
+function effectivePlacement(job) {
+  const ctx = cardCtx.get(job.job_id);
+  const place = ctx?.placement;
+  if (!place) return null;
+  const at = ctx.placementAt;
+  if (!at) return place;
+
+  const k = at.scale ? (job.transform_scale ?? 1) / at.scale : 1;
+  const dx = (job.transform_offset_x_mm ?? 0) - at.offx;
+  const dy = (job.transform_offset_y_mm ?? 0) - at.offy;
+  if (k === 1 && dx === 0 && dy === 0) return place;
+
+  const fw = place.footprint_width_mm * k;
+  const fh = place.footprint_height_mm * k;
+  return {
+    ...place,
+    footprint_width_mm: fw,
+    footprint_height_mm: fh,
+    // Scale about the pinned top-left corner, then translate by the offset.
+    center_x_mm: place.center_x_mm - place.footprint_width_mm / 2 + fw / 2 + dx,
+    center_y_mm: place.center_y_mm - place.footprint_height_mm / 2 + fh / 2 + dy,
+  };
 }
 
 // The measured ink rectangle, for the size readout and the bounds overlay.
@@ -539,6 +607,67 @@ function inkFootprint(job) {
   const ink = cardCtx.get(job.job_id)?.ink;
   if (!ink) return null;
   return { left: ink.left_mm, top: ink.top_mm, width: ink.width_mm, height: ink.height_mm };
+}
+
+// ───── Preview status ────────────────────────────────────────────────────
+//
+// A real drawing is several megabytes and spends genuine time being fetched,
+// injected into the DOM, optimized by vpype and estimated by the driver. The
+// preview is blank or stale for all of it, and a blank canvas that says
+// nothing is indistinguishable from a broken one — which is exactly how it
+// read. So name the stage in progress.
+//
+// The states are ordered most-blocking first: whatever is stopping the user
+// seeing a finished preview is what gets reported.
+
+const STATUS_DONE_MS = 1200;         // how long "Ready" lingers before fading
+
+function previewStatusKey(job, ctx) {
+  const svgInfo = (serverState.svgs || {})[job.svg_id];
+  // Nothing on screen yet — the case that looked like a crash.
+  if (!ctx.svg) return "preview.status.loading";
+  if (job.optimize_svg && svgInfo) {
+    if (svgInfo.status === "optimizing") return "preview.status.optimizing";
+    if (svgInfo.status === "pending") return "preview.status.queued_optimize";
+  }
+  if (job.status === "queued") {
+    if (job.plan_status === "planning") return "preview.status.estimating";
+    if (job.plan_status === "pending") return "preview.status.queued_estimate";
+  }
+  // The placement is drawn (extrapolated if need be), but the measured size
+  // and the bounds overlay are still catching up — this is the slow vpype
+  // read, deliberately off the render path.
+  if (ctx.inkKey !== placementKey(job)) return "preview.status.measuring";
+  return null;
+}
+
+function previewStatus(card, job) {
+  const el = card.querySelector(".preview-status");
+  if (!el) return;
+  const ctx = cardCtx.get(job.job_id) || {};
+  const key = previewStatusKey(job, ctx);
+  if (key === ctx.statusKey) return;               // nothing changed; don't churn the DOM
+  const had = ctx.statusKey;
+  ctx.statusKey = key;
+  clearTimeout(ctx.statusTimer);
+
+  if (key) {
+    el.querySelector(".preview-status-text").textContent = t(key);
+    el.classList.remove("done", "fading");
+    el.hidden = false;
+    return;
+  }
+  // Finished. Say so briefly, but only if there was something to finish —
+  // a card that was never busy should not flash "Ready" at page load.
+  if (!had) { el.hidden = true; return; }
+  el.querySelector(".preview-status-text").textContent = t("preview.status.ready");
+  el.classList.add("done");
+  el.classList.remove("fading");
+  el.hidden = false;
+  ctx.statusTimer = setTimeout(() => {
+    el.classList.add("fading");
+    ctx.statusTimer = setTimeout(() => { el.hidden = true; }, 600);
+  }, STATUS_DONE_MS);
 }
 
 // ───── Queue rendering ───────────────────────────────────────────────────
@@ -989,6 +1118,7 @@ function updateCard(card, job) {
     const fresh = serverState.queue.find((j) => j.job_id === job.job_id);
     if (fresh) updateCard(card, fresh);
   });
+  previewStatus(card, job);
   const geomFootprint = inkFootprint(job);
   if (geomFootprint) {
     const u = effectiveDisplayUnit();
@@ -1448,6 +1578,7 @@ function updatePreviewTransform(card, job) {
   const paper = previewEl.querySelector(".paper");
   const content = previewEl.querySelector(".paper-content");
   const margins = previewEl.querySelector(".paper-margins");
+  previewStatus(card, job);
   if (!paper || !content) return;
   const ctx = cardCtx.get(job.job_id);
   if (!ctx || !ctx.svg) return;
@@ -1463,7 +1594,10 @@ function updatePreviewTransform(card, job) {
   // nothing to paint it. Re-entry terminates: the second pass finds the key
   // already current and requests nothing.
   requestPlacement(card, job, () => updatePreviewTransform(card, job));
-  const place = ctx.placement;
+  // Draw against the answer carried forward to the current transform, not the
+  // raw cached one: a drag has to keep moving between replies, and waiting for
+  // the round-trip is what made the artwork freeze until the mouse came up.
+  const place = effectivePlacement(job);
   if (!place) return;
 
   const mt = job.margin_top_mm, mr = job.margin_right_mm;

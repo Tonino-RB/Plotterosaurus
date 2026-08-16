@@ -745,7 +745,15 @@
       <div class="job-body" hidden>
         <div class="columns">
           <div class="col-preview">
-            <div class="svg-preview"></div>
+            <div class="preview-frame">
+              <div class="svg-preview"></div>
+              <!-- Overlay, so it survives renderPreview() replacing the
+                   preview's contents and can show before there are any. -->
+              <div class="preview-status" hidden>
+                <span class="preview-status-spinner"></span>
+                <span class="preview-status-text"></span>
+              </div>
+            </div>
             <div class="preview-meta muted">
               <span class="svg-dims"></span>
               <span class="preview-paper-name"></span>

@@ -177,3 +177,55 @@ def test_scale_expands_about_the_placement_centre():
     p = place(100.0, 100.0, transform_scale=2.0)
     left, top, right, bottom = p.doc_mm_rect_to_page(0.0, 0.0, 100.0, 100.0)
     assert (right - left, bottom - top) == pytest.approx((200.0, 200.0))
+
+
+# Properties the browser extrapolates along ---------------------------------
+#
+# The preview renders the server's answer, and during a drag it has to keep
+# moving between answers or the artwork freezes until the mouse is released.
+# It does that by extrapolating the last answer along the axis being dragged,
+# which is only sound while these two properties hold. They are asserted here,
+# in the engine's own suite, so the browser's assumption cannot quietly stop
+# being true. See effectivePlacement() in static/app.js.
+
+def test_offset_translates_the_placement_and_nothing_else():
+    """Offset enters `compute` at exactly one place, additively. Everything
+    the preview draws with — rotation, scales, footprint, the document and
+    viewBox centres — is identical, so the browser can follow an offset drag
+    by translating the answer it already has."""
+    base = place(150.0, 100.0, fit_content=True, transform_rotation_deg=20.0)
+    moved = place(150.0, 100.0, fit_content=True, transform_rotation_deg=20.0,
+                  transform_offset_x_mm=17.0, transform_offset_y_mm=-9.0)
+
+    assert moved.center_x_mm == pytest.approx(base.center_x_mm + 17.0)
+    assert moved.center_y_mm == pytest.approx(base.center_y_mm - 9.0)
+    for field in ("rotation_deg", "fit_scale", "mm_scale", "user_scale",
+                  "footprint_w_mm", "footprint_h_mm", "doc_center_x_mm",
+                  "doc_center_y_mm", "vb_center_x", "vb_center_y"):
+        assert getattr(moved, field) == pytest.approx(getattr(base, field)), field
+
+
+@pytest.mark.parametrize("fit_content", [False, True])
+@pytest.mark.parametrize("rotation", [0.0, 37.0, 90.0])
+def test_scale_is_linear_and_pins_the_footprints_top_left(fit_content, rotation):
+    """Scale multiplies the footprint and leaves everything else alone —
+    including `fit_scale`, which is computed per unit of scale and so does not
+    move underneath it. Anchoring at the margin box's top-left then means the
+    footprint's top-left corner is the fixed point of a scale change, which is
+    what lets the browser follow a scale drag from a cached answer."""
+    kw = dict(fit_content=fit_content, transform_rotation_deg=rotation,
+              transform_offset_x_mm=8.0, transform_offset_y_mm=3.0)
+    base = place(150.0, 100.0, transform_scale=1.0, **kw)
+    scaled = place(150.0, 100.0, transform_scale=2.5, **kw)
+
+    assert scaled.footprint_w_mm == pytest.approx(base.footprint_w_mm * 2.5)
+    assert scaled.footprint_h_mm == pytest.approx(base.footprint_h_mm * 2.5)
+    assert scaled.user_scale == pytest.approx(base.user_scale * 2.5)
+    assert scaled.rotation_deg == pytest.approx(base.rotation_deg)
+    assert scaled.fit_scale == pytest.approx(base.fit_scale)
+
+    # The top-left corner of the footprint does not move.
+    assert (scaled.center_x_mm - scaled.footprint_w_mm / 2
+            == pytest.approx(base.center_x_mm - base.footprint_w_mm / 2))
+    assert (scaled.center_y_mm - scaled.footprint_h_mm / 2
+            == pytest.approx(base.center_y_mm - base.footprint_h_mm / 2))

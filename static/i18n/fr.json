@@ -114,6 +114,15 @@
   "progress.remaining": "{time} restant",
   "job.layers.one": "{count} calque",
   "job.layers.other": "{count} calques",
+
+  "preview.status.loading": "chargement du dessin…",
+  "preview.status.optimizing": "optimisation du SVG…",
+  "preview.status.queued_optimize": "en attente d'optimisation…",
+  "preview.status.estimating": "calcul de l'estimation…",
+  "preview.status.queued_estimate": "en attente d'estimation…",
+  "preview.status.measuring": "mesure de la taille…",
+  "preview.status.ready": "prêt",
+
   "job.optimizing_svg": "optimisation du SVG…",
   "job.waiting_optimize_svg": "en attente d'optimisation du SVG…",
   "job.planning": "planification…",

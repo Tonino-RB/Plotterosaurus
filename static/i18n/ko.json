@@ -114,6 +114,15 @@
   "progress.remaining": "{time} 남음",
   "job.layers.one": "{count}개 레이어",
   "job.layers.other": "{count}개 레이어",
+
+  "preview.status.loading": "도면 불러오는 중…",
+  "preview.status.optimizing": "SVG 최적화 중…",
+  "preview.status.queued_optimize": "최적화 대기 중…",
+  "preview.status.estimating": "예상 시간 계산 중…",
+  "preview.status.queued_estimate": "예상 대기 중…",
+  "preview.status.measuring": "크기 측정 중…",
+  "preview.status.ready": "준비됨",
+
   "job.optimizing_svg": "SVG 최적화 중…",
   "job.waiting_optimize_svg": "SVG 최적화 대기 중…",
   "job.planning": "계획 중…",

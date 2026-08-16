@@ -130,6 +130,15 @@
 
   "job.layers.one": "{count} layer",
   "job.layers.other": "{count} layers",
+
+  "preview.status.loading": "loading drawing…",
+  "preview.status.optimizing": "optimizing SVG…",
+  "preview.status.queued_optimize": "waiting to optimize…",
+  "preview.status.estimating": "computing estimate…",
+  "preview.status.queued_estimate": "waiting to estimate…",
+  "preview.status.measuring": "measuring size…",
+  "preview.status.ready": "ready",
+
   "job.optimizing_svg": "optimizing SVG…",
   "job.waiting_optimize_svg": "waiting to optimize SVG…",
   "job.planning": "planning…",

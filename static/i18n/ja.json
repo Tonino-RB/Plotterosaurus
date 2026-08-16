@@ -114,6 +114,15 @@
   "progress.remaining": "残り {time}",
   "job.layers.one": "{count} レイヤー",
   "job.layers.other": "{count} レイヤー",
+
+  "preview.status.loading": "図面を読み込み中…",
+  "preview.status.optimizing": "SVG を最適化中…",
+  "preview.status.queued_optimize": "最適化を待機中…",
+  "preview.status.estimating": "見積もりを計算中…",
+  "preview.status.queued_estimate": "見積もりを待機中…",
+  "preview.status.measuring": "サイズを測定中…",
+  "preview.status.ready": "準備完了",
+
   "job.optimizing_svg": "SVG を最適化中…",
   "job.waiting_optimize_svg": "SVG の最適化待ち…",
   "job.planning": "プラン作成中…",

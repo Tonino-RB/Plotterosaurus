@@ -18,12 +18,24 @@ wrong change in exactly the way the fix predicts.
 ## Running
 
 ```bash
-venv/bin/pip install -r requirements-dev.txt   # once
-venv/bin/python -m pytest tests/ -q            # the everyday one
+venv/bin/pip install -r requirements-dev.txt      # once
+venv/bin/python -m pytest -m "not real" -q        # the everyday one, ~12s
+venv/bin/python -m pytest -q                      # everything, minutes
 ```
 
-~4 seconds for 180 cases. Test-only dependencies are deliberately kept out of
-`requirements.txt`, so `install.sh` never pulls a test runner onto a plotter.
+Test-only dependencies are deliberately kept out of `requirements.txt`, so
+`install.sh` never pulls a test runner onto a plotter.
+
+**Tests never touch the running plotter's data.** `_sandbox_server_state` in
+`conftest.py` redirects `state.json` and `uploads/` to a temp directory for the
+whole session, and `test_sandbox.py` asserts it took. This is not hygiene, it
+is damage control: `app.state` persists to the repo's own `state.json`, and
+pytest never calls `state.init()`, so an unsandboxed run starts with an empty
+in-memory queue and writes it straight over the live one. That destroyed a real
+queue before the fixture existed — and because the service keeps state in
+memory and rewrites the file on its next change, the loss stayed invisible
+until the next restart. Never read `UPLOAD_DIR` with a from-import; go through
+the module so the redirect is seen.
 
 Everything below assumes the `venv/bin/python -m pytest` prefix. Running bare
 `pytest` may pick up a system interpreter that has no `lxml` or `vpype`.
@@ -115,11 +127,33 @@ file updated on autopilot is worse than no test, because it looks like coverage.
 
 | Path | What it is |
 |---|---|
+| `conftest.py` | The state/uploads sandbox, the heavy synthetic document, the job factory |
 | `fixtures/*.svg` | 18 hand-written documents, each isolating one property |
 | `placement_cases.py` | The 10 scenarios, and the pipeline one case runs through |
 | `golden/placement.json` | 180 recorded answers — generated, never hand-edited |
 | `regen_golden.py` | Rewrites the golden file from current behaviour |
 | `test_placement_engine.py` | Unit specs for `app/placement.py` |
+| `test_placement_scale.py` | What placement *costs* on a document the size of real work |
+| `test_real_svgs.py` | The suite pointed at whatever is in `real/` (marked `real`) |
+| `test_static_js.py` | Compiles `static/*.js`; runs `effectivePlacement` under quickjs |
+| `test_sandbox.py` | Asserts the suite is not writing to the live plotter's data |
+| `real/` | Gitignored. Drop your own drawings here and they get covered. |
+
+### Size is a property, and the fixtures do not have it
+
+Every file in `fixtures/` is under 600 bytes, and that blind spot shipped a
+bug: the placement endpoint was benchmarked against a document containing one
+rectangle, then took seven seconds per preview on a real drawing, which reads
+to a user as a broken app rather than a slow one. Small fixtures answer "is the
+math right?" and answer it well; they cannot answer "is this still usable?",
+because every cost in the pipeline scales with element count and they have no
+elements.
+
+So there are two heavy lanes. `conftest.py::heavy_svg` builds a ~3MB, 4-layer,
+3,600-polyline document once per session — deterministic, no repo bloat, and
+shaped from the exports that exposed the regression. And `real/` picks up
+whatever you put in it: the markup no fixture author thinks to type, from files
+too large and too personal to commit.
 
 `test_placement_engine.py` is a different kind of test from the rest of this
 directory. The golden suite asserts only that behaviour hasn't *changed*;

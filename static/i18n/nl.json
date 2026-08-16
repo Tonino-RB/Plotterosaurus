@@ -126,6 +126,15 @@
 
   "job.layers.one": "{count} laag",
   "job.layers.other": "{count} lagen",
+
+  "preview.status.loading": "tekening laden…",
+  "preview.status.optimizing": "SVG optimaliseren…",
+  "preview.status.queued_optimize": "wacht op optimalisatie…",
+  "preview.status.estimating": "schatting berekenen…",
+  "preview.status.queued_estimate": "wacht op schatting…",
+  "preview.status.measuring": "grootte meten…",
+  "preview.status.ready": "gereed",
+
   "job.optimizing_svg": "SVG optimaliseren…",
   "job.waiting_optimize_svg": "wacht op SVG-optimalisatie…",
   "job.planning": "plannen…",

@@ -114,6 +114,15 @@
   "progress.remaining": "{time} restante",
   "job.layers.one": "{count} camada",
   "job.layers.other": "{count} camadas",
+
+  "preview.status.loading": "a carregar desenho…",
+  "preview.status.optimizing": "a otimizar SVG…",
+  "preview.status.queued_optimize": "à espera de otimização…",
+  "preview.status.estimating": "a calcular estimativa…",
+  "preview.status.queued_estimate": "à espera de estimativa…",
+  "preview.status.measuring": "a medir tamanho…",
+  "preview.status.ready": "pronto",
+
   "job.optimizing_svg": "a otimizar SVG…",
   "job.waiting_optimize_svg": "a aguardar otimização do SVG…",
   "job.planning": "a planear…",

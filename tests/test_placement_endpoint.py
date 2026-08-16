@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from app import main, state, svg_utils
-from app.main import UPLOAD_DIR
+# main.UPLOAD_DIR is read through the module, never from-imported: the
+# sandbox fixture in conftest.py rebinds it (see _sandbox_server_state).
 
 TestClient = pytest.importorskip(
     "starlette.testclient", reason="httpx not installed"
@@ -45,7 +46,7 @@ def job(request):
     """A job backed by a real fixture SVG, cleaned up afterwards."""
     fixture = getattr(request, "param", "mm-canvas.svg")
     svg_id = "_test_placement"
-    shutil.copy(FIXTURES / fixture, UPLOAD_DIR / f"{svg_id}.svg")
+    shutil.copy(FIXTURES / fixture, main.UPLOAD_DIR / f"{svg_id}.svg")
     record = state.add_job({
         "svg_id": svg_id, "filename": fixture,
         "layer_selections": [{"index": 0, "label": "art"}],
@@ -60,7 +61,7 @@ def job(request):
     })
     yield record
     state.remove_job(record["job_id"])
-    for leftover in UPLOAD_DIR.glob(f"{svg_id}*"):
+    for leftover in main.UPLOAD_DIR.glob(f"{svg_id}*"):
         leftover.unlink()
 
 
@@ -108,7 +109,7 @@ def test_ink_matches_what_the_plot_will_do(client, job, overrides):
     assert ink is not None
 
     expected = svg_utils.ink_bounds_mm(
-        UPLOAD_DIR / f"{job['svg_id']}.svg", [0],
+        main.UPLOAD_DIR / f"{job['svg_id']}.svg", [0],
         query["paper_width_mm"], query["paper_height_mm"],
         query.get("margin_top_mm", 0.0), query.get("margin_right_mm", 0.0),
         query.get("margin_bottom_mm", 0.0), query.get("margin_left_mm", 0.0),

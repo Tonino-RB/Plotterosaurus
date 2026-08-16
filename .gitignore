@@ -6,6 +6,10 @@ uploads/*
 !uploads/.gitkeep
 calibration/*
 !calibration/.gitkeep
+# Real drawings the suite runs against when they are present (tests/conftest.py).
+# Your own artwork: megabytes each, and not this repo's to publish.
+tests/real/*
+!tests/real/.gitkeep
 recordings/
 .DS_Store
 .claude/

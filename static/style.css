@@ -252,6 +252,47 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
   align-items: center;
   justify-content: center;
 }
+/* Preview status badge (see previewStatus in app.js).
+   A big drawing spends real time being fetched, parsed and measured, and the
+   preview is blank for all of it. Without this the app looks broken rather
+   than busy — so the badge names the stage in progress and gets out of the
+   way the moment there is nothing left to wait for. */
+.preview-frame { position: relative; }
+.preview-status {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  pointer-events: none;
+}
+.preview-status-spinner {
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid var(--accent-wash);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+/* "Ready" is a settled state, not a stage — no spinner, and it fades out
+   rather than vanishing mid-glance. */
+.preview-status.done { color: var(--accent); }
+.preview-status.done .preview-status-spinner { display: none; }
+.preview-status.fading { opacity: 0; transition: opacity 0.6s ease; }
+
 .paper {
   position: relative;
   background: #fff;

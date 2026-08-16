@@ -114,6 +114,15 @@
   "progress.remaining": "Noch {time}",
   "job.layers.one": "{count} Ebene",
   "job.layers.other": "{count} Ebenen",
+
+  "preview.status.loading": "Zeichnung wird geladen…",
+  "preview.status.optimizing": "SVG wird optimiert…",
+  "preview.status.queued_optimize": "wartet auf Optimierung…",
+  "preview.status.estimating": "Schätzung wird berechnet…",
+  "preview.status.queued_estimate": "wartet auf Schätzung…",
+  "preview.status.measuring": "Größe wird gemessen…",
+  "preview.status.ready": "bereit",
+
   "job.optimizing_svg": "optimiere SVG…",
   "job.waiting_optimize_svg": "warte auf SVG-Optimierung…",
   "job.planning": "plane…",

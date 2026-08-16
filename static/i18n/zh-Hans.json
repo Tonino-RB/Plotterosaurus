@@ -114,6 +114,15 @@
   "progress.remaining": "剩余 {time}",
   "job.layers.one": "{count} 个图层",
   "job.layers.other": "{count} 个图层",
+
+  "preview.status.loading": "正在加载图形…",
+  "preview.status.optimizing": "正在优化 SVG…",
+  "preview.status.queued_optimize": "等待优化…",
+  "preview.status.estimating": "正在计算预估…",
+  "preview.status.queued_estimate": "等待预估…",
+  "preview.status.measuring": "正在测量尺寸…",
+  "preview.status.ready": "就绪",
+
   "job.optimizing_svg": "正在优化 SVG…",
   "job.waiting_optimize_svg": "等待优化 SVG…",
   "job.planning": "规划中…",
