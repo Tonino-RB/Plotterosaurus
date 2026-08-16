@@ -106,6 +106,14 @@ def _preview_cache_key(svg_path: Path, layer_indices: list[int], job: dict) -> s
         "tx": job.get("transform_offset_x_mm", 0.0),
         "ty": job.get("transform_offset_y_mm", 0.0),
         "model": config.PLOTTER_MODEL,
+        # The active machine is an input to the estimate, not just to the
+        # plot: the bed is what the simulation clips against (see
+        # _run_preview), and auto-rotate changes the geometry
+        # transform_to_paper hands it. A cache hit skips both, so without
+        # these two a machine switch would serve an estimate computed for the
+        # previous machine.
+        "bed": list(machine_bounds_mm()),
+        "rot": config.MACHINE_AUTO_ROTATE,
         "sd": job["speed_pendown"],
         "su": job["speed_penup"],
         "acc": job["acceleration"],
@@ -287,16 +295,30 @@ def machine_bounds_mm() -> tuple[float, float]:
     return machine["width_mm"], machine["height_mm"]
 
 
+def _bed_travel_params() -> tuple[str, str, float, float]:
+    """The two driver params that carry travel bounds for the configured
+    model, plus the active machine's bed in inches — everything needed to
+    clip an AxiDraw to the real machine.
+
+    Split out of _apply_bed_size because the preview subprocess needs the
+    same figures but can't import this module (it runs as a bare script, with
+    no package context). Resolving the model mapping here keeps
+    _MODEL_TRAVEL_PARAMS as the single place that knows it.
+    """
+    x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
+        config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
+    bed_x_mm, bed_y_mm = machine_bounds_mm()
+    return x_attr, y_attr, bed_x_mm / 25.4, bed_y_mm / 25.4
+
+
 def _apply_bed_size(ad: axidraw.AxiDraw) -> None:
     """Make machine_bounds_mm() a real travel-bounds limit: override the
     driver's own per-model params.x_travel_*/y_travel_* (read by
     AxiDraw.update_options() to build self.bounds, which clips out-of-bounds
     pen-down moves)."""
-    x_attr, y_attr = _MODEL_TRAVEL_PARAMS.get(
-        config.PLOTTER_MODEL, ("x_travel_default", "y_travel_default"))
-    bed_x_mm, bed_y_mm = machine_bounds_mm()
-    setattr(ad.params, x_attr, bed_x_mm / 25.4)
-    setattr(ad.params, y_attr, bed_y_mm / 25.4)
+    x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
+    setattr(ad.params, x_attr, bed_x_in)
+    setattr(ad.params, y_attr, bed_y_in)
 
 
 class _LiveAdjustAxiDraw(axidraw.AxiDraw):
@@ -387,15 +409,19 @@ def _run_preview(preview_svg_path: Path, job: dict,
                  cancel_event: threading.Event | None = None) -> dict | None:
     global _preview_proc
     runner = Path(__file__).parent / "preview_runner.py"
-    args = [
-        sys.executable,
-        str(runner),
-        str(preview_svg_path),
-        str(config.PLOTTER_MODEL),
-        str(job["speed_pendown"]),
-        str(job["speed_penup"]),
-        str(job["acceleration"]),
-    ]
+    x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
+    # Everything _run_stage sets on the real plot, handed to the simulation as
+    # one blob. The estimate is only meaningful if it measures the same plot:
+    # same travel envelope, same orientation (see no_rotate in the runner).
+    options = {
+        "model": config.PLOTTER_MODEL,
+        "speed_pendown": job["speed_pendown"],
+        "speed_penup": job["speed_penup"],
+        "acceleration": job["acceleration"],
+        "travel_params": [x_attr, y_attr],
+        "travel_in": [bed_x_in, bed_y_in],
+    }
+    args = [sys.executable, str(runner), str(preview_svg_path), json.dumps(options)]
     with _preview_lock:
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         _preview_proc = proc
@@ -1629,32 +1655,48 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
         if mode == "res_plot":
             current_svg = Path(job["resume_path"])
         else:
-            filtered = svg_path.with_name(f"{job['svg_id']}.s{i}.filt.svg")
-            # Drawable content that belongs to no layer has no stage of its
-            # own, and every stage re-renders from the same source — so it
-            # goes in the first stage only, or it gets drawn once per stage,
-            # over itself, while the preview shows it once.
-            svg_utils.filter_to_layers(svg_path, stage["layer_indices"], filtered,
-                                       include_orphans=(i == 0))
-            current_svg = svg_path.with_name(f"{job['svg_id']}.s{i}.svg")
-            # A fine origin nudge dialed in at a pen-change pause (see
-            # nudge_origin) shifts every subsequently-rendered stage on top of
-            # the job's own offset — but never a res_plot resume, which
-            # continues a partial SVG mid-stroke at its existing coordinates.
-            nudge_x, nudge_y = state.origin_nudge()
-            svg_utils.transform_to_paper(
-                filtered, current_svg,
-                job["paper_width_mm"], job["paper_height_mm"],
-                job["margin_top_mm"], job["margin_right_mm"],
-                job["margin_bottom_mm"], job["margin_left_mm"],
-                job["fit_content"],
-                transform_scale=job.get("transform_scale", 1.0),
-                transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-                transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
-                transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
-                machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
-                machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-            )
+            # Rendering happens before any hardware is touched, and a bad
+            # document (an unparseable viewBox, a truncated file) raises here.
+            # Unhandled, that exception unwinds all the way to _queue_loop,
+            # which logs and returns — leaving the job sitting in its
+            # pre-plot status with an empty error field and no worker thread
+            # left to move it, so every later Plot click just repeats the
+            # crash. Fail the job instead: the user gets a reason, and the
+            # queue survives to run the next one.
+            try:
+                filtered = svg_path.with_name(f"{job['svg_id']}.s{i}.filt.svg")
+                # Drawable content that belongs to no layer has no stage of its
+                # own, and every stage re-renders from the same source — so it
+                # goes in the first stage only, or it gets drawn once per stage,
+                # over itself, while the preview shows it once.
+                svg_utils.filter_to_layers(svg_path, stage["layer_indices"], filtered,
+                                           include_orphans=(i == 0))
+                current_svg = svg_path.with_name(f"{job['svg_id']}.s{i}.svg")
+                # A fine origin nudge dialed in at a pen-change pause (see
+                # nudge_origin) shifts every subsequently-rendered stage on top of
+                # the job's own offset — but never a res_plot resume, which
+                # continues a partial SVG mid-stroke at its existing coordinates.
+                nudge_x, nudge_y = state.origin_nudge()
+                svg_utils.transform_to_paper(
+                    filtered, current_svg,
+                    job["paper_width_mm"], job["paper_height_mm"],
+                    job["margin_top_mm"], job["margin_right_mm"],
+                    job["margin_bottom_mm"], job["margin_left_mm"],
+                    job["fit_content"],
+                    transform_scale=job.get("transform_scale", 1.0),
+                    transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
+                    transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
+                    transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+                    machine_custom_enabled=config.MACHINE_CUSTOM_ENABLED,
+                    machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+                )
+            except Exception:
+                log.exception("could not render stage %s of job %s", i, job_id)
+                state.update_job(
+                    job_id, status="failed", resume_path=None,
+                    error="Could not prepare this layer for plotting — the SVG "
+                          "may be malformed. Nothing was sent to the plotter.")
+                return
 
         # Flag this stage as current on the job's stages list
         new_stages = [dict(s) for s in job["stages"]]

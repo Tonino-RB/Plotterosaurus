@@ -40,11 +40,18 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
                              "cancelled", "failed"},
     "awaiting_optimize":    {"optimizing", "planning", "plotting", "cancelled", "failed"},
     "optimizing":           {"planning", "plotting", "cancelled", "failed"},
-    "planning":             {"plotting", "cancelled"},
+    # "failed" is reachable from every state that renders a stage
+    # (_run_staged_loop_impl builds the stage SVG before flipping the job to
+    # `plotting`, so a malformed document surfaces while the job still reads
+    # as planning / paused / awaiting_pen_change). Without it the worker's own
+    # error handler would raise InvalidTransition and strand the job it was
+    # trying to fail cleanly.
+    "planning":             {"plotting", "cancelled", "failed"},
     "plotting":             {"paused", "homing", "awaiting_pen_change",
                              "completed", "failed"},
-    "paused":               {"plotting", "homing", "cancelled"},
-    "awaiting_pen_change":  {"plotting", "plotting_calibration", "cancelled"},
+    "paused":               {"plotting", "homing", "cancelled", "failed"},
+    "awaiting_pen_change":  {"plotting", "plotting_calibration", "cancelled",
+                             "failed"},
     "plotting_calibration": {"awaiting_pen_change", "cancelled", "failed"},
     "homing":               {"cancelled"},
     "completed":            {"queued"},

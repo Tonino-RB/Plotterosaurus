@@ -48,6 +48,32 @@ def parse_dim_to_mm(s: str) -> float | None:
     return value * factor if factor is not None else None
 
 
+_VIEWBOX_SEP_RE = re.compile(r"[\s,]+")
+
+
+def parse_viewbox(s: str) -> tuple[float, float, float, float] | None:
+    """Parse a viewBox attribute into (min_x, min_y, width, height), or None
+    if it's missing or unusable.
+
+    SVG separates the four numbers with comma-wsp, so "0,0,595,842" is as
+    valid as "0 0 595 842" and both turn up in real exports. Splitting on
+    whitespace alone leaves the commas glued to the numbers, where the
+    comma-separated form parsed as a size of None (svg_size_mm) and raised
+    ValueError outright (transform_to_paper). Both call sites go through here
+    so they can't disagree about the same attribute again.
+    """
+    if not s:
+        return None
+    parts = [p for p in _VIEWBOX_SEP_RE.split(s.strip()) if p]
+    if len(parts) != 4:
+        return None
+    try:
+        x, y, w, h = (float(p) for p in parts)
+    except ValueError:
+        return None
+    return x, y, w, h
+
+
 def _top_level_layers(root):
     return [g for g in root if g.tag == LAYER_TAG and g.get(GROUPMODE_ATTR) == "layer"]
 
@@ -85,10 +111,9 @@ def svg_size_mm(root) -> tuple[float | None, float | None]:
     w = parse_dim_to_mm(root.get("width", ""))
     h = parse_dim_to_mm(root.get("height", ""))
     if w is None or h is None:
-        vb = root.get("viewBox", "")
-        parts = vb.split() if vb else []
-        if len(parts) == 4:
-            vb_w, vb_h = float(parts[2]), float(parts[3])
+        vb = parse_viewbox(root.get("viewBox", ""))
+        if vb is not None:
+            _, _, vb_w, vb_h = vb
             if w is None and vb_w:
                 w = vb_w * 25.4 / 96.0
             if h is None and vb_h:
@@ -448,11 +473,13 @@ def transform_to_paper(
     orig_w_mm = orig_w_mm or paper_width_mm
     orig_h_mm = orig_h_mm or paper_height_mm
 
-    vb = root.get("viewBox", "")
-    if vb:
-        parts = vb.split()
-        vb_x, vb_y, vb_w, vb_h = (float(p) for p in parts[:4])
+    vb = parse_viewbox(root.get("viewBox", ""))
+    if vb is not None:
+        vb_x, vb_y, vb_w, vb_h = vb
     else:
+        # No viewBox, or one that doesn't hold four numbers. Falling back to
+        # the document's own size treats user units as mm, which is the same
+        # assumption the no-viewBox case already made.
         vb_x, vb_y = 0.0, 0.0
         vb_w, vb_h = orig_w_mm, orig_h_mm
 
