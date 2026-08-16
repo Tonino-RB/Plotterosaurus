@@ -2,6 +2,7 @@ import asyncio
 import json as _json
 import logging
 import subprocess
+import threading
 import uuid
 from collections import OrderedDict
 
@@ -253,6 +254,16 @@ class PlacementQuery(BaseModel):
 # answer a slider drag; without it every mouse move would re-parse the SVG.
 _ink_rect_cache: "OrderedDict[tuple, tuple | None]" = OrderedDict()
 _INK_RECT_CACHE_MAX = 64
+# This endpoint is a sync def, so FastAPI runs it in the anyio threadpool and
+# several requests can be inside it at once — a slider drag from two open tabs
+# is enough. Individual dict operations are atomic under the GIL but the
+# sequences here are not: a `key in cache` that passes can still have its key
+# evicted by another thread's popitem before move_to_end runs, which raises
+# KeyError. The lock covers the bookkeeping only; the slow vpype measurement
+# is deliberately left outside it so one cold parse can't stall every other
+# request. The cost is that two threads may measure the same file at once,
+# which wastes a little work and is otherwise harmless.
+_ink_rect_lock = threading.Lock()
 
 
 def _ink_rect_cached(path: Path, layer_indices: list[int]) -> tuple | None:
@@ -261,14 +272,16 @@ def _ink_rect_cached(path: Path, layer_indices: list[int]) -> tuple | None:
     except OSError:
         raise _coded(404, "svg_not_found")
     key = (str(path), stamp, tuple(sorted(layer_indices)))
-    if key in _ink_rect_cache:
-        _ink_rect_cache.move_to_end(key)
-        return _ink_rect_cache[key]
+    with _ink_rect_lock:
+        if key in _ink_rect_cache:
+            _ink_rect_cache.move_to_end(key)
+            return _ink_rect_cache[key]
     rect = svg_utils.ink_rect_doc_mm(path, layer_indices)
-    _ink_rect_cache[key] = rect
-    _ink_rect_cache.move_to_end(key)
-    while len(_ink_rect_cache) > _INK_RECT_CACHE_MAX:
-        _ink_rect_cache.popitem(last=False)
+    with _ink_rect_lock:
+        _ink_rect_cache[key] = rect
+        _ink_rect_cache.move_to_end(key)
+        while len(_ink_rect_cache) > _INK_RECT_CACHE_MAX:
+            _ink_rect_cache.popitem(last=False)
     return rect
 
 
