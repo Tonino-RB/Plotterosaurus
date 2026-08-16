@@ -1922,13 +1922,43 @@ const cardUpdateTimers = new Map();
 // win outright, so a layer toggle followed within the debounce window by any
 // other edit was never sent, while the card went on showing it as applied.
 const cardUpdatePending = new Map();
+
+// Edits the user has made that the server has not echoed back yet.
+//
+// A state broadcast replaces `serverState` wholesale, and PATCHes are
+// debounced 150ms, so a broadcast landing in that window used to revert the
+// card to the pre-edit values. Reordering layers made that visible and then
+// harmful: the panel would flick back to the old order, and because the next
+// click reads its starting point out of `serverState`, a second click would
+// build on the reverted array and lose the first move. Broadcasts are frequent
+// exactly when layers get arranged — right after an upload, while the optimize
+// and plan queues step the job through its statuses.
+//
+// So an edit stays here from the moment it is made until the PATCH carrying it
+// comes back, and every broadcast is re-overlaid with it on the way in.
+const cardUpdateUnconfirmed = new Map();   // job_id -> {field: value}
+
+function rememberUnconfirmed(id, updates) {
+  cardUpdateUnconfirmed.set(id, { ...(cardUpdateUnconfirmed.get(id) || {}), ...updates });
+}
+
+function applyUnconfirmedEdits() {
+  if (!cardUpdateUnconfirmed.size) return;
+  for (const job of serverState.queue || []) {
+    const mine = cardUpdateUnconfirmed.get(job.job_id);
+    if (mine) Object.assign(job, mine);
+  }
+}
+
 function queueCardUpdate(card, immediateUpdates = null) {
   // Coalesce rapid updates into one PATCH per ~150ms per card
   const id = card.dataset.id;
   clearTimeout(cardUpdateTimers.get(id));
   const pending = cardUpdatePending.get(id) || { explicit: {}, form: false };
-  if (immediateUpdates) Object.assign(pending.explicit, immediateUpdates);
-  else pending.form = true;
+  if (immediateUpdates) {
+    Object.assign(pending.explicit, immediateUpdates);
+    rememberUnconfirmed(id, immediateUpdates);
+  } else pending.form = true;
   cardUpdatePending.set(id, pending);
   cardUpdateTimers.set(id, setTimeout(() => {
     cardUpdateTimers.delete(id);
@@ -2021,11 +2051,16 @@ async function sendCardUpdate(card, pending) {
       }
       // serverState was written to optimistically (see the layer handlers), so
       // it can't be trusted as the "before" state — re-read the job.
+      cardUpdateUnconfirmed.delete(card.dataset.id);
       await revertCardToServer(card);
       return;
     }
+    // The server now holds these values, so the next broadcast carries them
+    // and the overlay has nothing left to protect.
+    cardUpdateUnconfirmed.delete(card.dataset.id);
     if (errEl) { errEl.hidden = true; errEl.textContent = ""; }
   } catch (e) {
+    cardUpdateUnconfirmed.delete(card.dataset.id);
     if (errEl) {
       errEl.textContent = t("card.save_failed", { message: e.message });
       errEl.hidden = false;
@@ -3512,6 +3547,9 @@ function connectWs() {
     const msg = JSON.parse(e.data);
     if (msg.type === "state") {
       serverState = msg;
+      // Before anything reads it: a broadcast is a full replacement, and an
+      // edit still in flight has to survive one. See cardUpdateUnconfirmed.
+      applyUnconfirmedEdits();
       renderQueue();
       applyTopControls();
       applyCameraControls();

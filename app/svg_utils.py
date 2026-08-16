@@ -366,8 +366,14 @@ def ink_rect_doc_mm(svg_path: Path,
     depends on paper size, margins, fit, rotation, scale and offset — all of
     which change while a user drags a slider — but *this* depends only on the
     document and which layers are selected. Separating them is what lets the
-    expensive half (a vpype parse) be measured once and cached, while the page
-    mapping stays cheap arithmetic (see Placement.doc_mm_rect_to_page).
+    expensive half (a vpype parse) happen once, off the request path, while the
+    page mapping stays cheap arithmetic (see Placement.doc_mm_rect_to_page).
+
+    Prefer ``ink_rects_by_layer`` for anything that measures more than one
+    selection of the same file: this reads and writes a filtered copy of the
+    document per call, where that reads every layer in one pass. What remains
+    here is ``ink_bounds_mm``, which answers a single one-off question, and the
+    tests that use it as an independent second opinion on the cached path.
 
     vpype reports geometry in CSS pixels of the physical document — it has
     already applied the viewBox-to-viewport mapping — so the only conversion

@@ -82,7 +82,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 
 Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Raspberry Pi OS Lite (64-bit) — a port of Debian Trixie with no desktop environment (released 2026-04-21).
 
-**Hardware notes:** both the Zero 2 W and the 3B+ are capable hosts — which one fits best depends on how you plot. The **Zero 2 W** draws the least power and is well suited to an always-on box; it boots and optimizes/plans a job roughly 40% slower than a **3B+**, but that overhead is negligible next to the plotting time itself. If you plot a lot and want snappier setup and preview times, the 3B+ is the more comfortable choice. There's little reason to go beyond it to a Pi 4 or 5 when this is the only thing running — the workload never uses the extra performance.
+**Hardware notes:** both the Zero 2 W and the 3B+ are capable hosts — which one fits best depends on how you plot. The **Zero 2 W** draws the least power and is well suited to an always-on box; it boots and optimizes/plans a job roughly 40% slower than a **3B+**, but that overhead is negligible next to the plotting time itself. If you plot a lot and want snappier setup and preview times, the 3B+ is the more comfortable choice. If you plot **large or curve-heavy files**, go further up the range: measured on a Pi 4, a 2.4MB drawing of bezier curves needs ~380MB of RAM and ~23s just to measure its bounds, and three such files uploaded together will keep all four cores busy for minutes. A Zero 2 W has 512MB and will struggle badly with that class of work.
 
 `install.sh` checks these prerequisites and aborts with a hint if any are missing:
 
@@ -221,7 +221,9 @@ Before upgrading (either way), it's cleanest to wait until the queue is idle (or
 | Optimization | `vpype` CLI invoked as a subprocess (cancel-killable) for optional pre-plot path optimization; run ahead of time by a background queue and cached per job, reused across re-plots |
 | Camera (optional) | [MediaMTX](https://mediamtx.org), its own systemd service, reads a Pi Camera Module 3 directly and serves RTSP/HLS/WebRTC + recording segments; `app/camera.py` drives its local Control API and post-processes segments with ffmpeg (optional `rclone copy` afterward) |
 | Placement | `app/placement.py` — one pure function decides where artwork lands on paper; the SVG writer, the bounds check and the browser preview all consume it |
-| Frontend | Vanilla HTML + CSS + JavaScript, no build step; `static/i18n.js` + `static/i18n/*.json` for the 10-language UI. The browser derives no geometry — it asks `POST /jobs/{id}/placement` and renders the reply |
+| Measurement | `app/ink_cache.py` — every layer's ink rectangle, measured once per file on a background thread. Requests read it from memory or are told it is not ready; they never wait on vpype |
+| Load budget | `app/workload.py` — one heavy job at a time across the three background queues, all of them below the plot worker's scheduling priority |
+| Frontend | Vanilla HTML + CSS + JavaScript, no build step; `static/i18n.js` + `static/i18n/*.json` for the 10-language UI. The browser derives no placement of its own — it asks `POST /jobs/{id}/placement` and renders the reply, extrapolating only along the axes the engine guarantees are linear so a drag stays live between answers (see `effectivePlacement`) |
 | Transport | HTTP + WebSocket |
 | State | In-memory, broadcast via `asyncio.Queue` |
 | Process mgmt | systemd (`plotterosaurus.service`, plus `mediamtx.service` when the camera is enabled) |
@@ -248,13 +250,19 @@ app/
                     # UI consume its answer rather than deriving their own
   svg_utils.py      # Inkscape-layer parsing, filtering, and rendering a
                     # placement into an SVG (see placement.py)
+  ink_cache.py      # per-layer ink rectangles, measured once per file on a
+                    # background thread; a selection's rectangle is the union
+                    # of its layers', so no request ever waits on vpype
+  workload.py       # the shared budget: one heavy background job at a time,
+                    # and all of them below the plot worker's priority
   camera.py         # plot recording via a Camera Module 3 + MediaMTX (opt-in)
   notify.py         # outgoing webhook delivery on layer/job completion
   state.py          # in-memory state + WebSocket broadcast
   config.py         # plotter / camera / webhook / display settings, persisted to config.json
   updates.py        # self-update: remote version check + guarded apply (opt-in)
 static/             # index.html, app.js, style.css, i18n.js + i18n/ (10 languages)
-tests/              # placement corpus + engine specs — see tests/README.md
+tests/              # placement corpus, engine specs, scale and curve budgets,
+                    # layer order, pause behaviour — see tests/README.md
 systemd/            # plotterosaurus.service + mediamtx.service (templates)
 scripts/            # plotterosaurus-update.in (self-update helper template)
 install.sh          # idempotent installer
@@ -286,15 +294,22 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 - **Content outside the SVG canvas is only dropped when "Optimize SVG" is on.** The canvas is treated as the composition, so anything outside it is meant to be excluded — but that rule is currently enforced by vpype's page crop, which only runs as part of optimization. With optimization off, out-of-canvas geometry is plotted wherever it lands on the sheet.
 - **A document with nothing plottable is accepted and plots nothing.** Live text and raster images are dropped on the way to the plotter (they aren't strokes), but the upload succeeds and the job runs to "completed" without drawing. Convert text to paths before uploading.
 - The machine profile isn't snapshotted onto a job, so switching the active machine changes how already-queued jobs are placed.
+- **Artwork larger than the machine bed is estimated in full, then clipped when plotted.** The driver drops pen-down moves outside its travel bounds, so an oversized drawing used to report `0 m / 0 s` — the clip, not the drawing. The estimate now measures the artwork, and the card's machine-bounds warning is what tells you it will not all fit. Identical to before whenever the artwork does fit.
+- **The origin is not remembered across a restart.** Deliberate: the motors disengage when the plotter is switched off, so the carriage can be moved by hand, and a remembered position would be a confident lie. Re-aim before the first plot of a session.
 
 ## Testing
 
 ```bash
 venv/bin/pip install -r requirements-dev.txt
-venv/bin/python -m pytest tests/ -q
+venv/bin/python -m pytest -m "not real" -q     # the everyday one, ~90s
+venv/bin/python -m pytest -q                   # adds tests/real/, minutes
 ```
 
-Test dependencies are kept out of `requirements.txt` so `install.sh` never puts a test runner on a plotter host. See [tests/README.md](tests/README.md) for what the suite covers and how to regenerate the placement corpus.
+Test dependencies are kept out of `requirements.txt` so `install.sh` never puts a test runner on a plotter host.
+
+Two things worth knowing before you run it. The suite redirects `state.json` and `uploads/` to a temp directory for the whole session — it will not touch the running plotter's queue, and `tests/test_sandbox.py` asserts that. And `tests/real/` is gitignored: drop your own drawings in there and the whole contract suite runs against them, which is the only way to cover markup no fixture author thinks to write.
+
+See [tests/README.md](tests/README.md) for what the suite covers and how to regenerate the placement corpus.
 
 ## License
 

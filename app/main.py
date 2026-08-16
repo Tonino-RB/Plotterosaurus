@@ -285,9 +285,10 @@ class PlacementQuery(BaseModel):
     # Off by default, and that default is load-bearing. Placement itself is
     # arithmetic over the document's size and viewBox — microseconds. The ink
     # rectangle needs vpype to re-read the whole file, which on a real drawing
-    # is seconds, not milliseconds (6.8s for a 4.5MB, 8,000-element plot on a
-    # Pi 3B+). The preview needs only the former, so asking for both in one
-    # request left the canvas blank until the slow half finished.
+    # is seconds or minutes, not milliseconds — 10s for a 4.5MB hatched plot on
+    # a Pi 4, and far worse for curves. The preview needs only the former, so
+    # asking for both in one request left the canvas blank until the slow half
+    # finished. See app/ink_cache.py, which now answers this from memory.
     include_ink: bool = False
 
 
