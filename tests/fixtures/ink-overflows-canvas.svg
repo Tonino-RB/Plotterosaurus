@@ -1,0 +1,9 @@
+<!-- Geometry running well outside the canvas. A6: the crop is the rule, and
+     this is the fixture that proves it is applied. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="100mm" height="80mm" viewBox="0 0 100 80">
+  <g inkscape:groupmode="layer" inkscape:label="art">
+    <path d="M-200 50 L300 50" fill="none" stroke="#000"/>
+    <rect x="20" y="20" width="60" height="60" fill="none" stroke="#000"/>
+  </g>
+</svg>

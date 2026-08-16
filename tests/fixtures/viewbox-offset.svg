@@ -1,0 +1,4 @@
+<!-- Non-zero (negative) viewBox origin — the transform must recentre on it. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="120mm" height="100mm" viewBox="-60 -50 120 100">
+  <circle cx="0" cy="0" r="40" fill="none" stroke="#000"/>
+</svg>

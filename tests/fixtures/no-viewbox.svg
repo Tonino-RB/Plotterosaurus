@@ -1,0 +1,4 @@
+<!-- Physical size, no viewBox: user units are millimetres. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="150mm" height="100mm">
+  <path d="M10 10 L140 90" fill="none" stroke="#000"/>
+</svg>

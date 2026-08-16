@@ -1,0 +1,4 @@
+<!-- Solid fill, no stroke: plots as an outline. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="120mm" height="90mm" viewBox="0 0 120 90">
+  <circle cx="50" cy="50" r="30" fill="#333"/>
+</svg>

@@ -1,0 +1,7 @@
+<!-- "Contours" (no digits, so position 1) and "Layer 1" both resolve to vpype
+     layer id 1 and would merge. normalize_layer_structure must de-collide. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="100mm" height="60mm" viewBox="0 0 100 60">
+  <g inkscape:groupmode="layer" inkscape:label="Contours"><path d="M10 10 L90 10" fill="none" stroke="#000"/></g>
+  <g inkscape:groupmode="layer" inkscape:label="Layer 1"><path d="M10 30 L90 30" fill="none" stroke="#000"/></g>
+</svg>

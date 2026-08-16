@@ -1,0 +1,5 @@
+<!-- width/height aspect (2:1) differs from viewBox aspect (1:1).
+     Probes preserveAspectRatio="xMidYMid meet": one uniform scale, centred. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" viewBox="0 0 100 100">
+  <rect x="10" y="10" width="80" height="80" fill="none" stroke="#000"/>
+</svg>

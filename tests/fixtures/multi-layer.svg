@@ -1,0 +1,7 @@
+<!-- Three real Inkscape layers, distinct geometry in each. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="100mm" height="75mm" viewBox="0 0 100 75">
+  <g inkscape:groupmode="layer" inkscape:label="outline"><rect x="5" y="5" width="90" height="65" fill="none" stroke="#000"/></g>
+  <g inkscape:groupmode="layer" inkscape:label="detail"><path d="M20 50 L80 50" fill="none" stroke="#000"/></g>
+  <g inkscape:groupmode="layer" inkscape:label="signature"><path d="M70 68 L90 68" fill="none" stroke="#000"/></g>
+</svg>

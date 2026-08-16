@@ -1,0 +1,6 @@
+<!-- Plain <g> groups with no inkscape:groupmode — Figma/Illustrator shape.
+     normalize_layer_structure promotes them to layers in place. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="65mm" viewBox="0 0 100 65">
+  <g id="frame"><rect x="5" y="5" width="90" height="55" fill="none" stroke="#000"/></g>
+  <g id="marks"><path d="M20 20 L80 55" fill="none" stroke="#000"/></g>
+</svg>

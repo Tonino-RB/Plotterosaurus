@@ -1,0 +1,7 @@
+<!-- Exactly square: auto-rotate must treat it as already matching (A9). -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="200mm" height="200mm" viewBox="0 0 200 200">
+  <g inkscape:groupmode="layer" inkscape:label="art">
+    <circle cx="100" cy="100" r="80" fill="none" stroke="#000"/>
+  </g>
+</svg>

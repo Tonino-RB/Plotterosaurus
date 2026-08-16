@@ -1,0 +1,6 @@
+# Test-only dependencies. Deliberately NOT in requirements.txt: install.sh
+# installs that one on the Pi, and a plotter host has no reason to carry a
+# test runner.
+#
+#   venv/bin/pip install -r requirements-dev.txt
+pytest

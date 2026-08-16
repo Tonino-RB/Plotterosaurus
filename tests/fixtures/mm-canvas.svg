@@ -1,0 +1,7 @@
+<!-- Baseline: mm width/height with a matching 1:1 viewBox. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="210mm" height="297mm" viewBox="0 0 210 297">
+  <g inkscape:groupmode="layer" inkscape:label="art">
+    <path d="M20 20 L190 20 L190 277 L20 277 Z" fill="none" stroke="#000"/>
+  </g>
+</svg>

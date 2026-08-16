@@ -1,0 +1,7 @@
+<!-- Unitless width/height (CSS px at 96dpi). -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="800" height="600" viewBox="0 0 800 600">
+  <g inkscape:groupmode="layer" inkscape:label="art">
+    <path d="M50 50 L750 50 L750 550 L50 550 Z" fill="none" stroke="#000"/>
+  </g>
+</svg>

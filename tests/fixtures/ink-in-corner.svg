@@ -1,0 +1,9 @@
+<!-- Large canvas, small drawing in one corner. The canvas is the composition
+     (see A5, closed by design) so fit scales the CANVAS, not the ink — this
+     fixture pins that behaviour so it can't drift. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="1000mm" height="700mm" viewBox="0 0 1000 700">
+  <g inkscape:groupmode="layer" inkscape:label="art">
+    <rect x="10" y="10" width="50" height="50" fill="none" stroke="#000"/>
+  </g>
+</svg>
