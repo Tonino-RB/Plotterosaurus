@@ -162,16 +162,6 @@ const cardEls = new Map();                 // job_id → card DOM element
 const cardCtx = new Map();                 // job_id → per-card state (svg metadata, manual-fit flag, render timer)
 let sharedElapsedTimer = null;             // single interval for the sticky-bar progress
 
-// Offscreen but fully rendered SVG used to measure a job's actual ink
-// bounding box via getBBox() (see computeGeometryFootprint). getBBox() throws
-// or returns a zero rect on elements inside a display:none tree (e.g. a
-// collapsed job card's hidden preview panel) — positioning this off-screen
-// (rather than display:none/visibility:hidden/zero-size, all of which are
-// inconsistent across browsers for getBBox() purposes) keeps it painted and
-// measurable regardless of any card's collapsed state.
-const bboxMeasureSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-bboxMeasureSvg.style.cssText = "position:fixed; left:-99999px; top:-99999px; width:1px; height:1px; overflow:visible;";
-document.body.appendChild(bboxMeasureSvg);
 
 // Turn a FastAPI error `detail` into a display string. Coded errors arrive as
 // {code, params} and are localized via the apierror.* catalog; plain-string
@@ -435,19 +425,95 @@ function applyMachineAutoRotate({ w, h }) {
   return { w, h };
 }
 
-// Extra rotation (0 or 90) the machine's auto-rotate policy adds to the
-// artwork itself, on top of whatever the paper dims already are. Auto-rotate
-// forces the *page* into a fixed orientation; without this, the content keeps
-// its own orientation and just sits undersized in the swapped page instead of
-// turning with it. Mirrors the equivalent decision in svg_utils.transform_to_paper
-// so the preview and the actual plotted output always agree.
-function computeAutoRotateDeg(paperW, paperH, contentW, contentH) {
-  if (!appSettings.machine_custom_enabled) return 0;
-  if (appSettings.machine_auto_rotate === "off") return 0;
-  if (!contentW || !contentH) return 0;
-  const pageLandscape = paperW > paperH;
-  const contentLandscape = contentW > contentH;
-  return pageLandscape !== contentLandscape ? 90 : 0;
+// ───── Placement (server-authoritative) ──────────────────────────────────
+//
+// Where the artwork lands on paper is decided by the server, not here. It has
+// to be: the only tool a browser has for measuring artwork is getBBox(),
+// which counts live text and raster images that vpype drops on the way to the
+// plotter — so a preview that measured for itself was answering a different
+// question than the machine. The rules (fit scales the canvas, anchor at the
+// margin box's top-left, auto-rotate turns the artwork with the page) all
+// live in app/placement.py. This file renders the answer and derives none of
+// it.
+
+const placementInflight = new Map();   // job_id -> AbortController
+const placementTimers = new Map();     // job_id -> debounce timer
+
+// Everything the answer depends on. A card refetches only when one of these
+// actually changes, so dragging a slider back to where it started costs
+// nothing.
+function placementKey(job) {
+  return JSON.stringify([
+    job.paper_width_mm, job.paper_height_mm,
+    job.margin_top_mm, job.margin_right_mm, job.margin_bottom_mm, job.margin_left_mm,
+    job.fit_content, job.transform_scale, job.transform_rotation_deg,
+    job.transform_offset_x_mm, job.transform_offset_y_mm,
+    (job.layer_selections || []).filter((l) => l.selected !== false).map((l) => l.index),
+  ]);
+}
+
+// Debounced because it fires on every slider tick. The server caches the
+// expensive half (the vpype ink measurement, which no placement input can
+// change), so the warm round trip is a millisecond or two and 40ms is enough
+// to coalesce a drag without the preview feeling detached from the handle.
+const PLACEMENT_DEBOUNCE_MS = 40;
+
+function requestPlacement(card, job, onReady) {
+  const id = job.job_id;
+  const ctx = cardCtx.get(id);
+  if (!ctx) return;
+  const key = placementKey(job);
+  if (ctx.placementKey === key && ctx.placement) return;   // already current
+
+  clearTimeout(placementTimers.get(id));
+  placementTimers.set(id, setTimeout(async () => {
+    placementTimers.delete(id);
+    placementInflight.get(id)?.abort();
+    const ctrl = new AbortController();
+    placementInflight.set(id, ctrl);
+    try {
+      const res = await fetch(`/jobs/${id}/placement`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          paper_width_mm: job.paper_width_mm,
+          paper_height_mm: job.paper_height_mm,
+          margin_top_mm: job.margin_top_mm,
+          margin_right_mm: job.margin_right_mm,
+          margin_bottom_mm: job.margin_bottom_mm,
+          margin_left_mm: job.margin_left_mm,
+          fit_content: !!job.fit_content,
+          transform_scale: job.transform_scale ?? 1,
+          transform_rotation_deg: job.transform_rotation_deg ?? 0,
+          transform_offset_x_mm: job.transform_offset_x_mm ?? 0,
+          transform_offset_y_mm: job.transform_offset_y_mm ?? 0,
+          layer_indices: (job.layer_selections || [])
+            .filter((l) => l.selected !== false).map((l) => l.index),
+        }),
+      });
+      if (!res.ok) return;
+      const fresh = cardCtx.get(id);
+      if (!fresh) return;
+      fresh.placement = await res.json();
+      fresh.placementKey = key;
+      if (onReady) onReady();
+    } catch (e) {
+      if (e.name !== "AbortError") console.warn("placement fetch failed", e);
+    } finally {
+      if (placementInflight.get(id) === ctrl) placementInflight.delete(id);
+    }
+  }, PLACEMENT_DEBOUNCE_MS));
+}
+
+// The ink's on-page rectangle in mm, or null when the server hasn't answered
+// yet or the selected layers hold nothing plottable (a document of live text
+// or raster images draws nothing, and saying "null" is how the UI avoids
+// reporting a size for artwork that will never exist).
+function inkFootprint(job) {
+  const ink = cardCtx.get(job.job_id)?.placement?.ink;
+  if (!ink) return null;
+  return { left: ink.left_mm, top: ink.top_mm, width: ink.width_mm, height: ink.height_mm };
 }
 
 // ───── Queue rendering ───────────────────────────────────────────────────
@@ -707,9 +773,9 @@ function createCardForJob(job) {
         ctx.svg = meta;
         renderPreview(card, job);
         renderLayers(card, job);
-        // Geometry size (see computeGeometryFootprint) needs ctx.svg *and* the
-        // rendered preview DOM, both of which just became available —
-        // refresh the card now instead of waiting for the next broadcast.
+        // The size readout needs ctx.svg and the rendered preview DOM, both
+        // of which just became available — refresh now instead of waiting for
+        // the next broadcast.
         updateCard(card, job);
       }
     });
@@ -894,7 +960,11 @@ function updateCard(card, job) {
   if (layerCount) {
     subParts.push(tn("job.layers", layerCount));
   }
-  const geomFootprint = computeGeometryFootprint(card, job, ctx);
+  requestPlacement(card, job, () => {
+    const fresh = serverState.queue.find((j) => j.job_id === job.job_id);
+    if (fresh) { updateCard(card, fresh); updatePreviewTransform(card, fresh); }
+  });
+  const geomFootprint = inkFootprint(job);
   if (geomFootprint) {
     const u = effectiveDisplayUnit();
     subParts.push(`${formatLengthValue(geomFootprint.width, u)} × ${formatLengthValue(geomFootprint.height, u)} ${u}`);
@@ -1038,90 +1108,6 @@ function updateCard(card, job) {
   card.querySelectorAll(".col-form input, .col-form select, .col-form button")
     .forEach((el) => { el.disabled = activeBlocks; });
   applyMachineAutoRotateToCard(card, activeBlocks);
-}
-
-// The actual drawn geometry's on-page footprint after rotation/scale/fit-to-
-// page — the *ink* bounding box (only selected layers, measured via
-// getBBox() on a clone of the live, layer-filtered preview — see
-// bboxMeasureSvg), not the SVG document's own canvas/page size, which is
-// often set to a round paper size in the authoring tool and can be much
-// bigger than what's actually drawn. fit_content's *scale factor* is still
-// driven by the canvas size, same as the server (svg_utils.py's
-// transform_to_paper / _content_footprint_mm) — only the displayed
-// footprint itself switches to the ink extent. Null until the preview SVG
-// is actually rendered in the card.
-// Where the *actual drawn geometry* (ink, only selected layers — see
-// bboxMeasureSvg) lands on the page after rotation/scale/fit-to-page, in mm:
-// {left, top, width, height}. Mirrors app/svg_utils.py's ink_bounds_mm
-// exactly (same corner-by-corner transform, not just a size formula) so
-// this and the server's bounds-check agree on where the geometry actually
-// is, not just how big it is. fit_content's *scale factor* is still driven
-// by the canvas size, same as the server. Null until the preview SVG is
-// actually rendered in the card.
-function computeGeometryFootprint(card, job, ctx) {
-  if (!ctx || !ctx.svg || !ctx.svg.width_mm || !ctx.svg.height_mm) return null;
-  const liveSvg = card.querySelector(".paper-content svg");
-  if (!liveSvg) return null;
-
-  let bbox;
-  try {
-    bboxMeasureSvg.replaceChildren(liveSvg.cloneNode(true));
-    bbox = bboxMeasureSvg.firstChild.getBBox();
-  } catch {
-    return null;
-  } finally {
-    bboxMeasureSvg.replaceChildren();
-  }
-  if (!bbox || bbox.width <= 0 || bbox.height <= 0) return null;
-
-  const svgW = ctx.svg.width_mm, svgH = ctx.svg.height_mm;
-  const vb = liveSvg.viewBox && liveSvg.viewBox.baseVal;
-  const vbW = vb && vb.width ? vb.width : svgW;
-  const vbH = vb && vb.height ? vb.height : svgH;
-  const vbX = vb ? vb.x : 0, vbY = vb ? vb.y : 0;
-  // preserveAspectRatio="xMidYMid meet" (the SVG default): one uniform scale,
-  // the smaller of the two axis ratios. Mirrors transform_to_paper() in
-  // app/svg_utils.py — taking svgW/vbW alone would report a stretched
-  // footprint for any document whose width/height aspect differs from its
-  // viewBox aspect.
-  const mmPerUnit = Math.min(svgW / vbW, svgH / vbH);
-
-  const autoRotDeg = computeAutoRotateDeg(job.paper_width_mm, job.paper_height_mm, svgW, svgH);
-  const rotDeg = (job.transform_rotation_deg ?? 0) + autoRotDeg;
-  const rad = (rotDeg * Math.PI) / 180;
-  const cosA = Math.abs(Math.cos(rad)), sinA = Math.abs(Math.sin(rad));
-
-  // fit_content's scale is driven by the *canvas* footprint, not the ink's.
-  const canvasBboxWPerUnit = svgW * cosA + svgH * sinA;
-  const canvasBboxHPerUnit = svgW * sinA + svgH * cosA;
-  const aW = Math.max(0, job.paper_width_mm - job.margin_left_mm - job.margin_right_mm);
-  const aH = Math.max(0, job.paper_height_mm - job.margin_top_mm - job.margin_bottom_mm);
-  const fitScale = job.fit_content && aW > 0 && aH > 0 && canvasBboxWPerUnit > 0 && canvasBboxHPerUnit > 0
-    ? Math.min(aW / canvasBboxWPerUnit, aH / canvasBboxHPerUnit) : 1;
-  const userScale = Math.max(0.01, Math.min(5, job.transform_scale ?? 1));
-  const totalScale = fitScale * userScale;
-  const unitsToMm = totalScale * mmPerUnit;
-
-  const footprintW = canvasBboxWPerUnit * totalScale;
-  const footprintH = canvasBboxHPerUnit * totalScale;
-  const centerXmm = job.margin_left_mm + footprintW / 2 + (job.transform_offset_x_mm ?? 0);
-  const centerYmm = job.margin_top_mm + footprintH / 2 + (job.transform_offset_y_mm ?? 0);
-  const vbCenterX = vbX + vbW / 2, vbCenterY = vbY + vbH / 2;
-
-  // Full (signed) rotation for accurate corner mapping — the abs() version
-  // above is only valid for the canvas's own size, since a rotated
-  // rectangle's *size* is position-independent, but the ink's *position*
-  // isn't.
-  const cosR = Math.cos(rad), sinR = Math.sin(rad);
-  const toPage = (px, py) => {
-    const dx = (px - vbCenterX) * unitsToMm, dy = (py - vbCenterY) * unitsToMm;
-    return [centerXmm + dx * cosR - dy * sinR, centerYmm + dx * sinR + dy * cosR];
-  };
-  const xmin = bbox.x, ymin = bbox.y, xmax = bbox.x + bbox.width, ymax = bbox.y + bbox.height;
-  const corners = [toPage(xmin, ymin), toPage(xmax, ymin), toPage(xmin, ymax), toPage(xmax, ymax)];
-  const xs = corners.map((c) => c[0]), ys = corners.map((c) => c[1]);
-  const left = Math.min(...xs), top = Math.min(...ys);
-  return { left, top, width: Math.max(...xs) - left, height: Math.max(...ys) - top };
 }
 
 // The delta (a manual jog for the next job about to start, or an origin
@@ -1445,48 +1431,31 @@ function updatePreviewTransform(card, job) {
   if (w <= 0 || h <= 0) return;
   paper.style.aspectRatio = `${w} / ${h}`;
 
-  const svgW = ctx.svg.width_mm || w;
-  const svgH = ctx.svg.height_mm || h;
-  const mt = job.margin_top_mm, mr = job.margin_right_mm, mb = job.margin_bottom_mm, ml = job.margin_left_mm;
-  const aW = Math.max(0, w - ml - mr);
-  const aH = Math.max(0, h - mt - mb);
-  const autoRotDeg = computeAutoRotateDeg(w, h, svgW, svgH);
-  const rotDeg = (job.transform_rotation_deg ?? 0) + autoRotDeg;
-  const rad = (rotDeg * Math.PI) / 180;
-  const cosA = Math.abs(Math.cos(rad));
-  const sinA = Math.abs(Math.sin(rad));
-  // fit_content sizes content against its *rotated* bounding box (at the
-  // combined auto + manual rotation), so "Fit to page" keeps the content
-  // within the page at any rotation angle instead of only the unrotated one.
-  const bboxWPerUnit = svgW * cosA + svgH * sinA;
-  const bboxHPerUnit = svgW * sinA + svgH * cosA;
-  const fitScale = job.fit_content && aW > 0 && aH > 0 && bboxWPerUnit > 0 && bboxHPerUnit > 0
-    ? Math.min(aW / bboxWPerUnit, aH / bboxHPerUnit) : 1;
-  const fW = svgW * fitScale, fH = svgH * fitScale;
-  // Anchor the content's own *rotated* top-left corner (at its rendered,
-  // fit-scaled size) to the margin box's top-left corner rather than
-  // centering it — see transform_to_paper() in svg_utils.py for why the
-  // anchor point must use the rotated bbox, not the unrotated one.
-  const offX = ml;
-  const offY = mt;
+  // Everything geometric comes from the server (see requestPlacement). Ask
+  // for a fresh answer whenever the inputs have moved, and redraw when it
+  // lands — during a slider drag this function runs against uncommitted
+  // editor values, so without the callback the reply would arrive with
+  // nothing to paint it. Re-entry terminates: the second pass finds the key
+  // already current and requests nothing.
+  requestPlacement(card, job, () => updatePreviewTransform(card, job));
+  const place = ctx.placement;
+  if (!place) return;
 
+  const mt = job.margin_top_mm, mr = job.margin_right_mm;
+  const mb = job.margin_bottom_mm, ml = job.margin_left_mm;
+
+  // The document's unrotated, fit-scaled box: what the <svg> element is laid
+  // out at before CSS rotates it.
+  const layoutW = place.layout_width_mm, layoutH = place.layout_height_mm;
+  // Its rotated, user-scaled extent: what it actually covers on the page.
+  const bboxW = place.footprint_width_mm, bboxH = place.footprint_height_mm;
   const userScale = Math.max(0.01, Math.min(5, job.transform_scale ?? 1));
-  const offX_user = job.transform_offset_x_mm ?? 0;
-  const offY_user = job.transform_offset_y_mm ?? 0;
 
-  // Rotated bounding box of the user-scaled content (for extent calc)
-  const sW = fW * userScale, sH = fH * userScale;
-  const bboxW = sW * cosA + sH * sinA;
-  const bboxH = sW * sinA + sH * cosA;
-  const cX = offX + bboxW / 2 + offX_user;
-  const cY = offY + bboxH / 2 + offY_user;
-  const contentLeft = cX - bboxW / 2;
-  const contentTop = cY - bboxH / 2;
-  const contentRight = cX + bboxW / 2;
-  const contentBottom = cY + bboxH / 2;
-
-  const extentW = Math.max(w, contentRight) - Math.min(0, contentLeft);
-  const extentH = Math.max(h, contentBottom) - Math.min(0, contentTop);
+  // Zoom the whole sheet so anything hanging off the paper still shows.
+  const contentLeft = place.center_x_mm - bboxW / 2;
+  const contentTop = place.center_y_mm - bboxH / 2;
+  const extentW = Math.max(w, contentLeft + bboxW) - Math.min(0, contentLeft);
+  const extentH = Math.max(h, contentTop + bboxH) - Math.min(0, contentTop);
 
   const cs = getComputedStyle(previewEl);
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
@@ -1498,29 +1467,27 @@ function updatePreviewTransform(card, job) {
   paper.style.width = `${w * mmToPx}px`;
   paper.style.height = `${h * mmToPx}px`;
 
-  content.style.left = `${(offX / w) * 100}%`;
-  content.style.top = `${(offY / h) * 100}%`;
-  content.style.width = `${(fW / w) * 100}%`;
-  content.style.height = `${(fH / h) * 100}%`;
+  content.style.left = `${(ml / w) * 100}%`;
+  content.style.top = `${(mt / h) * 100}%`;
+  content.style.width = `${(layoutW / w) * 100}%`;
+  content.style.height = `${(layoutH / h) * 100}%`;
   content.style.transformOrigin = "center center";
-  // content's own untransformed box (left/top/width/height above) is laid
-  // out at its unrotated fit-scaled size, so its CSS transform-origin sits
-  // at (offX + fW/2, offY + fH/2) — not the corrected anchor cX/cY. Fold in
-  // the difference here since translate() is the only part of this
-  // transform applied in unrotated screen space.
+  // The element is laid out at its unrotated size anchored to the margin
+  // corner, so its transform-origin sits at (ml + layoutW/2, mt + layoutH/2)
+  // — not at the placement's centre. translate() is the only part of this
+  // transform applied in unrotated screen space, so the difference goes here.
   //
-  // While this job is actually running, also fold in its live delta (see
-  // activeRunDelta) — the same pure page-space translation the plotter
-  // itself is physically applying right now — so the preview visually
-  // matches where the pen really is instead of showing the design's
-  // as-drawn position. It snaps back the moment the job stops being active
-  // (completes/cancels/fails), since activeRunDelta then returns null.
+  // While this job is actually running, its live delta folds in too (see
+  // activeRunDelta): the same pure page-space translation the plotter is
+  // physically applying right now, so the preview matches where the pen
+  // really is rather than where the design was drawn. It snaps back the
+  // moment the job stops being active.
   const runDelta = activeRunDelta(job);
-  const anchorCorrectionX = (bboxW - fW) / 2 + offX_user + (runDelta ? runDelta.dx : 0);
-  const anchorCorrectionY = (bboxH - fH) / 2 + offY_user + (runDelta ? runDelta.dy : 0);
+  const dx = (place.center_x_mm - (ml + layoutW / 2)) + (runDelta ? runDelta.dx : 0);
+  const dy = (place.center_y_mm - (mt + layoutH / 2)) + (runDelta ? runDelta.dy : 0);
   content.style.transform =
-    `translate(${anchorCorrectionX * mmToPx}px, ${anchorCorrectionY * mmToPx}px) ` +
-    `rotate(${rotDeg}deg) scale(${userScale})`;
+    `translate(${dx * mmToPx}px, ${dy * mmToPx}px) ` +
+    `rotate(${place.rotation_deg}deg) scale(${userScale})`;
 
   const anyM = mt > 0 || mr > 0 || mb > 0 || ml > 0;
   margins.hidden = !anyM;

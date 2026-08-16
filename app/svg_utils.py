@@ -337,6 +337,43 @@ def _placement_for(
     )
 
 
+def ink_rect_doc_mm(svg_path: Path,
+                    layer_indices: list[int]) -> tuple[float, float, float, float] | None:
+    """The drawn geometry's bounding box in *document* millimetres, as
+    (xmin, ymin, xmax, ymax). None when the given layers hold nothing
+    plottable.
+
+    Deliberately independent of placement. Where the artwork ends up on paper
+    depends on paper size, margins, fit, rotation, scale and offset — all of
+    which change while a user drags a slider — but *this* depends only on the
+    document and which layers are selected. Separating them is what lets the
+    expensive half (a vpype parse) be measured once and cached, while the page
+    mapping stays cheap arithmetic (see Placement.doc_mm_rect_to_page).
+
+    vpype reports geometry in CSS pixels of the physical document — it has
+    already applied the viewBox-to-viewport mapping — so the only conversion
+    needed is px to mm. Mixing those pixels with user-unit maths inflates
+    every measurement by 96/25.4.
+    """
+    import os
+    import tempfile
+
+    import vpype
+
+    fd, tmp_name = tempfile.mkstemp(dir=svg_path.parent, suffix=".svg")
+    tmp = Path(tmp_name)
+    os.close(fd)
+    try:
+        filter_to_layers(svg_path, layer_indices, tmp)
+        bounds = vpype.read_multilayer_svg(str(tmp), quantization=0.1).bounds()
+    finally:
+        tmp.unlink(missing_ok=True)
+    if bounds is None:
+        return None
+    xmin, ymin, xmax, ymax = (v / PX_PER_MM for v in bounds)
+    return xmin, ymin, xmax, ymax
+
+
 def ink_bounds_mm(
     svg_path: Path,
     layer_indices: list[int],
@@ -368,11 +405,9 @@ def ink_bounds_mm(
     which is exactly what Placement.doc_mm_rect_to_page consumes. Mixing those
     pixels with user-unit maths inflates every measurement by 96/25.4.
     """
-    import os
-    import tempfile
-
-    import vpype
-
+    rect = ink_rect_doc_mm(svg_path, layer_indices)
+    if rect is None:
+        return None
     root = etree.parse(str(svg_path)).getroot()
     place = _placement_for(
         root, paper_width_mm, paper_height_mm,
@@ -380,19 +415,7 @@ def ink_bounds_mm(
         fit_content, transform_scale, transform_rotation_deg,
         transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
-
-    fd, tmp_name = tempfile.mkstemp(dir=svg_path.parent, suffix=".svg")
-    tmp = Path(tmp_name)
-    os.close(fd)
-    try:
-        filter_to_layers(svg_path, layer_indices, tmp)
-        bounds = vpype.read_multilayer_svg(str(tmp), quantization=0.1).bounds()
-    finally:
-        tmp.unlink(missing_ok=True)
-    if bounds is None:
-        return None
-    xmin, ymin, xmax, ymax = (v / PX_PER_MM for v in bounds)
-    return place.doc_mm_rect_to_page(xmin, ymin, xmax, ymax)
+    return place.doc_mm_rect_to_page(*rect)
 
 
 def transform_to_paper(

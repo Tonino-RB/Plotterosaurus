@@ -3,6 +3,7 @@ import json as _json
 import logging
 import subprocess
 import uuid
+from collections import OrderedDict
 
 log = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
@@ -17,7 +18,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import camera, config, notify, optimize_queue, plan_queue, plot_worker, state, svg_optimize, svg_utils, updates
+from lxml import etree
+
+from . import (
+    camera, config, notify, optimize_queue, placement, plan_queue, plot_worker,
+    state, svg_optimize, svg_utils, updates,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -212,6 +218,128 @@ def get_job_svg(job_id: str):
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(str(path), media_type="image/svg+xml")
+
+
+# Placement ----------------------------------------------------------------
+#
+# The server is the authority on where ink lands. It has to be: the browser
+# can only measure the artwork with getBBox(), which counts live text and
+# raster images that vpype drops on the way to the plotter, so a client that
+# worked it out for itself was answering a different question than the machine.
+# The preview asks this instead of deriving its own answer.
+
+
+class PlacementQuery(BaseModel):
+    """Placement inputs as the editor currently has them — which is not
+    necessarily what the job record says, since the preview updates while the
+    user is still dragging and the PATCH is still debounced."""
+    paper_width_mm: float = Field(..., gt=0)
+    paper_height_mm: float = Field(..., gt=0)
+    margin_top_mm: float = 0.0
+    margin_right_mm: float = 0.0
+    margin_bottom_mm: float = 0.0
+    margin_left_mm: float = 0.0
+    fit_content: bool = False
+    transform_scale: float = 1.0
+    transform_rotation_deg: float = 0.0
+    transform_offset_x_mm: float = 0.0
+    transform_offset_y_mm: float = 0.0
+    layer_indices: list[int] | None = None
+
+
+# The vpype measurement behind ink_rect_doc_mm costs tens of milliseconds and
+# depends only on the file and the selected layers — never on the placement
+# being previewed. Caching it here is what keeps this endpoint cheap enough to
+# answer a slider drag; without it every mouse move would re-parse the SVG.
+_ink_rect_cache: "OrderedDict[tuple, tuple | None]" = OrderedDict()
+_INK_RECT_CACHE_MAX = 64
+
+
+def _ink_rect_cached(path: Path, layer_indices: list[int]) -> tuple | None:
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        raise _coded(404, "svg_not_found")
+    key = (str(path), stamp, tuple(sorted(layer_indices)))
+    if key in _ink_rect_cache:
+        _ink_rect_cache.move_to_end(key)
+        return _ink_rect_cache[key]
+    rect = svg_utils.ink_rect_doc_mm(path, layer_indices)
+    _ink_rect_cache[key] = rect
+    _ink_rect_cache.move_to_end(key)
+    while len(_ink_rect_cache) > _INK_RECT_CACHE_MAX:
+        _ink_rect_cache.popitem(last=False)
+    return rect
+
+
+@app.post("/jobs/{job_id}/placement")
+def get_job_placement(job_id: str, req: PlacementQuery):
+    """Resolve where this job's artwork lands, under the placement the caller
+    is currently previewing.
+
+    Returns the placement itself (so the preview can position the artwork with
+    the same numbers the plot will use) and the ink rectangle (so the size
+    readout and the bounds overlay report what actually gets drawn).
+    """
+    job = state.get_job(job_id)
+    if job is None:
+        raise _coded(404, "job_not_found")
+    path = plot_worker._effective_svg_path(job)
+    if not path.exists():
+        raise _coded(404, "svg_not_found")
+
+    indices = req.layer_indices
+    if indices is None:
+        indices = [s["index"] for s in job.get("layer_selections") or []
+                   if s.get("selected", True)]
+
+    root = etree.parse(str(path)).getroot()
+    doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
+    place = placement.compute(
+        doc_w_mm, doc_h_mm, svg_utils.parse_viewbox(root.get("viewBox", "")),
+        req.paper_width_mm, req.paper_height_mm,
+        req.margin_top_mm, req.margin_right_mm,
+        req.margin_bottom_mm, req.margin_left_mm,
+        req.fit_content,
+        transform_scale=req.transform_scale,
+        transform_rotation_deg=req.transform_rotation_deg,
+        transform_offset_x_mm=req.transform_offset_x_mm,
+        transform_offset_y_mm=req.transform_offset_y_mm,
+        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+    )
+
+    rect = _ink_rect_cached(path, indices)
+    if rect is None:
+        ink = None
+    else:
+        left, top, right, bottom = place.doc_mm_rect_to_page(*rect)
+        # float() on the way out: vpype measures with numpy, and while
+        # np.float64 subclasses float and serializes fine today, the wire
+        # contract here is plain JSON numbers and shouldn't depend on that.
+        ink = {"left_mm": float(left), "top_mm": float(top),
+               "width_mm": float(right - left), "height_mm": float(bottom - top)}
+
+    return {
+        "doc_width_mm": doc_w_mm,
+        "doc_height_mm": doc_h_mm,
+        "rotation_deg": place.rotation_deg,
+        "fit_scale": place.fit_scale,
+        "user_scale": place.user_scale,
+        # The unrotated, fit-scaled size of the document — the box the preview
+        # lays its <svg> out at before rotating it. Returned rather than left
+        # for the client to multiply out, so the browser derives no geometry
+        # of its own and simply renders what it is told.
+        "layout_width_mm": (doc_w_mm or req.paper_width_mm) * place.fit_scale,
+        "layout_height_mm": (doc_h_mm or req.paper_height_mm) * place.fit_scale,
+        "footprint_width_mm": place.footprint_w_mm,
+        "footprint_height_mm": place.footprint_h_mm,
+        "center_x_mm": place.center_x_mm,
+        "center_y_mm": place.center_y_mm,
+        # None when the selected layers hold nothing plottable — a document of
+        # live text or raster images. The UI says so rather than showing a
+        # size for artwork that will not be drawn.
+        "ink": ink,
+    }
 
 
 # Jobs -------------------------------------------------------------------
@@ -854,6 +982,11 @@ def api_queue_calibrate():
 @app.get("/api/v1/jobs", dependencies=[Depends(require_api_key)])
 def api_list_jobs():
     return list_jobs()
+
+
+@app.post("/api/v1/jobs/{job_id}/placement", dependencies=[Depends(require_api_key)])
+def api_get_job_placement(job_id: str, req: PlacementQuery):
+    return get_job_placement(job_id, req)
 
 
 @app.get("/api/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])

@@ -4,3 +4,11 @@
 #
 #   venv/bin/pip install -r requirements-dev.txt
 pytest
+httpx
+
+# Syntax-checks static/*.js (see tests/test_static_js.py). There is no node in
+# this project and no build step, so without this nothing ever parses the
+# browser code before a user's browser does. Builds from source, which takes a
+# few minutes on a Pi — the JS test skips itself if it is missing, so it is
+# optional if you are only touching Python.
+quickjs
