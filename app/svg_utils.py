@@ -20,6 +20,25 @@ LAYERLESS_LABEL = "Layerless elements"
 
 PX_PER_MM = 96.0 / 25.4
 
+# How finely vpype flattens curves when all we want is a bounding box.
+#
+# This is a measurement-only setting and it cannot reach the plot: the machine
+# is driven by pyaxidraw reading the SVG itself (plot_worker._run_stage), which
+# does its own flattening, and the one vpype pass that *does* affect what gets
+# drawn — the optional Optimize SVG step — is a separate CLI invocation with
+# its own tolerance that this does not touch.
+#
+# It matters enormously for curves. A 2.36MB drawing of cubic beziers flattened
+# at 0.1 expands to 102 million points and peaks at 2.69GB of RSS, which on a
+# 3.7GB Pi already running a browser is a crash rather than a slow measurement.
+# At 1.0 the same file takes 380MB and 23s instead of 2.69GB and 55s.
+#
+# And it costs nothing, because vpype resolves shape extremes analytically
+# rather than reading them off the flattened samples: measured across 0.01 to
+# 10.0 on circles, arcs and beziers, the reported bounds are bit-identical.
+# Polyline documents are unaffected either way — they arrive already flat.
+BOUNDS_QUANTIZATION = 1.0
+
 # Absolute CSS length units, as millimetres per unit. Relative units (%, em,
 # ex, ch) aren't resolvable without a rendering context, so they return None
 # and the caller falls back to the viewBox.
@@ -365,7 +384,7 @@ def ink_rect_doc_mm(svg_path: Path,
     os.close(fd)
     try:
         filter_to_layers(svg_path, layer_indices, tmp)
-        bounds = vpype.read_multilayer_svg(str(tmp), quantization=0.1).bounds()
+        bounds = vpype.read_multilayer_svg(str(tmp), quantization=BOUNDS_QUANTIZATION).bounds()
     finally:
         tmp.unlink(missing_ok=True)
     if bounds is None:
@@ -395,7 +414,7 @@ def ink_rects_by_layer(svg_path: Path) -> dict[int, tuple[float, float, float, f
     """
     import vpype
 
-    document = vpype.read_multilayer_svg(str(svg_path), quantization=0.1)
+    document = vpype.read_multilayer_svg(str(svg_path), quantization=BOUNDS_QUANTIZATION)
     # vpype numbers layers by its own rule, not by document order; replicate it
     # to get back to the indices everything else addresses layers by.
     root = etree.parse(str(svg_path)).getroot()

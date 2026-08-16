@@ -79,7 +79,8 @@ def _sandbox_server_state(tmp_path_factory):
 # enough to build once per session. Going bigger sharpens nothing: the failure
 # mode being guarded against is four orders of magnitude wide.
 
-HEAVY_LAYERS = 4
+HEAVY_LABELS = ("outline", "fill", "shading", "accent")
+HEAVY_LAYERS = len(HEAVY_LABELS)
 HEAVY_POLYLINES_PER_LAYER = 900
 HEAVY_POINTS_PER_POLYLINE = 40
 
@@ -94,7 +95,8 @@ def _build_heavy_svg() -> str:
         ' width="92.81583333cm" height="131.25979167cm" viewBox="0 0 3508 4961">',
     ]
     for layer in range(HEAVY_LAYERS):
-        out.append(f'<g inkscape:groupmode="layer" inkscape:label="layer{layer}">')
+        out.append('<g inkscape:groupmode="layer" '
+                   f'inkscape:label="{HEAVY_LABELS[layer]}">')  # digit-free: see CURVY_LABELS
         for i in range(HEAVY_POLYLINES_PER_LAYER):
             phase = (layer * HEAVY_POLYLINES_PER_LAYER + i) * 0.017
             points = []
@@ -117,6 +119,71 @@ def heavy_svg(tmp_path_factory) -> Path:
     least of all a public one."""
     path = tmp_path_factory.mktemp("heavy") / "heavy.svg"
     path.write_text(_build_heavy_svg())
+    return path
+
+
+# Heavy curved document ----------------------------------------------------
+#
+# The polyline fixture above covers hatched exports. It cannot cover curves,
+# and curves are a different cost entirely: a polyline arrives already flat,
+# while a bezier is expanded by whatever reads it. Byte size stops predicting
+# anything — this fixture is smaller than heavy_svg and, at the flattening
+# setting the code used to use, produced 102 million points and 2.69GB of RSS
+# against heavy_svg's 309 thousand and 400MB.
+#
+# That gap is not academic. It is the difference between a measurement and an
+# out-of-memory crash on a 3.7GB board that is also running a browser, and no
+# fixture in the corpus could express it until this one.
+
+CURVY_LABELS = ("ink", "wash", "detail", "signature")
+CURVY_LAYERS = len(CURVY_LABELS)
+CURVY_PATHS_PER_LAYER = 700
+CURVY_SEGMENTS = 14
+
+
+def _build_curvy_svg() -> str:
+    """Flowing cubic beziers — organic pen work, as opposed to hatch fill.
+
+    Deterministic, and genuinely curved: every segment gets two distinct
+    control points, so nothing here is a straight line wearing a C command.
+    """
+    out = [
+        '<svg xmlns="http://www.w3.org/2000/svg"',
+        ' xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"',
+        ' width="92.81583333cm" height="131.25979167cm" viewBox="0 0 3508 4961">',
+    ]
+    for layer in range(CURVY_LAYERS):
+        # Digit-free labels on purpose: vpype derives a layer id from the
+        # first group of digits in the label, so "curves0"/"curves1" would
+        # both become layer 1 and their geometry would merge. Real exports
+        # name layers "White", "Gold", "hatched".
+        out.append('<g inkscape:groupmode="layer" '
+                   f'inkscape:label="{CURVY_LABELS[layer]}">')
+        for i in range(CURVY_PATHS_PER_LAYER):
+            phase = (layer * CURVY_PATHS_PER_LAYER + i) * 0.021
+            x, y = 120.0, 120.0 + layer * 1180 + 300 * math.sin(phase)
+            d = [f"M {x:.3f},{y:.3f}"]
+            for s in range(CURVY_SEGMENTS):
+                t = s / CURVY_SEGMENTS
+                c1x = x + 60 + 40 * math.cos(phase + t * 5.1)
+                c1y = y + 150 * math.sin(phase * 1.7 + t * 4.3)
+                c2x = x + 150 + 50 * math.sin(phase + t * 3.9)
+                c2y = y - 140 * math.cos(phase * 1.3 + t * 6.1)
+                x += 230
+                y += 190 * math.sin(phase + t * 2.7)
+                d.append(f"C {c1x:.3f},{c1y:.3f} {c2x:.3f},{c2y:.3f} {x:.3f},{y:.3f}")
+            out.append('<path fill="none" stroke="#000" stroke-width="0.8" '
+                       f'd="{" ".join(d)}"/>')
+        out.append("</g>")
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+@pytest.fixture(scope="session")
+def curvy_svg(tmp_path_factory) -> Path:
+    """A ~2.4MB, 2,800-path, 39,200-segment bezier document, 4 layers."""
+    path = tmp_path_factory.mktemp("curvy") / "curvy.svg"
+    path.write_text(_build_curvy_svg())
     return path
 
 
@@ -226,5 +293,14 @@ def placement_with_ink(client, job, query, timeout=180.0):
 @pytest.fixture
 def heavy_job(heavy_svg, job_from_svg) -> dict:
     """The heavy document, queued, with all four layers selected."""
-    layers = [{"index": i, "label": f"layer{i}"} for i in range(HEAVY_LAYERS)]
+    layers = [{"index": i, "label": label}
+              for i, label in enumerate(HEAVY_LABELS)]
     return job_from_svg(heavy_svg, layers=layers)
+
+
+@pytest.fixture
+def curvy_job(curvy_svg, job_from_svg) -> dict:
+    """The curved document, queued, with all four layers selected."""
+    layers = [{"index": i, "label": label}
+              for i, label in enumerate(CURVY_LABELS)]
+    return job_from_svg(curvy_svg, layers=layers)

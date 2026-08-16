@@ -19,7 +19,7 @@ wrong change in exactly the way the fix predicts.
 
 ```bash
 venv/bin/pip install -r requirements-dev.txt      # once
-venv/bin/python -m pytest -m "not real" -q        # the everyday one, ~12s
+venv/bin/python -m pytest -m "not real" -q        # the everyday one, ~90s
 venv/bin/python -m pytest -q                      # everything, minutes
 ```
 
@@ -134,6 +134,9 @@ file updated on autopilot is worse than no test, because it looks like coverage.
 | `regen_golden.py` | Rewrites the golden file from current behaviour |
 | `test_placement_engine.py` | Unit specs for `app/placement.py` |
 | `test_placement_scale.py` | What placement *costs* on a document the size of real work |
+| `test_curves.py` | Curve-heavy input: the cost, and why the fix for it is safe |
+| `test_workload.py` | The shared budget that keeps background work off the plotter |
+| `test_estimate.py` | What the time/distance estimate measures, and atomic writes |
 | `test_real_svgs.py` | The suite pointed at whatever is in `real/` (marked `real`) |
 | `test_static_js.py` | Compiles `static/*.js`; runs `effectivePlacement` under quickjs |
 | `test_sandbox.py` | Asserts the suite is not writing to the live plotter's data |
@@ -149,11 +152,38 @@ math right?" and answer it well; they cannot answer "is this still usable?",
 because every cost in the pipeline scales with element count and they have no
 elements.
 
-So there are two heavy lanes. `conftest.py::heavy_svg` builds a ~3MB, 4-layer,
+So there are three heavy lanes. `conftest.py::heavy_svg` builds a ~3MB, 4-layer,
 3,600-polyline document once per session — deterministic, no repo bloat, and
 shaped from the exports that exposed the regression. And `real/` picks up
 whatever you put in it: the markup no fixture author thinks to type, from files
 too large and too personal to commit.
+
+### Curves are not big polylines
+
+`conftest.py::curvy_svg` is the third, and it exists because polyline fixtures
+cannot express the cost of a curve. A polyline arrives already flat; a bezier
+is expanded by whatever reads it, so byte size stops predicting anything:
+
+| | size | after flattening | peak RSS | time |
+|---|---|---|---|---|
+| `heavy_svg` (polylines) | 3.0 MB | 309 thousand points | 400 MB | 9.7 s |
+| `curvy_svg` (beziers) | 2.4 MB | 102 million points | **2.69 GB** | 54.5 s |
+
+The smaller file was 330 times the geometry, and 2.69GB on a 3.7GB board that
+is also running a browser is a crash, not a slow measurement. `test_curves.py`
+holds that fixed and — just as important — holds true the reason the fix is
+safe, which is that `BOUNDS_QUANTIZATION` cannot reach the plot.
+
+These are the slowest tests in the suite (~60s of the ~90s total). `-k "not
+curves"` skips them while you are iterating on something else.
+
+**Do not put digits in a fixture's layer labels.** vpype derives a layer id
+from the first group of digits in `inkscape:label`, so `curves0` and `curves1`
+both become layer 1 and their geometry merges — a per-layer measurement then
+reports one layer's bounds for two. Uploads get this repaired by
+`normalize_layer_structure`; fixtures written by hand do not. Both heavy
+fixtures use word labels (`outline`, `ink`, `wash`) for exactly this reason,
+and `test_curves.py` pins the normalized-collision case.
 
 `test_placement_engine.py` is a different kind of test from the rest of this
 directory. The golden suite asserts only that behaviour hasn't *changed*;
