@@ -359,5 +359,11 @@
   "card.draft_note": "En espera: configúralo y pulsa Poner en cola cuando quieras trazarlo.",
   "apierror.not_a_draft": "Ese trabajo no es un borrador.",
   "library.confirm_delete": "¿Eliminar {name}?",
-  "library.nothing_to_clean": "Nada que limpiar: todos los dibujos están en uso."
+  "library.nothing_to_clean": "Nada que limpiar: todos los dibujos están en uso.",
+  "card.complexity_blocked": "Demasiado complejo para estimar o trazar en esta máquina.",
+  "card.complexity_strokes": "Este dibujo tiene {count} trazos separados.",
+  "card.complexity_gap": "Separación media entre extremos: {mean} mm (mediana {median} mm).",
+  "card.complexity_recommendation": "Pruebe <strong>linemerge</strong> con una tolerancia de <code>{tolerance} mm</code>: puede unir el {percent} % de los extremos. Configúrelo en el panel de optimización; no se ha cambiado nada por usted.",
+  "card.complexity_analyzing": "Calculando qué ajuste ayudaría…",
+  "job.plan_too_complex": "demasiado complejo para estimar"
 }

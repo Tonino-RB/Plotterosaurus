@@ -359,5 +359,11 @@
   "card.draft_note": "保留中 — 設定してから、プロットしたくなったらキューに追加を押します。",
   "apierror.not_a_draft": "そのジョブは下書きではありません。",
   "library.confirm_delete": "{name} を削除しますか？",
-  "library.nothing_to_clean": "整理するものはありません — すべての図面が使用中です。"
+  "library.nothing_to_clean": "整理するものはありません — すべての図面が使用中です。",
+  "card.complexity_blocked": "この機械で見積もり・プロットするには複雑すぎます。",
+  "card.complexity_strokes": "この図面には {count} 本の独立したストロークがあります。",
+  "card.complexity_gap": "ストローク端の平均間隔: {mean} mm (中央値 {median} mm)。",
+  "card.complexity_recommendation": "<strong>linemerge</strong> を許容値 <code>{tolerance} mm</code> で試してください。ストローク端の {percent}% を接続できます。最適化パネルで設定してください。こちらでは何も変更していません。",
+  "card.complexity_analyzing": "有効な設定を計算しています…",
+  "job.plan_too_complex": "複雑すぎて見積もれません"
 }

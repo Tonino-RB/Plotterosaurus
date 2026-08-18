@@ -70,6 +70,7 @@ const cameraTimelapseInterval = $("camera-timelapse-interval");
 const cameraSpeedMultiplier = $("camera-speed-multiplier");
 const cameraOutputFolder = $("camera-output-folder");
 const cameraRcloneTarget = $("camera-rclone-target");
+const cameraRcloneDeleteLocal = $("camera-rclone-delete-local");
 const cameraRtspUrl = $("camera-rtsp-url");
 const cameraHlsUrl = $("camera-hls-url");
 const cameraSettingsMessage = $("camera-settings-message");
@@ -1279,6 +1280,10 @@ async function fetchSvgMeta(job_id, svg_id) {
       height_mm: meta.height_mm,
       viewBox: meta.viewBox || "",
       layers: meta.layers || [],
+      subpath_count: meta.subpath_count,
+      // Present only once a drawing has actually defeated the preview; see
+      // app/svg_complexity.py.
+      complexity: meta.complexity || null,
       text,
     };
   } catch (e) {
@@ -1475,6 +1480,11 @@ function updateCard(card, job) {
   if (IDLE_JOB_STATUSES.includes(job.status) && job.plan_status === "failed") {
     subParts.push(t("job.plan_failed"));
   }
+  // Distinct from "failed": the estimate did not go wrong, it was stopped for
+  // outgrowing the machine. The panel below the header says what to do about it.
+  if (IDLE_JOB_STATUSES.includes(job.status) && job.plan_status === "too_complex") {
+    subParts.push(t("job.plan_too_complex"));
+  }
   card.querySelector(".job-sub").textContent = subParts.join(" · ");
 
   const pill = card.querySelector(".job-status-pill");
@@ -1561,6 +1571,7 @@ function updateCard(card, job) {
   renderStages(card, job);
   renderPlotInfo(card, job);
   renderMachineBoundsWarning(card, job);
+  renderComplexityWarning(card, job);
   // renderLayers rebuilds the layer checkboxes and move buttons from scratch,
   // so the blanket disable pass above (which ran before them) never reached
   // these ones — leaving a plotting job's layers toggleable, with the change
@@ -1686,6 +1697,44 @@ function renderDeltaOverlay(card, job, footprint) {
 // machine profile's bed, the same figure the driver and the jog guards use
 // (see plot_worker.machine_bounds_mm) — so the warning and the actual clip
 // can't disagree about where the machine stops.
+// Shown when the estimate was refused because it outgrew
+// plot_worker.PREVIEW_RSS_LIMIT_MB. Deliberately not a bare failure: the
+// server also works out which linemerge tolerance would bring the drawing back
+// into range (app/svg_complexity.py), and that recommendation is the whole
+// point of the panel. Nothing here changes the drawing — the user applies it
+// themselves from the optimization panel, in beginner or expert mode.
+function renderComplexityWarning(card, job) {
+  const el = card.querySelector(".complexity-warning");
+  if (!el) return;
+  const blocked = job.plan_status === "too_complex";
+  el.hidden = !blocked;
+  if (!blocked) return;
+
+  const ctx = cardCtx.get(job.job_id);
+  const svg = ctx && ctx.svg;
+  const strokes = svg && svg.subpath_count;
+  const c = (svg && svg.complexity) || null;
+
+  const parts = [];
+  parts.push(`<strong>${t("card.complexity_blocked")}</strong>`);
+  if (strokes) parts.push(t("card.complexity_strokes", { count: strokes.toLocaleString() }));
+
+  if (c && c.recommended_tolerance_mm) {
+    parts.push(t("card.complexity_gap", {
+      mean: (c.mean_gap_mm ?? 0).toFixed(2),
+      median: (c.median_gap_mm ?? 0).toFixed(2),
+    }));
+    parts.push(t("card.complexity_recommendation", {
+      tolerance: c.recommended_tolerance_mm,
+      percent: ((c.joinable_fraction ?? 0) * 100).toFixed(1),
+    }));
+  } else {
+    // The analysis runs on a background worker and can land after the refusal.
+    parts.push(t("card.complexity_analyzing"));
+  }
+  el.innerHTML = parts.join(" ");
+}
+
 function renderMachineBoundsWarning(card, job) {
   const el = card.querySelector(".machine-bounds-warning");
   if (!el) return;
@@ -2484,12 +2533,23 @@ async function sendCardUpdate(card, pending) {
   // the machine was never told about. Surface the failure and pull the card
   // back to whatever the server actually holds.
   const errEl = card.querySelector(".job-save-error");
+  const doPatch = () => fetch(`/jobs/${card.dataset.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
   try {
-    const res = await fetch(`/jobs/${card.dataset.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
-    });
+    let res;
+    try {
+      res = await doPatch();
+    } catch (e) {
+      // A dropped/stalled connection (e.g. the Pi's event loop briefly
+      // starved by a heavy vpype run) throws here identically to a real
+      // network outage. It's usually transient, and the fallback below
+      // reverts live user input (revertCardToServer) — worth one retry
+      // before treating the edit as failed.
+      res = await doPatch();
+    }
     if (!res.ok) {
       const msg = await readErr(res);
       if (errEl) {
@@ -3029,6 +3089,7 @@ function applyTopControls() {
     : 0;
   if (active && active.status === "plotting" && active.plotting_started_at && progressTotal > 0) {
     queueProgress.hidden = false;
+    renderProgressTicks(active, cardCtx.get(active.job_id), progressTotal);
     startSharedElapsed(active.plotting_started_at,
                        active.run_elapsed_seconds || 0, progressTotal);
   } else {
@@ -3075,6 +3136,26 @@ function startSharedElapsed(startedAt, bankedSecs, estTotal) {
   };
   render();
   sharedElapsedTimer = setInterval(render, 1000);
+}
+
+// Marks where each layer change falls along the progress bar, at the
+// cumulative share of estTotal the layers before it are expected to take
+// (see layerEstimateSeconds). Skipped entirely if any selected layer's
+// estimate is unavailable, rather than showing marks at the wrong spot.
+function renderProgressTicks(job, ctx, estTotal) {
+  const ticksEl = queueProgress.querySelector(".progress-ticks");
+  const selected = (job.layer_selections || []).filter((s) => s.selected !== false);
+  let cumulative = 0;
+  const marks = [];
+  for (let i = 0; i < selected.length - 1; i++) {
+    const secs = layerEstimateSeconds(job, ctx, selected[i].index);
+    if (secs == null) { marks.length = 0; break; }
+    cumulative += secs;
+    marks.push((cumulative / estTotal) * 100);
+  }
+  ticksEl.innerHTML = marks
+    .map((pct) => `<div class="progress-tick" style="left:${pct}%"></div>`)
+    .join("");
 }
 
 function stopSharedElapsed() {
@@ -3359,6 +3440,7 @@ function applyAppSettings(data) {
     camera_vflip: data.camera_vflip ?? appSettings.camera_vflip,
     camera_output_folder: data.camera_output_folder ?? appSettings.camera_output_folder,
     camera_rclone_target: data.camera_rclone_target ?? appSettings.camera_rclone_target,
+    camera_rclone_delete_local: data.camera_rclone_delete_local ?? appSettings.camera_rclone_delete_local,
     camera_recording_mode_default: data.camera_recording_mode_default ?? appSettings.camera_recording_mode_default,
     camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
     camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
@@ -3704,6 +3786,7 @@ async function openCameraSettings() {
     cameraSpeedMultiplier.value = appSettings.camera_speed_multiplier_default;
     cameraOutputFolder.value = appSettings.camera_output_folder;
     cameraRcloneTarget.value = appSettings.camera_rclone_target || "";
+    cameraRcloneDeleteLocal.checked = !!appSettings.camera_rclone_delete_local;
 
     const statusRes = await fetch("/camera/status");
     if (statusRes.ok) {
@@ -3742,6 +3825,7 @@ async function saveCameraSettings() {
       camera_speed_multiplier_default: parseFloat(cameraSpeedMultiplier.value) || 4,
       camera_output_folder: cameraOutputFolder.value.trim() || "recordings",
       camera_rclone_target: cameraRcloneTarget.value.trim(),
+      camera_rclone_delete_local: cameraRcloneDeleteLocal.checked,
     };
     const res = await fetch("/settings", {
       method: "PATCH",

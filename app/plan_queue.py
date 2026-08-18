@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Iterable
 
-from . import optimize_queue, plot_worker, state, workload
+from . import optimize_queue, plot_worker, state, svg_complexity, workload
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +95,13 @@ def bootstrap_from_state() -> None:
         if job["status"] not in _PLANNABLE:
             continue
         if job.get("plan_status") == "ready" and job.get("estimated_total_seconds"):
+            continue
+        # Never automatically retry a job whose plan already failed. A preview
+        # heavy enough to be killed is heavy enough to have taken the board
+        # down before it was bounded, and the service restarts on failure — so
+        # re-enqueueing here is how one bad drawing became a reboot loop that
+        # survived reboots. A user edit still re-enqueues normally.
+        if job.get("plan_status") in ("too_complex", "failed"):
             continue
         enqueue(job)
 
@@ -222,9 +229,21 @@ def _process(task: _Task) -> None:
 
     svg_path = plot_worker._effective_svg_path(job)
     # One heavy job at a time across all three queues (app/workload.py).
-    with workload.heavy("plan"):
-        estimate = plot_worker.compute_preview(job, svg_path,
-                                               cancel_event=task.cancel_event)
+    try:
+        with workload.heavy("plan"):
+            estimate = plot_worker.compute_preview(job, svg_path,
+                                                   cancel_event=task.cancel_event)
+    except plot_worker.DrawingTooComplex as exc:
+        # The machine cannot measure this drawing, which is also the answer to
+        # whether it can plot it — the plot worker refuses on the same status
+        # rather than re-running the preview to find out again. Start working
+        # out what would make it plottable so the card has something to offer
+        # by the time the user reads it.
+        log.warning("plan_queue: job %s too complex to estimate: %s", task.job_id, exc)
+        svg_complexity.request(svg_path)
+        state.update_job(task.job_id, plan_status="too_complex", plan_error=str(exc))
+        task.ok = False
+        return
 
     if task.cancel_event.is_set():
         return

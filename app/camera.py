@@ -317,6 +317,12 @@ def _rclone_copy(path: Path) -> None:
                        check=True, capture_output=True, text=True, timeout=1800)
     except Exception:
         log.exception("camera: rclone copy failed for %s", path)
+        return
+    if config.CAMERA_RCLONE_DELETE_LOCAL:
+        try:
+            path.unlink()
+        except OSError:
+            log.exception("camera: failed to delete local recording %s after upload", path)
 
 
 # Timelapse snapshot loop -----------------------------------------------------

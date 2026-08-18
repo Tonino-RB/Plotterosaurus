@@ -25,7 +25,8 @@ from lxml import etree
 
 from . import (
     camera, config, ink_cache, notify, optimize_expert_queue, optimize_queue,
-    placement, plan_queue, plot_worker, state, svg_optimize, svg_utils, updates,
+    placement, plan_queue, plot_worker, state, svg_complexity, svg_optimize,
+    svg_utils, updates,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -553,23 +554,44 @@ def library_delete(svg_id: str, variant: Literal["source", "optimized"] = LIBRAR
 
 @app.post("/library/clean")
 def library_clean():
-    """Delete every drawing no job is using. Files a job references survive."""
-    in_use = set(_jobs_by_svg_id())
+    """Delete every drawing no job is using. Files a job references survive.
+
+    Re-checked per file rather than against one snapshot taken up front: this
+    loop can run long enough for a job to be queued against a not-yet-visited
+    svg_id, and a stale "in use" set would let that card's file be deleted out
+    from under it.
+    """
+    kept = 0
     removed = 0
     freed = 0
     for svg_id in sorted(_library_svg_ids()):
-        if svg_id in in_use:
+        if svg_id in _jobs_by_svg_id():
+            kept += 1
             continue
         freed += (_entry_bytes(svg_id, LIBRARY_SOURCE)
                   + _entry_bytes(svg_id, LIBRARY_OPTIMIZED))
         delete_svg_files(svg_id)
         state.drop_upload_meta(svg_id)
         removed += 1
-    return {"ok": True, "removed": removed, "kept": len(in_use), "freed_bytes": freed}
+    return {"ok": True, "removed": removed, "kept": kept, "freed_bytes": freed}
 
 
 _svg_meta_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _SVG_META_CACHE_MAX = 32
+
+
+def _with_complexity(info: dict, path: Path) -> dict:
+    """``info`` plus the complexity analysis, when one exists for this file.
+
+    Merged at response time rather than cached with the rest: the analysis is
+    computed on a worker thread after the fact, so it can arrive later than the
+    parse it belongs to. Only ever *peeked* at — a drawing earns an analysis by
+    defeating the preview (see plan_queue/plot_worker), not by being looked at.
+    """
+    data = svg_complexity.peek(path)
+    if data is None:
+        return info
+    return {**info, "complexity": data}
 
 
 @app.get("/jobs/{job_id}/svg-meta")
@@ -605,7 +627,7 @@ def get_job_svg_meta(job_id: str):
         hit = _svg_meta_cache.get(key)
         if hit is not None:
             _svg_meta_cache.move_to_end(key)
-            return hit
+            return _with_complexity(hit, path)
     try:
         info = svg_utils.parse_layers(path)
     except etree.XMLSyntaxError:
@@ -615,7 +637,7 @@ def get_job_svg_meta(job_id: str):
         _svg_meta_cache.move_to_end(key)
         while len(_svg_meta_cache) > _SVG_META_CACHE_MAX:
             _svg_meta_cache.popitem(last=False)
-    return info
+    return _with_complexity(info, path)
 
 
 # Placement ----------------------------------------------------------------
@@ -929,6 +951,7 @@ class SettingsUpdate(BaseModel):
     camera_vflip: bool | None = None
     camera_output_folder: str | None = None
     camera_rclone_target: str | None = None
+    camera_rclone_delete_local: bool | None = None
     camera_recording_mode_default: Literal["realtime", "timelapse", "sped_up"] | None = None
     camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
     camera_speed_multiplier_default: float | None = Field(None, gt=1.0)

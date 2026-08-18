@@ -359,5 +359,11 @@
   "card.draft_note": "Geparkt — einrichten und dann auf Einreihen drücken, wenn es geplottet werden soll.",
   "apierror.not_a_draft": "Dieser Auftrag ist kein Entwurf.",
   "library.confirm_delete": "{name} löschen?",
-  "library.nothing_to_clean": "Nichts aufzuräumen — jede Zeichnung ist in Verwendung."
+  "library.nothing_to_clean": "Nichts aufzuräumen — jede Zeichnung ist in Verwendung.",
+  "card.complexity_blocked": "Zu komplex, um auf diesem Gerät geschätzt oder geplottet zu werden.",
+  "card.complexity_strokes": "Diese Zeichnung hat {count} einzelne Striche.",
+  "card.complexity_gap": "Durchschnittlicher Abstand zwischen Strichenden: {mean} mm (Median {median} mm).",
+  "card.complexity_recommendation": "Versuchen Sie <strong>linemerge</strong> mit einer Toleranz von <code>{tolerance} mm</code> — damit lassen sich {percent} % der Strichenden verbinden. Im Optimierungsbereich einstellen; es wurde nichts für Sie geändert.",
+  "card.complexity_analyzing": "Ermittle, welche Einstellung helfen würde…",
+  "job.plan_too_complex": "zu komplex zum Schätzen"
 }

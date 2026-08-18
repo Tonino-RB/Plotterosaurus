@@ -359,5 +359,11 @@
   "card.draft_note": "Em espera — configura-o e carrega em Pôr na fila quando quiseres traçar.",
   "apierror.not_a_draft": "Esse trabalho não é um rascunho.",
   "library.confirm_delete": "Eliminar {name}?",
-  "library.nothing_to_clean": "Nada para limpar — todos os desenhos estão em uso."
+  "library.nothing_to_clean": "Nada para limpar — todos os desenhos estão em uso.",
+  "card.complexity_blocked": "Demasiado complexo para estimar ou traçar nesta máquina.",
+  "card.complexity_strokes": "Este desenho tem {count} traços separados.",
+  "card.complexity_gap": "Distância média entre extremidades: {mean} mm (mediana {median} mm).",
+  "card.complexity_recommendation": "Experimente <strong>linemerge</strong> com uma tolerância de <code>{tolerance} mm</code> — pode unir {percent}% das extremidades. Defina-o no painel de otimização; nada foi alterado por si.",
+  "card.complexity_analyzing": "A determinar que definição ajudaria…",
+  "job.plan_too_complex": "demasiado complexo para estimar"
 }

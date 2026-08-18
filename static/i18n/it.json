@@ -359,5 +359,11 @@
   "card.draft_note": "In attesa: configuralo, poi premi Metti in coda quando vuoi tracciarlo.",
   "apierror.not_a_draft": "Quel lavoro non è una bozza.",
   "library.confirm_delete": "Eliminare {name}?",
-  "library.nothing_to_clean": "Niente da pulire — tutti i disegni sono in uso."
+  "library.nothing_to_clean": "Niente da pulire — tutti i disegni sono in uso.",
+  "card.complexity_blocked": "Troppo complesso da stimare o tracciare su questa macchina.",
+  "card.complexity_strokes": "Questo disegno ha {count} tratti separati.",
+  "card.complexity_gap": "Distanza media tra le estremità: {mean} mm (mediana {median} mm).",
+  "card.complexity_recommendation": "Prova <strong>linemerge</strong> con una tolleranza di <code>{tolerance} mm</code>: può unire il {percent}% delle estremità. Impostalo nel pannello di ottimizzazione; non è stato modificato nulla per te.",
+  "card.complexity_analyzing": "Sto calcolando quale impostazione aiuterebbe…",
+  "job.plan_too_complex": "troppo complesso da stimare"
 }

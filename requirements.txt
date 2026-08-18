@@ -10,3 +10,10 @@ vpype
 # its own dependencies. Declared, not pinned — the version vpype settles on is
 # the one this should use.
 lxml
+
+# Imported directly by app/svg_complexity.py, which uses a KD-tree over stroke
+# endpoints to work out which vpype tolerance would bring an unplottable
+# drawing back into range. Same reasoning as lxml above: both already arrive as
+# dependencies of vpype, and relying on that is luck rather than a declaration.
+numpy
+scipy

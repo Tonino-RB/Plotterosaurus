@@ -11,7 +11,7 @@ from pathlib import Path
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import camera, config, notify, optimize_queue, state, svg_utils, workload
+from . import camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,58 @@ _PREVIEW_CACHE_MAX = 20
 # queue both call _run_preview; this lock guarantees only one preview
 # subprocess at a time so they don't fight over cores on the Pi.
 _preview_lock = threading.Lock()
+
+# How much resident memory one preview subprocess may take before it is killed.
+#
+# The estimate is the single most expensive thing this program does: pyaxidraw
+# plans every stroke in pure Python, and on a drawing dense enough it will ask
+# for more memory than the board has. There is no cheap property of an SVG that
+# predicts this -- a 17,110-subpath hatched drawing measured 113MB and 11.5s,
+# while a 10,786-subpath fragment of a generative one measured 810MB and 144s --
+# so it is not a thing to guess at from the document. It is a thing to watch.
+#
+# Watching works because the preview is a subprocess: it can be killed on its
+# own, and killing it costs an estimate rather than the machine. The plot path
+# runs the same preview before it touches any hardware, so this bound protects
+# the plot too -- which matters, because _run_stage runs pyaxidraw *in-process*
+# and an OOM there would take the server down mid-stroke with the pen on paper.
+#
+# 1000MB leaves room on a 3.7GB board for the browser, the camera and whatever
+# else the user is running, and every drawing measured that a person actually
+# wanted to plot came in far below it.
+PREVIEW_RSS_LIMIT_MB = 1000
+
+
+# Resolved once, at module level, so a test can point the watchdog at a
+# stand-in that grows on demand instead of spending ninety seconds growing a
+# real preview past a gigabyte.
+_PREVIEW_RUNNER = Path(__file__).parent / "preview_runner.py"
+
+
+class DrawingTooComplex(RuntimeError):
+    """The preview was killed for exceeding PREVIEW_RSS_LIMIT_MB.
+
+    Distinct from a preview that merely failed: this one says the machine
+    cannot measure this drawing, which is also the answer to whether it can
+    plot it. Raised out of _run_preview so no caller can mistake it for an
+    ordinary "no estimate available" and carry on to the plotter.
+    """
+
+    def __init__(self, peak_mb: float) -> None:
+        super().__init__(f"preview exceeded {PREVIEW_RSS_LIMIT_MB}MB (peaked at {peak_mb:.0f}MB)")
+        self.peak_mb = peak_mb
+
+
+def _proc_rss_mb(pid: int) -> float:
+    """Resident size of ``pid`` in MB, or 0 if it has already gone."""
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError):
+        pass
+    return 0.0
 
 _UPLOAD_DIR_LAZY: Path | None = None
 
@@ -408,7 +460,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
 def _run_preview(preview_svg_path: Path, job: dict,
                  cancel_event: threading.Event | None = None) -> dict | None:
     global _preview_proc
-    runner = Path(__file__).parent / "preview_runner.py"
+    runner = _PREVIEW_RUNNER
     x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
     # Measure the whole drawing, even the part that will not fit.
     #
@@ -444,26 +496,48 @@ def _run_preview(preview_svg_path: Path, job: dict,
     with _preview_lock:
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         _preview_proc = proc
-        watcher: threading.Thread | None = None
-        if cancel_event is not None:
-            def _watch() -> None:
-                # Poll: wake on either cancel_event being set or the proc
-                # finishing on its own. 200ms is fine — preview takes seconds.
-                while not cancel_event.is_set():
-                    if proc.poll() is not None:
-                        return
-                    cancel_event.wait(timeout=0.2)
-                if proc.poll() is None:
+        # One watcher for both jobs. It already had to poll for cancellation, so
+        # reading VmRSS on the same tick costs a file read every 200ms and gives
+        # the memory bound somewhere to live -- see PREVIEW_RSS_LIMIT_MB for why
+        # the bound is measured rather than predicted from the document.
+        too_heavy = threading.Event()
+        peak_mb = 0.0
+
+        def _watch() -> None:
+            nonlocal peak_mb
+            while True:
+                if proc.poll() is not None:
+                    return
+                rss = _proc_rss_mb(proc.pid)
+                if rss > peak_mb:
+                    peak_mb = rss
+                if rss > PREVIEW_RSS_LIMIT_MB:
+                    too_heavy.set()
+                    log.warning("preview: killing subprocess at %.0fMB (limit %dMB)",
+                                rss, PREVIEW_RSS_LIMIT_MB)
                     try:
-                        proc.terminate()
+                        proc.kill()  # kill, not terminate: it is why we are here
                     except Exception:
                         pass
-            watcher = threading.Thread(target=_watch, daemon=True)
-            watcher.start()
+                    return
+                if cancel_event is not None and cancel_event.is_set():
+                    if proc.poll() is None:
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                    return
+                time.sleep(0.2)
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
         try:
             stdout, stderr = proc.communicate()
         finally:
             _preview_proc = None
+
+    if too_heavy.is_set():
+        raise DrawingTooComplex(peak_mb)
 
     if proc.returncode != 0:
         log.warning("preview subprocess exited rc=%s: %s", proc.returncode, stderr.strip())
@@ -682,6 +756,11 @@ def _delta_correction_mm(job: dict, svg_path: Path,
     *un-optimized* source SVG: optimize_svg only simplifies paths, it never
     changes the actual drawn extent in any way that would matter here."""
     layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
+    # The upload path already primed ink_cache for this file (see main.py),
+    # so this is a dict lookup, not a vpype parse — a nudge/jog check that
+    # re-measured the whole document itself is the multi-second delay a user
+    # feels between clicking "confirm" and the carriage actually moving.
+    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
     ink_bounds = svg_utils.ink_bounds_mm(
         svg_path, layer_indices,
         job["paper_width_mm"], job["paper_height_mm"],
@@ -693,6 +772,7 @@ def _delta_correction_mm(job: dict, svg_path: Path,
         transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
         transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
         machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+        rect=cached_rect, rect_known=measured,
     )
     if ink_bounds is None:
         return None  # nothing drawable selected — nothing to protect
@@ -1065,8 +1145,14 @@ def _recompute_live_estimate(job_id: str, token: int) -> None:
             return
 
     svg_path = _effective_svg_path(job)
-    with workload.heavy("live-estimate"):
-        estimate = compute_preview(job, svg_path)
+    try:
+        with workload.heavy("live-estimate"):
+            estimate = compute_preview(job, svg_path)
+    except DrawingTooComplex:
+        # Only ever refines a number on screen. A plot is physically running,
+        # so the estimate simply stays as it was.
+        log.warning("live-estimate: job %s too complex to re-estimate", job_id)
+        return
 
     with _live_estimate_lock:
         if token != _live_estimate_token:
@@ -1631,7 +1717,40 @@ def _run_job(job_id: str) -> None:
                          distance_total_m=None,
                          pen_lifts=None)
 
-        estimate = compute_preview(job, svg_path)
+        # Already known to be unmeasurable: refuse without spending another
+        # minute and another gigabyte rediscovering it. plan_status is reset to
+        # "pending" whenever the job is edited (plan_queue.enqueue), including
+        # when optimization settings change the effective document, so this
+        # cannot latch on a drawing the user has since simplified.
+        if job.get("plan_status") == "too_complex":
+            log.warning("plot: job %s refused, previously measured too complex", job_id)
+            svg_complexity.request(svg_path)
+            state.update_job(
+                job_id, status="failed", resume_path=None,
+                error="This drawing is too complex for this machine to plan. "
+                      "Nothing was sent to the plotter. See the card for which "
+                      "vpype setting would bring it into range.")
+            return
+
+        try:
+            estimate = compute_preview(job, svg_path)
+        except DrawingTooComplex as exc:
+            # This is the one refusal that has to happen here rather than
+            # downstream. _run_stage hands the document to pyaxidraw
+            # *in-process*, so a drawing that cannot be measured inside a
+            # killable subprocess cannot be planned inside the server either —
+            # and there it would take the whole service down mid-stroke, with
+            # the pen still on the paper. Nothing has been sent to the plotter
+            # at this point, and nothing will be.
+            log.warning("plot: job %s too complex to plan: %s", job_id, exc)
+            svg_complexity.request(svg_path)
+            state.update_job(
+                job_id, status="failed", resume_path=None,
+                plan_status="too_complex", plan_error=str(exc),
+                error="This drawing is too complex for this machine to plan. "
+                      "Nothing was sent to the plotter. See the card for which "
+                      "vpype setting would bring it into range.")
+            return
 
         if _cancel_flag.is_set():
             state.update_job(job_id, status="cancelled")

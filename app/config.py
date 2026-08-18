@@ -125,6 +125,9 @@ _SETTINGS: list[_Setting] = [
     # rclone remote:path target for a post-recording `rclone copy`. Empty/None
     # disables cloud sync — Plotterosaurus never stores cloud credentials itself.
     _Setting("camera_rclone_target", str, None),
+    # Delete the local recording once `rclone copy` above confirms success.
+    # Ignored if camera_rclone_target is unset (nothing to confirm against).
+    _Setting("camera_rclone_delete_local", bool, False),
     _Setting("camera_recording_mode_default", str, "realtime",
              lambda v: v in ("realtime", "timelapse", "sped_up")),
     _Setting("camera_timelapse_interval_s_default", float, 5.0, lambda v: v > 0),

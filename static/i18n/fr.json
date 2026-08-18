@@ -359,5 +359,11 @@
   "card.draft_note": "En attente — configure-le, puis appuie sur Mettre en file pour le tracer.",
   "apierror.not_a_draft": "Ce travail n'est pas un brouillon.",
   "library.confirm_delete": "Supprimer {name} ?",
-  "library.nothing_to_clean": "Rien à nettoyer — tous les dessins sont utilisés."
+  "library.nothing_to_clean": "Rien à nettoyer — tous les dessins sont utilisés.",
+  "card.complexity_blocked": "Trop complexe pour être estimé ou tracé sur cette machine.",
+  "card.complexity_strokes": "Ce dessin comporte {count} tracés distincts.",
+  "card.complexity_gap": "Écart moyen entre les extrémités : {mean} mm (médiane {median} mm).",
+  "card.complexity_recommendation": "Essayez <strong>linemerge</strong> avec une tolérance de <code>{tolerance} mm</code> — cela peut relier {percent} % des extrémités. À régler dans le panneau d'optimisation ; rien n'a été modifié pour vous.",
+  "card.complexity_analyzing": "Recherche du réglage qui conviendrait…",
+  "job.plan_too_complex": "trop complexe à estimer"
 }

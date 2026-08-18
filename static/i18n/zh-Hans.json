@@ -359,5 +359,11 @@
   "card.draft_note": "已暂存 — 设置好后，需要绘制时点击加入队列。",
   "apierror.not_a_draft": "该任务不是草稿。",
   "library.confirm_delete": "删除 {name}？",
-  "library.nothing_to_clean": "无需清理 — 所有图纸都在使用中。"
+  "library.nothing_to_clean": "无需清理 — 所有图纸都在使用中。",
+  "card.complexity_blocked": "过于复杂，本机无法估算或绘制。",
+  "card.complexity_strokes": "该图包含 {count} 条独立笔画。",
+  "card.complexity_gap": "笔画端点之间的平均间距：{mean} mm（中位数 {median} mm）。",
+  "card.complexity_recommendation": "请尝试使用容差 <code>{tolerance} mm</code> 的 <strong>linemerge</strong>，可连接 {percent}% 的笔画端点。请在优化面板中设置；系统未替您做任何更改。",
+  "card.complexity_analyzing": "正在计算哪种设置会有帮助…",
+  "job.plan_too_complex": "过于复杂，无法估算"
 }

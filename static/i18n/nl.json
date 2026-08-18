@@ -359,5 +359,11 @@
   "card.draft_note": "Geparkeerd — stel het in en druk op In wachtrij als je wilt plotten.",
   "apierror.not_a_draft": "Die taak is geen concept.",
   "library.confirm_delete": "{name} verwijderen?",
-  "library.nothing_to_clean": "Niets op te ruimen — alle tekeningen zijn in gebruik."
+  "library.nothing_to_clean": "Niets op te ruimen — alle tekeningen zijn in gebruik.",
+  "card.complexity_blocked": "Te complex om op deze machine te schatten of te plotten.",
+  "card.complexity_strokes": "Deze tekening heeft {count} losse lijnen.",
+  "card.complexity_gap": "Gemiddelde afstand tussen lijnuiteinden: {mean} mm (mediaan {median} mm).",
+  "card.complexity_recommendation": "Probeer <strong>linemerge</strong> met een tolerantie van <code>{tolerance} mm</code> — daarmee kan {percent}% van de uiteinden worden verbonden. Stel dit in het optimalisatiepaneel in; er is niets voor u gewijzigd.",
+  "card.complexity_analyzing": "Bezig te bepalen welke instelling zou helpen…",
+  "job.plan_too_complex": "te complex om te schatten"
 }

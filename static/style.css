@@ -208,6 +208,26 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 }
 .job-error-nudge-btn[hidden] { display: none; }
 
+/* Advisory, not a failure: amber rather than the red of .job-error. The plot
+   was refused, but the card goes on to say which setting would make it work,
+   so this reads as guidance rather than a dead end. */
+.complexity-warning {
+  padding: 0.55rem 1rem;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  border-top: 1px solid #fde68a;
+}
+.complexity-warning[hidden] { display: none; }
+.complexity-warning strong { font-weight: 600; }
+.complexity-warning code {
+  background: #fde68a;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
 .job-card.readonly .col-form { opacity: 0.6; }
 
 .visually-hidden {
@@ -408,6 +428,7 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 
 .progress { margin-top: 0.75rem; }
 .progress-bar {
+  position: relative;
   background: var(--border);
   border-radius: 999px;
   overflow: hidden;
@@ -418,6 +439,18 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
   height: 100%;
   width: 0;
   transition: width 0.3s ease;
+}
+.progress-ticks {
+  position: absolute;
+  inset: 0;
+}
+.progress-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--text);
+  opacity: 0.3;
 }
 .progress-time {
   margin-top: 0.4rem;

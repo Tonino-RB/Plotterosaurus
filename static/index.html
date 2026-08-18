@@ -644,6 +644,10 @@
             <span class="field-label" data-i18n="camera.recording.rclone_target_label">rclone target (optional — e.g. gdrive:Plotterosaurus/Recordings)</span>
             <input type="text" id="camera-rclone-target" placeholder="remote:path" />
           </label>
+          <label class="inline-check">
+            <input type="checkbox" id="camera-rclone-delete-local" />
+            <span data-i18n="camera.recording.rclone_delete_local">Delete local recording once the upload to the rclone target is confirmed</span>
+          </label>
         </div>
       </section>
 
@@ -729,7 +733,7 @@
         </div>
       </div>
       <div id="queue-progress" hidden>
-        <div class="progress-bar"><div class="progress-fill"></div></div>
+        <div class="progress-bar"><div class="progress-fill"></div><div class="progress-ticks"></div></div>
         <div class="progress-time"></div>
       </div>
       <div id="top-message" class="muted"></div>
@@ -766,6 +770,7 @@
         <button type="button" class="secondary job-error-nudge-btn" hidden></button>
       </div>
       <div class="job-error job-save-error" hidden></div>
+      <div class="complexity-warning" hidden></div>
       <div class="job-body" hidden>
         <div class="columns">
           <div class="col-preview">

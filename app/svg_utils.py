@@ -39,6 +39,46 @@ PX_PER_MM = 96.0 / 25.4
 # Polyline documents are unaffected either way — they arrive already flat.
 BOUNDS_QUANTIZATION = 1.0
 
+# How many separate strokes a document holds, for reporting only.
+#
+# This deliberately gates nothing. The obvious idea -- refuse anything past N
+# subpaths -- was tried and measured wrong: a real 17,110-subpath hatched
+# drawing previews in 113MB and 11.5s, while a 10,786-subpath fragment of a
+# dense generative one takes 810MB and 144s. Point counts invert the same way
+# (215,200 against ~80,000). No cheap property of the document orders these
+# two correctly, so any threshold drawn here refuses drawings that plot fine.
+#
+# The real bound is measured instead, by watching the preview subprocess and
+# killing it if it grows past plot_worker.PREVIEW_RSS_LIMIT_MB. What the count
+# below is for is telling the user what they are looking at, and giving
+# svg_complexity something to describe.
+_COUNTED_AS_ONE = frozenset(
+    f"{{{SVG_NS}}}{t}" for t in ("polyline", "polygon", "line", "rect", "circle", "ellipse")
+)
+_PATH_TAG = f"{{{SVG_NS}}}path"
+
+
+def count_subpaths(root) -> int:
+    """How many separate pen-down strokes this document holds.
+
+    A subpath, not an element: the drawings that break this machine arrive as a
+    few hundred <path> elements carrying six figures of moveto commands between
+    them, so element counts say nothing useful. Every M/m starts a new stroke,
+    and in path data letters only ever appear as commands, so counting the two
+    characters is exact without tokenizing 7MB of coordinates.
+    """
+    total = 0
+    for el in root.iter():
+        tag = el.tag
+        if not isinstance(tag, str):
+            continue  # comments and PIs
+        if tag == _PATH_TAG:
+            d = el.get("d") or ""
+            total += d.count("M") + d.count("m")
+        elif tag in _COUNTED_AS_ONE:
+            total += 1
+    return total
+
 # Absolute CSS length units, as millimetres per unit. Relative units (%, em,
 # ex, ch) aren't resolvable without a rendering context, so they return None
 # and the caller falls back to the viewBox.
@@ -156,6 +196,9 @@ def parse_layers(svg_path: Path) -> dict:
         "width_mm": width_mm,
         "height_mm": height_mm,
         "has_orphan_content": bool(_top_level_orphans(root)),
+        # Rides along with the parse the caller already paid for; see
+        # count_subpaths for why this number gates estimating and plotting.
+        "subpath_count": count_subpaths(root),
     }
 
 
@@ -468,6 +511,8 @@ def ink_bounds_mm(
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
     machine_auto_rotate: str = placement.AUTO_ROTATE_OFF,
+    rect: tuple[float, float, float, float] | None = None,
+    rect_known: bool = False,
 ) -> tuple[float, float, float, float] | None:
     """Where the *actual drawn geometry* of the given layers lands on the
     page, in mm: (left, top, right, bottom). None if there is nothing
@@ -483,8 +528,16 @@ def ink_bounds_mm(
     needed is px to mm, and the result is a position in document millimetres,
     which is exactly what Placement.doc_mm_rect_to_page consumes. Mixing those
     pixels with user-unit maths inflates every measurement by 96/25.4.
+
+    Pass ``rect`` with ``rect_known=True`` to reuse an already-measured
+    doc-mm rect (e.g. from ink_cache) instead of paying for another vpype
+    parse here — a caller on a hot path (like a mid-plot nudge check) should
+    prefer that over calling this on every request. ``rect_known=False``
+    (the default) always measures fresh, same as before this parameter
+    existed.
     """
-    rect = ink_rect_doc_mm(svg_path, layer_indices)
+    if not rect_known:
+        rect = ink_rect_doc_mm(svg_path, layer_indices)
     if rect is None:
         return None
     root = etree.parse(str(svg_path)).getroot()

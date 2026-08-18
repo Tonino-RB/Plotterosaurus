@@ -305,6 +305,7 @@
   "camera.recording.speed_multiplier_label": "Speed multiplier",
   "camera.recording.output_folder_label": "Output folder (local, on the Pi)",
   "camera.recording.rclone_target_label": "rclone target (optional — e.g. gdrive:Plotterosaurus/Recordings)",
+  "camera.recording.rclone_delete_local": "Delete local recording once the upload to the rclone target is confirmed",
   "camera.recording.record_plot_default": "Record plots by default",
   "camera.stream.title": "Livestream Address",
   "camera.stream.note": "Open these in VLC, OBS, Home Assistant, or any RTSP/HLS-capable client.",
@@ -359,5 +360,11 @@
   "card.draft_note": "Parked — set it up, then press Queue when you want it plotted.",
   "apierror.not_a_draft": "That job isn't a draft.",
   "library.confirm_delete": "Delete {name}?",
-  "library.nothing_to_clean": "Nothing to clean up — every drawing is in use."
+  "library.nothing_to_clean": "Nothing to clean up — every drawing is in use.",
+  "card.complexity_blocked": "Too complex to estimate or plot on this machine.",
+  "card.complexity_strokes": "This drawing has {count} separate strokes.",
+  "card.complexity_gap": "Average gap between stroke ends: {mean} mm (median {median} mm).",
+  "card.complexity_recommendation": "Try <strong>linemerge</strong> with a tolerance of <code>{tolerance} mm</code> — that can join {percent}% of the stroke ends. Set it in the optimization panel; nothing has been changed for you.",
+  "card.complexity_analyzing": "Working out which setting would help…",
+  "job.plan_too_complex": "too complex to estimate"
 }
