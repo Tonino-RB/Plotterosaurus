@@ -11,7 +11,7 @@ from pathlib import Path
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import camera, config, notify, optimize_queue, state, svg_utils
+from . import camera, config, notify, optimize_queue, state, svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -1047,6 +1047,10 @@ def _recompute_live_estimate(job_id: str, token: int) -> None:
     that's more current, checked both before the slow preview subprocess
     runs and after.
     """
+    # This recompute is secondary to the plot actually running — see
+    # app/workload.py for why that also protects what lands on paper.
+    workload.deprioritize()
+
     job = state.get_job(job_id)
     if job is None:
         return
@@ -1061,7 +1065,8 @@ def _recompute_live_estimate(job_id: str, token: int) -> None:
             return
 
     svg_path = _effective_svg_path(job)
-    estimate = compute_preview(job, svg_path)
+    with workload.heavy("live-estimate"):
+        estimate = compute_preview(job, svg_path)
 
     with _live_estimate_lock:
         if token != _live_estimate_token:
@@ -1270,30 +1275,38 @@ def _optimize_cache_key(job: dict) -> str:
         f"ls={int(bool(job.get('optimize_svg_linesimplify', True)))}",
         f"so={int(bool(job.get('optimize_svg_linesort', True)))}",
         f"rl={int(bool(job.get('optimize_svg_reloop', True)))}",
-        f"ml={int(bool(job.get('optimize_svg_min_length', False)))}",
-        f"mlm={float(job.get('optimize_svg_min_length_mm', 1.0)):.4f}",
     ])
 
 
 def _effective_svg_path(job: dict) -> Path:
     """The SVG path to feed to filter_to_layers / transform_to_paper.
 
-    If optimization is enabled and the cached .opt.svg is on disk, that's the
-    one downstream uses. Otherwise we fall back to the raw upload.
+    Beginner mode: if optimization is enabled and the cached .opt.svg is on
+    disk, that's the one downstream uses. Otherwise we fall back to the raw
+    upload.
+
+    Expert mode: the .opt.svg (if any) was produced explicitly by the user
+    via POST /jobs/{id}/optimize-expert/execute, independent of optimize_svg
+    — serve it whenever it exists.
     """
     src = _uploads() / f"{job['svg_id']}.svg"
+    opt_path = src.with_name(f"{job['svg_id']}.opt.svg")
+    if job.get("optimize_mode", "beginner") == "expert":
+        return opt_path if opt_path.exists() else src
     if not job.get("optimize_svg"):
         return src
-    opt_path = src.with_name(f"{job['svg_id']}.opt.svg")
     return opt_path if opt_path.exists() else src
 
 
 def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | None:
-    """Run vpype on ``src_path`` when the job has ``optimize_svg`` enabled.
+    """Run vpype on ``src_path`` when the job is in beginner mode with
+    ``optimize_svg`` enabled.
 
     Return the SVG path the rest of the pipeline should use:
       - the cached/freshly-produced ``.opt.svg`` when optimization ran,
-      - ``src_path`` unchanged when optimization is disabled,
+      - ``src_path`` unchanged when optimization is disabled or the job is in
+        expert mode — expert mode's .opt.svg (if any) was already produced by
+        an explicit Execute click and is never re-run at plot time,
       - ``None`` when optimization failed or the user cancelled — the caller
         should return immediately, the job has already been marked
         ``failed`` / ``cancelled``.
@@ -1304,8 +1317,9 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
     queue calls back and we flip to ``optimizing``.
     """
     job = state.get_job(job_id)
-    if job is None or not job.get("optimize_svg"):
-        return src_path
+    if job is None or job.get("optimize_mode", "beginner") != "beginner" \
+            or not job.get("optimize_svg"):
+        return _effective_svg_path(job) if job is not None else src_path
 
     opt_path = src_path.with_name(f"{job['svg_id']}.opt.svg")
     cache_key = _optimize_cache_key(job)
@@ -1448,12 +1462,25 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             job["paper_width_mm"], job["paper_height_mm"],
             job["margin_top_mm"], job["margin_right_mm"],
             job["margin_bottom_mm"], job["margin_left_mm"],
-            job["fit_content"],
+            # The calibration file's own page size rarely matches the job's
+            # configured paper exactly, so always fit it to the actual sheet
+            # rather than trusting the job's fit_content preference (which is
+            # about the job's own artwork, not this diagnostic overlay).
+            fit_content=True,
             transform_scale=job.get("transform_scale", 1.0),
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
-            machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+            # Reconcile the calibration file's orientation to the job's paper
+            # regardless of the machine-wide auto-rotate setting: any value
+            # other than "off" makes _auto_rotation_deg rotate mismatched
+            # content 90° to match the page, which is what keeps all four
+            # corner marks on a landscape-drawn file lined up with a
+            # portrait-configured (or vice versa) paper. Using config.MACHINE_
+            # AUTO_ROTATE here left this unreconciled whenever that setting
+            # was "off" (the default), which is why only the one corner that
+            # happened to already be in-bounds ever plotted.
+            machine_auto_rotate="portrait",
         )
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:

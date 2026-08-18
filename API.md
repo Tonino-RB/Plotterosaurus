@@ -47,7 +47,7 @@ Adds a new job to the queue. Accepts `multipart/form-data` with two parts:
 
 | Part | Type | Required | Notes |
 |---|---|---|---|
-| `file` | file | yes | The SVG. Must contain at least one Inkscape layer. |
+| `file` | file | yes | The SVG. Must contain at least one Inkscape layer. Maximum 32 MB — a larger body is refused with `413` before anything is written to disk. |
 | `metadata` | text (JSON) | no | Job metadata — see schema below. Omit entirely to use auto-detected defaults. |
 
 #### Metadata schema
@@ -112,6 +112,20 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   "optimize_svg_linesimplify": true,  // Reduce vertex count (Douglas-Peucker).
   "optimize_svg_linesort":     true,  // Reorder lines to cut pen-up travel.
   "optimize_svg_reloop":       true,  // Randomize closed-path start (cosmetic).
+
+  // "beginner" runs the toggles above automatically before each plot.
+  // "expert" instead uses three raw vpype-command boxes below, run manually
+  // from the UI ahead of time — plotting does not re-run vpype for an
+  // expert-mode job. The boxes themselves are a UI-only workflow (see
+  // internal `POST /jobs/{id}/optimize-expert/execute`, not part of this
+  // API); these fields just carry their saved state.
+  "optimize_mode":             "beginner",  // "beginner" | "expert"
+  "optimize_expert_1_enabled": false,
+  "optimize_expert_1_cmd":     "",           // Raw vpype command fragment, e.g. "linesimplify --tolerance 0.1mm"
+  "optimize_expert_2_enabled": false,
+  "optimize_expert_2_cmd":     "",
+  "optimize_expert_3_enabled": false,
+  "optimize_expert_3_cmd":     "",
 
   "layers": [                         // Per-layer overrides keyed by SVG layer index.
     {
@@ -351,6 +365,9 @@ Editable fields:
 | `optimize_svg` | bool | Run the vpype optimization pipeline before planning. |
 | `optimize_svg_tolerance_mm` | number | 0.01–10.0 |
 | `optimize_svg_linemerge`, `optimize_svg_linesimplify`, `optimize_svg_linesort`, `optimize_svg_reloop` | bool | Per-step toggles for the vpype pipeline. |
+| `optimize_mode` | `"beginner"` \| `"expert"` | See the metadata schema above. |
+| `optimize_expert_1_enabled`, `optimize_expert_2_enabled`, `optimize_expert_3_enabled` | bool | |
+| `optimize_expert_1_cmd`, `optimize_expert_2_cmd`, `optimize_expert_3_cmd` | string | Raw vpype command fragment for that box. |
 | `layer_selections` | array | `[{index, label, type?, selected?, pen_name?}]` — drives which layers plot. Entries with `selected: false` are kept in the list (so name/type metadata survives a toggle in the UI) but skipped when planning. |
 
 Returns the full updated job record. **`409 Conflict`** if the job is currently active (`plotting`, `planning`, `paused`, `awaiting_pen_change`, `homing`).

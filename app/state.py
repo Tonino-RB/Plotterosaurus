@@ -36,6 +36,13 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     # optimize/plan phases: the plan-cache fast path never flips the job to
     # `planning`, so it is still reading as queued when the worker picks the
     # flag up (see _run_job / cancel_active).
+    # A job the user has uploaded but not committed to plotting. It sits in the
+    # queue list, fully editable, and the plot worker cannot see it —
+    # next_queued_job matches on "queued" alone, so a draft is skipped by
+    # construction rather than by a check that could be forgotten. The only way
+    # out is the user pressing Queue (see main.queue_job); a draft that is no
+    # longer wanted is deleted, never cancelled, so there is nothing else here.
+    "draft":                {"queued"},
     "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting",
                              "cancelled", "failed"},
     "awaiting_optimize":    {"optimizing", "planning", "plotting", "cancelled", "failed"},
@@ -84,6 +91,19 @@ _queue: list[dict] = []
 # that may reference it. Persisted in state.json so a service restart can tell
 # whether the on-disk .opt.svg still matches the settings it was produced with.
 _svgs: dict[str, dict] = {}
+# svg_id -> {"filename": str, "uploaded_at": float, "pre_optimized": bool,
+#            "derived_from": str | None}
+# What the uploads folder holds, independently of whether a job still points at
+# it. Kept separate from _svgs above rather than folded into it: that one tracks
+# an optimize run and is cleared when the run is cancelled (clear_svg_status),
+# which would take the original filename with it — and the filename is the only
+# thing that makes a library row readable, since the file on disk is named after
+# an 8-character uuid fragment.
+#
+# `derived_from` marks a copy promoted out of a parent's .opt.svg (see
+# main._promote_optimized), so a second promotion of the same parent reuses it
+# instead of copying the file again.
+_uploads_meta: dict[str, dict] = {}
 _active_id: str | None = None
 # Sticky version of _active_id: sees the same job IDs but never reverts to
 # None when a run ends. Lets the frontend keep showing the delta overlay
@@ -233,6 +253,23 @@ def _load_from_disk() -> None:
                 "updated_at": float(entry.get("updated_at") or 0.0),
             }
 
+    # Reload upload metadata, dropping anything whose file has gone. A missing
+    # entry is survivable (the library falls back to showing the svg_id), a
+    # stale one is not — it would advertise a file that cannot be selected.
+    raw_uploads = data.get("uploads") or {}
+    if isinstance(raw_uploads, dict):
+        for svg_id, entry in raw_uploads.items():
+            if not isinstance(entry, dict):
+                continue
+            if not (UPLOAD_DIR / f"{svg_id}.svg").exists():
+                continue
+            _uploads_meta[svg_id] = {
+                "filename": str(entry.get("filename") or ""),
+                "uploaded_at": float(entry.get("uploaded_at") or 0.0),
+                "pre_optimized": bool(entry.get("pre_optimized")),
+                "derived_from": entry.get("derived_from") or None,
+            }
+
     log.info("state: loaded %d job(s) from %s", len(_queue), STATE_PATH)
 
 
@@ -247,7 +284,9 @@ def _persist() -> None:
     with _persist_lock:
         try:
             tmp = STATE_PATH.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"queue": _queue, "svgs": _svgs}, indent=2) + "\n")
+            tmp.write_text(json.dumps(
+                {"queue": _queue, "svgs": _svgs, "uploads": _uploads_meta},
+                indent=2) + "\n")
             os.replace(tmp, STATE_PATH)
         except Exception:
             log.exception("state: failed to persist %s", STATE_PATH)
@@ -486,6 +525,34 @@ def clear_svg_status(svg_id: str) -> None:
 def get_svg_status(svg_id: str) -> dict | None:
     e = _svgs.get(svg_id)
     return dict(e) if e else None
+
+
+# Upload metadata ----------------------------------------------------------
+
+def set_upload_meta(svg_id: str, filename: str, *,
+                    pre_optimized: bool = False,
+                    derived_from: str | None = None) -> None:
+    _uploads_meta[svg_id] = {
+        "filename": filename,
+        "uploaded_at": time.time(),
+        "pre_optimized": pre_optimized,
+        "derived_from": derived_from,
+    }
+    _persist()
+
+
+def get_upload_meta(svg_id: str) -> dict | None:
+    e = _uploads_meta.get(svg_id)
+    return dict(e) if e else None
+
+
+def all_upload_meta() -> dict[str, dict]:
+    return {k: dict(v) for k, v in _uploads_meta.items()}
+
+
+def drop_upload_meta(svg_id: str) -> None:
+    if _uploads_meta.pop(svg_id, None) is not None:
+        _persist()
 
 
 def next_queued_job() -> dict | None:

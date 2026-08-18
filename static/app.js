@@ -76,6 +76,11 @@ const cameraSettingsMessage = $("camera-settings-message");
 const jobCardTemplate = $("job-card-template");
 const queueProgress = $("queue-progress");
 
+// Jobs the plot worker is not touching: editable, and planned in the
+// background so the estimate is ready before they are committed. A draft
+// behaves exactly like a queued job in every respect except being runnable.
+const IDLE_JOB_STATUSES = ["draft", "queued"];
+
 function statusLabel(key) {
   return t(`status.${key}`);
 }
@@ -94,8 +99,9 @@ let appSettings = {
   optimize_svg_linesimplify_default: true,
   optimize_svg_linesort_default: true,
   optimize_svg_reloop_default: true,
-  optimize_svg_min_length_default: false,
-  optimize_svg_min_length_mm_default: 1.0,
+  optimize_expert_1_cmd_default: "",
+  optimize_expert_2_cmd_default: "",
+  optimize_expert_3_cmd_default: "",
   display_unit: null,
 };
 
@@ -241,33 +247,31 @@ function handleDroppedFiles(fileList) {
   for (const f of ok) uploadAndQueue(f);
 }
 
-async function uploadAndQueue(file) {
-  const label = dropZone.querySelector("span");
-  uploadError.hidden = true;
-  uploadError.textContent = "";
-  dropZone.classList.add("loading");
-  label.textContent = t("upload.processing", { name: file.name });
-  const fd = new FormData();
-  fd.append("file", file);
-  try {
-    const res = await fetch("/upload", { method: "POST", body: fd });
-    if (!res.ok) throw new Error(await readErr(res));
-    const svg = await res.json();
+// The job a document should become, with every field at its configured
+// default. Shared by a fresh drop and a library pick — those two used to be one
+// code path because only one existed, and letting them diverge would mean a
+// drawing behaves differently depending on which way it entered the queue.
+//
+// `svg` is the payload from /upload or /library/select; both return the same
+// shape (id, filename, layers, width_mm, height_mm), which is why one function
+// can serve both.
+function buildJobPayload(svg, fallbackName) {
+  // Select all layers: on a fresh upload that means a clean start, and on a
+  // library pick it means the drawing arrives whole rather than inheriting a
+  // selection from whatever job last used it.
+  const layer_selections = svg.layers.map((l) => ({ index: l.index, label: l.label }));
 
-    // Auto-fill layer selections: select all layers on a fresh upload so
-    // re-dropping the same file gives a clean reset, regardless of labels.
-    // (A layerless SVG is rejected by /upload itself, so this is never empty.)
-    const layer_selections = svg.layers.map((l) => ({ index: l.index, label: l.label }));
+  // Auto-detect paper
+  const detected = detectPaper(svg.width_mm, svg.height_mm);
+  const { w, h } = applyMachineAutoRotate(computePaperDims(detected.preset, detected.orientation,
+    svg.width_mm || 210, svg.height_mm || 297));
 
-    // Auto-detect paper
-    const detected = detectPaper(svg.width_mm, svg.height_mm);
-    const portraitDims = PAPER_SIZES[detected.preset];
-    const { w, h } = applyMachineAutoRotate(computePaperDims(detected.preset, detected.orientation,
-      svg.width_mm || 210, svg.height_mm || 297));
-
-    const jobReq = {
+  return {
       svg_id: svg.id,
-      filename: svg.filename || file.name,
+      filename: svg.filename || fallbackName || "upload.svg",
+      // Set when the source is a copy promoted out of a .opt.svg. The server
+      // forces optimize_svg off for it; the card locks the panel to match.
+      pre_optimized: !!svg.pre_optimized,
       layer_selections,
       pause_between_layers: appSettings.pause_between_layers_default,
       pause_after_job: appSettings.pause_after_job_default,
@@ -298,17 +302,41 @@ async function uploadAndQueue(file) {
       optimize_svg_linesimplify: appSettings.optimize_svg_linesimplify_default,
       optimize_svg_linesort: appSettings.optimize_svg_linesort_default,
       optimize_svg_reloop: appSettings.optimize_svg_reloop_default,
-      optimize_svg_min_length: appSettings.optimize_svg_min_length_default,
-      optimize_svg_min_length_mm: appSettings.optimize_svg_min_length_mm_default,
-    };
-    const jobRes = await fetch("/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(jobReq),
-    });
-    if (!jobRes.ok) throw new Error(await readErr(jobRes));
-    // The card gets created when the WebSocket state update arrives;
-    // createCardForJob will fetch the SVG text via /svg/{id} itself.
+      // Expert mode always starts off for a new job; only the boxes' last-typed
+      // text is remembered (see config.OPTIMIZE_EXPERT_*_CMD_DEFAULT).
+      optimize_mode: "beginner",
+      optimize_expert_1_cmd: appSettings.optimize_expert_1_cmd_default,
+      optimize_expert_2_cmd: appSettings.optimize_expert_2_cmd_default,
+      optimize_expert_3_cmd: appSettings.optimize_expert_3_cmd_default,
+  };
+}
+
+// POST the job. The server parks it as a draft (see main.create_job) — the card
+// appears via the WebSocket broadcast, and createCardForJob fetches the document
+// itself, so there is nothing to insert here.
+async function createJobFromSvg(svg, fallbackName) {
+  const res = await fetch("/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildJobPayload(svg, fallbackName)),
+  });
+  if (!res.ok) throw new Error(await readErr(res));
+  return res.json();
+}
+
+async function uploadAndQueue(file) {
+  const label = dropZone.querySelector("span");
+  uploadError.hidden = true;
+  uploadError.textContent = "";
+  dropZone.classList.add("loading");
+  label.textContent = t("upload.processing", { name: file.name });
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const res = await fetch("/upload", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await readErr(res));
+    await createJobFromSvg(await res.json(), file.name);
+    loadLibrary();   // the drawing is on disk now, so it has a library row
   } catch (e) {
     uploadError.textContent = t("upload.failed", { message: e.message });
     uploadError.hidden = false;
@@ -317,6 +345,198 @@ async function uploadAndQueue(file) {
     label.textContent = t("upload.drop_hint");
   }
 }
+
+// ───── Library ───────────────────────────────────────────────────────────
+//
+// The uploads folder, made addressable. Every drawing ever uploaded stays on
+// disk after its job is deleted and nothing reclaimed it, so the folder only
+// grew. Rather than sweep it automatically — it holds the user's own artwork,
+// and deleting that to save space is the wrong default — it is shown, and the
+// decisions are theirs: replot a previous drawing, delete one, or empty
+// everything nothing is using.
+//
+// A drawing with a cached optimization appears twice, as the original and as
+// the optimized copy, because the two plot differently. Picking the optimized
+// row promotes it server-side into a source of its own (see
+// main._promote_optimized), so nothing below has to know variants exist beyond
+// naming one in the request.
+
+const libraryList = $("library-list");
+const libraryUsage = $("library-usage");
+const libraryCleanBtn = $("library-clean");
+let libraryEntries = [];
+let libraryBusy = false;
+
+function formatBytes(n) {
+  if (!n) return "0 kB";
+  const mb = n / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} kB`;
+}
+
+async function loadLibrary() {
+  try {
+    const res = await fetch("/library");
+    if (!res.ok) return;
+    const body = await res.json();
+    libraryEntries = body.entries || [];
+    libraryUsage.textContent = t("library.usage", {
+      total: formatBytes(body.total_bytes),
+      free: formatBytes(body.reclaimable_bytes),
+    });
+    libraryCleanBtn.disabled = !body.reclaimable_bytes;
+    renderLibrary();
+  } catch (e) {
+    // A library that won't load is not worth an error banner over the drop
+    // zone — the drop zone itself still works, which is the important half.
+    console.warn("library fetch failed", e);
+  }
+}
+
+function renderLibrary() {
+  libraryList.innerHTML = "";
+  if (!libraryEntries.length) {
+    const li = document.createElement("li");
+    li.className = "library-empty";
+    li.textContent = t("library.empty");
+    libraryList.appendChild(li);
+    return;
+  }
+  for (const e of libraryEntries) {
+    // A promoted copy of another row's optimized variant (see
+    // main._promote_optimized) is an internal snapshot, not a drawing the
+    // user separately added — listing it here read as a new file silently
+    // appearing every time the original "optimized" row was loaded.
+    if (e.derived_from) continue;
+    const li = document.createElement("li");
+    li.dataset.svgId = e.svg_id;
+    li.dataset.variant = e.variant;
+    const badges = [];
+    if (e.variant === "optimized") {
+      badges.push(`<span class="library-badge" title="${escapeHtml(t("library.optimized_title"))}">${escapeHtml(t("library.optimized"))}</span>`);
+    }
+    if (e.in_use) {
+      badges.push(`<span class="library-badge in-use" title="${escapeHtml(t("library.in_use_title"))}">${escapeHtml(t("library.in_use"))}</span>`);
+    }
+    li.innerHTML = `
+      <span class="library-name" title="${escapeHtml(e.filename)}">${escapeHtml(e.filename)}</span>
+      ${badges.join("")}
+      <span class="library-meta">${escapeHtml(formatBytes(e.size_bytes))}</span>
+      <span class="library-actions">
+        <button type="button" class="icon-btn library-add" title="${escapeHtml(t("library.add"))}" data-i18n-title="library.add">+</button>
+        <button type="button" class="icon-btn library-del" title="${escapeHtml(t("library.delete_title"))}" data-i18n-title="library.delete_title">✕</button>
+      </span>`;
+    libraryList.appendChild(li);
+  }
+}
+
+// Delegated once, so re-rendering rows never stacks duplicate listeners.
+libraryList.addEventListener("click", async (ev) => {
+  const li = ev.target.closest("li[data-svg-id]");
+  if (!li || libraryBusy) return;
+  const svg_id = li.dataset.svgId;
+  const variant = li.dataset.variant;
+  const entry = libraryEntries.find((e) => e.svg_id === svg_id && e.variant === variant);
+
+  if (ev.target.closest(".library-del")) {
+    if (!confirm(t("library.confirm_delete", { name: entry ? entry.filename : svg_id }))) return;
+    await libraryAction(() => fetch(`/library/${svg_id}?variant=${variant}`, { method: "DELETE" }));
+    return;
+  }
+  if (ev.target.closest(".library-add")) {
+    await libraryAction(async () => {
+      const res = await fetch("/library/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ svg_id, variant }),
+      });
+      if (!res.ok) return res;
+      const svg = await res.json();
+      // Re-adding a drawing that's already sitting untouched as a draft
+      // shouldn't spawn a second copy of it — jump to the existing one
+      // instead of piling up duplicate cards for the same load.
+      const existing = serverState.queue.find((j) => j.svg_id === svg.id && j.status === "draft");
+      if (existing) {
+        const card = queueList.querySelector(`[data-id="${existing.job_id}"]`);
+        if (card) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+          card.classList.add("card-highlight");
+          setTimeout(() => card.classList.remove("card-highlight"), 1200);
+        }
+      } else {
+        await createJobFromSvg(svg);
+      }
+      return res;
+    });
+  }
+});
+
+// One place for the shared shape of every library mutation: block re-entry,
+// surface a failure where the user is looking, and refresh the list either way.
+async function libraryAction(run) {
+  libraryBusy = true;
+  try {
+    const res = await run();
+    if (res && !res.ok) {
+      uploadError.textContent = t("library.action_failed", { message: await readErr(res) });
+      uploadError.hidden = false;
+    } else {
+      uploadError.hidden = true;
+      uploadError.textContent = "";
+    }
+  } catch (e) {
+    uploadError.textContent = t("library.action_failed", { message: e.message });
+    uploadError.hidden = false;
+  } finally {
+    libraryBusy = false;
+    loadLibrary();
+  }
+}
+
+// Clean-up confirm. Modelled on the shutdown modal rather than the dirty-update
+// one: a destructive folder operation wants its result reported in place.
+const libraryCleanModal = $("library-clean-modal");
+const libraryCleanNote = $("library-clean-note");
+const libraryCleanCancel = $("library-clean-cancel");
+const libraryCleanConfirm = $("library-clean-confirm");
+const libraryCleanMessage = $("library-clean-message");
+
+function closeLibraryClean() { libraryCleanModal.hidden = true; }
+
+libraryCleanBtn.addEventListener("click", () => {
+  const spare = libraryEntries.filter((e) => !e.in_use);
+  const bytes = spare.reduce((n, e) => n + e.size_bytes, 0);
+  libraryCleanMessage.textContent = "";
+  libraryCleanMessage.className = "muted";
+  libraryCleanConfirm.disabled = !spare.length;
+  libraryCleanCancel.disabled = false;
+  libraryCleanNote.textContent = spare.length
+    ? t("library.clean_confirm", { count: spare.length, size: formatBytes(bytes) })
+    : t("library.nothing_to_clean");
+  libraryCleanModal.hidden = false;
+});
+libraryCleanCancel.addEventListener("click", closeLibraryClean);
+libraryCleanModal.addEventListener("click", (e) => {
+  if (e.target === libraryCleanModal) closeLibraryClean();
+});
+libraryCleanConfirm.addEventListener("click", async () => {
+  libraryCleanConfirm.disabled = true;
+  libraryCleanCancel.disabled = true;
+  try {
+    const res = await fetch("/library/clean", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    const body = await res.json();
+    libraryCleanMessage.textContent = t("library.cleaned", {
+      count: body.removed, size: formatBytes(body.freed_bytes),
+    });
+    loadLibrary();
+  } catch (e) {
+    libraryCleanMessage.textContent = t("library.action_failed", { message: e.message });
+    libraryCleanMessage.className = "error";
+  } finally {
+    libraryCleanCancel.disabled = false;
+  }
+});
 
 function detectPaper(w_mm, h_mm) {
   if (!w_mm || !h_mm) return { preset: "A4", orientation: "portrait" };
@@ -533,6 +753,7 @@ function fetchPlacement(card, job, { wantInk }, onReady) {
         }
         fresh.ink = body.ink;          // null = nothing plottable in this document
         fresh.inkKey = key;
+        fresh.layerLengthsMm = body.layer_lengths_mm || null;
       } else {
         fresh.placement = body;
         fresh.placementKey = key;
@@ -674,7 +895,7 @@ function previewStatusKey(job, ctx) {
     if (svgInfo.status === "optimizing") return "preview.status.optimizing";
     if (svgInfo.status === "pending") return "preview.status.queued_optimize";
   }
-  if (job.status === "queued") {
+  if (IDLE_JOB_STATUSES.includes(job.status)) {
     if (job.plan_status === "planning") return "preview.status.estimating";
     if (job.plan_status === "pending") return "preview.status.queued_estimate";
   }
@@ -820,10 +1041,9 @@ function createCardForJob(job) {
   card.querySelector(".optimize-linesort").checked = job.optimize_svg_linesort !== false;
   card.querySelector(".optimize-reloop").checked = job.optimize_svg_reloop !== false;
   card.querySelector(".optimize-tolerance").value = (job.optimize_svg_tolerance_mm ?? 0.10).toFixed(2);
-  card.querySelector(".optimize-min-length").checked = !!job.optimize_svg_min_length;
-  card.querySelector(".optimize-min-length-mm").value = (job.optimize_svg_min_length_mm ?? 1.0).toFixed(2);
-  card.querySelector(".optimize-min-length-options").hidden = !job.optimize_svg_min_length;
   applyOptimizeEnabledStyle(card);
+  applyOptimizeMode(card, job);
+  resumeOptimizeExpertStatus(card, job);
 
   // Clicking the card header toggles expansion; action buttons stop propagation.
   card.querySelector(".job-card-head").addEventListener("click", () => toggleCardExpanded(card));
@@ -834,6 +1054,7 @@ function createCardForJob(job) {
   card.querySelector(".job-move-up").addEventListener("click", () => moveJob(job.job_id, -1));
   card.querySelector(".job-move-down").addEventListener("click", () => moveJob(job.job_id, +1));
   card.querySelector(".job-requeue").addEventListener("click", () => requeueJob(job.job_id));
+  card.querySelector(".job-queue-btn").addEventListener("click", () => queueJob(job.job_id));
   card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
     nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
   );
@@ -892,17 +1113,46 @@ function createCardForJob(job) {
       queueCardUpdate(card);
     }));
   card.querySelector(".optimize-tolerance").addEventListener("change", () => queueCardUpdate(card));
-  card.querySelector(".optimize-min-length").addEventListener("change", () => {
-    card.querySelector(".optimize-min-length-options").hidden = !card.querySelector(".optimize-min-length").checked;
-    queueCardUpdate(card);
+  card.querySelector(".optimize-mode").querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setSegmentedValue(card.querySelector(".optimize-mode"), btn.dataset.val);
+      card.querySelector(".optimize-beginner-panel").hidden = btn.dataset.val === "expert";
+      card.querySelector(".optimize-expert-panel").hidden = btn.dataset.val !== "expert";
+      queueCardUpdate(card);
+    });
   });
-  card.querySelector(".optimize-min-length-mm").addEventListener("change", () => queueCardUpdate(card));
+  for (const n of [1, 2, 3]) {
+    const enabledEl = card.querySelector(`.optimize-expert-${n}-enabled`);
+    const cmdEl = card.querySelector(`.optimize-expert-${n}-cmd`);
+    enabledEl.addEventListener("change", () => {
+      cmdEl.disabled = !enabledEl.checked;
+      queueCardUpdate(card);
+    });
+    cmdEl.addEventListener("input", () => {
+      autoGrowTextarea(cmdEl);
+      queueCardUpdate(card);
+    });
+  }
+  card.querySelector(".optimize-expert-execute").addEventListener("click", () => runOptimizeExpert(card));
   [card.querySelector(".speed-pendown"),
    card.querySelector(".speed-penup"),
    card.querySelector(".accel"),
    card.querySelector(".pen-pos-up"),
    card.querySelector(".pen-pos-down")]
-    .forEach((el) => el.addEventListener("change", () => queueCardUpdate(card)));
+    .forEach((el) => el.addEventListener("change", () => {
+      // While the job is actively plotting (speed/accel/pen height) or
+      // paused at a pen-change (pen height), the "input" listeners below
+      // already pushed this value live and it's already persisted
+      // server-side (see applyLiveSetting/applyLivePenHeight and
+      // set_live_plot_settings/set_live_pen_heights). A full-form PATCH here
+      // would just hit the "can't edit an active job" guard and surface a
+      // spurious save-failed error for a value that in fact did apply.
+      const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+      const isPenHeight = el.classList.contains("pen-pos-up") || el.classList.contains("pen-pos-down");
+      if (job && job.job_id === serverState.active_id &&
+          (job.status === "plotting" || (isPenHeight && job.status === "awaiting_pen_change"))) return;
+      queueCardUpdate(card);
+    }));
   // While this card's job is paused between layers, dragging the pen height
   // also live-moves the physical pen (debounced) so the user can see/feel
   // the new height, the same way the camera picture sliders push live.
@@ -1036,6 +1286,27 @@ async function fetchSvgMeta(job_id, svg_id) {
   }
 }
 
+// Re-fetch a card's effective SVG (whatever GET /jobs/{id}/svg now resolves
+// to) and redraw the preview/layers/card from it. Used both when beginner
+// mode's background optimize settles (see updateCard) and when an
+// expert-mode Execute finishes (see runOptimizeExpert) — either way the
+// document on disk changed out from under the already-rendered preview.
+function reloadCardSvg(card, job) {
+  return fetchSvgMeta(job.job_id, job.svg_id).then((meta) => {
+    if (!meta) return;
+    const ctx = cardCtx.get(job.job_id);
+    if (ctx) ctx.svg = meta;
+    // renderPreview only injects ctx.svg.text into the DOM once (guarded by
+    // data-rendered); clear that so the upgraded content actually replaces
+    // the stale markup instead of being ignored.
+    const previewEl = card.querySelector(".svg-preview");
+    if (previewEl) delete previewEl.dataset.rendered;
+    renderPreview(card, job);
+    renderLayers(card, job);
+    updateCard(card, job);
+  });
+}
+
 // Absolute CSS length units in mm per unit. Relative units (%, em, ex) aren't
 // resolvable here, so they return null and the caller falls back to the
 // viewBox. Mirrors parse_dim_to_mm() in app/svg_utils.py.
@@ -1142,7 +1413,11 @@ function updateCard(card, job) {
   ctx.lastSeenStatus = job.status;
 
   const filename = job.filename || "upload.svg";
-  card.querySelector(".job-filename").textContent = job.name || filename;
+  const titleEl = card.querySelector(".job-filename");
+  titleEl.textContent = job.name || filename;
+  // The name is truncated with an ellipsis in CSS so it can never push the
+  // controls out of the card; hover restores it in full.
+  titleEl.title = job.name || filename;
 
   const paperLabel = formatPaperLabel(job);
   const stageCount = job.stages?.length || 0;
@@ -1166,7 +1441,7 @@ function updateCard(card, job) {
   // Surface the SVG-level pre-optimize state on queued cards so the user knows
   // a future "Plot" click won't be instant if their SVG is still in the
   // optimize queue.
-  if (job.status === "queued" && job.optimize_svg) {
+  if (IDLE_JOB_STATUSES.includes(job.status) && job.optimize_svg) {
     const svgInfo = (serverState.svgs || {})[job.svg_id];
     if (svgInfo && svgInfo.status === "optimizing") subParts.push(t("job.optimizing_svg"));
     else if (svgInfo && svgInfo.status === "pending") subParts.push(t("job.waiting_optimize_svg"));
@@ -1184,31 +1459,20 @@ function updateCard(card, job) {
     const effectiveKind = job.optimize_svg && settled ? "optimized" : "raw";
     if (settled && ctx.previewEffectiveKind !== effectiveKind) {
       ctx.previewEffectiveKind = effectiveKind;
-      fetchSvgMeta(job.job_id, job.svg_id).then((meta) => {
-        if (!meta) return;
-        ctx.svg = meta;
-        // renderPreview only injects ctx.svg.text into the DOM once (guarded
-        // by data-rendered); clear that so the upgraded content actually
-        // replaces the stale markup instead of being ignored.
-        const previewEl = card.querySelector(".svg-preview");
-        if (previewEl) delete previewEl.dataset.rendered;
-        renderPreview(card, job);
-        renderLayers(card, job);
-        updateCard(card, job);
-      });
+      reloadCardSvg(card, job);
     } else if (!settled) {
       ctx.previewEffectiveKind = null;
     }
   }
   // And the background-planning state, so the user knows whether the plot
   // click will be instant or still has to compute the estimate.
-  if (job.status === "queued" &&
+  if (IDLE_JOB_STATUSES.includes(job.status) &&
       (job.plan_status === "pending" || job.plan_status === "planning")) {
     subParts.push(job.plan_status === "planning" ? t("job.planning") : t("job.waiting_plan"));
   }
   // A background plan that failed used to be recorded and never shown, so the
   // first sign of trouble was the error after clicking Plot.
-  if (job.status === "queued" && job.plan_status === "failed") {
+  if (IDLE_JOB_STATUSES.includes(job.status) && job.plan_status === "failed") {
     subParts.push(t("job.plan_failed"));
   }
   card.querySelector(".job-sub").textContent = subParts.join(" · ");
@@ -1241,10 +1505,10 @@ function updateCard(card, job) {
 
   // Disable editing when job is active
   const activeBlocks = job.job_id === serverState.active_id &&
-    !["queued", "completed", "failed", "cancelled"].includes(job.status);
+    !["draft", "queued", "completed", "failed", "cancelled"].includes(job.status);
   card.classList.toggle("active", job.job_id === serverState.active_id);
   card.classList.toggle("readonly", activeBlocks);
-  card.querySelectorAll(".col-form input, .col-form select, .col-form button")
+  card.querySelectorAll(".col-form input, .col-form select, .col-form button, .col-form textarea")
     .forEach((el) => { el.disabled = activeBlocks; });
   // The blanket pass above also re-enables the orientation buttons that the
   // machine auto-rotate policy locks (its selector doesn't know about that
@@ -1282,6 +1546,11 @@ function updateCard(card, job) {
     requeueBtn.hidden = !(isTerminal && (job.started_at || job.error));
   }
 
+  // The one way out of `draft`. Shown only on a draft, so a job that is already
+  // queued offers nothing to press.
+  const queueBtn = card.querySelector(".job-queue-btn");
+  if (queueBtn) queueBtn.hidden = job.status !== "draft";
+
   cardCtx.set(job.job_id, ctx);
 
   // Preview + layers + stages + plot-info
@@ -1297,9 +1566,39 @@ function updateCard(card, job) {
   // these ones — leaving a plotting job's layers toggleable, with the change
   // shown as applied while the server refused it. Re-assert the lock now that
   // every control exists.
-  card.querySelectorAll(".col-form input, .col-form select, .col-form button")
+  card.querySelectorAll(".col-form input, .col-form select, .col-form button, .col-form textarea")
     .forEach((el) => { el.disabled = activeBlocks; });
   applyMachineAutoRotateToCard(card, activeBlocks);
+  // Same reason as the two calls above: the blanket pass re-enables everything
+  // it can see, so any lock narrower than "the job is running" has to be
+  // re-asserted after it, every time.
+  applyPreOptimizedLock(card, job);
+}
+
+// A source promoted out of a .opt.svg has already been through vpype. Running
+// linesimplify over already-simplified paths only loses more of the original
+// curve, so the server forces optimize_svg off (main.create_job / update_job)
+// and the beginner panel is locked to match rather than showing a control
+// that silently does nothing. Expert mode is left alone — typing further
+// custom vpype commands on an already-optimized source is still meaningful,
+// and the server only ever forces off optimize_svg, never optimize_mode.
+//
+// Real `disabled` attributes, not the existing `.disabled` class on
+// .optimize-options: that one is `pointer-events: none`, which still allows
+// keyboard focus, and it does not cover the master checkbox — which sits
+// outside .optimize-options — or the section's reset button.
+function applyPreOptimizedLock(card, job) {
+  const section = card.querySelector("[data-section='optimize']");
+  if (!section) return;
+  const locked = !!job.pre_optimized;
+  section.classList.toggle("locked", locked);
+  const note = section.querySelector(".optimize-locked-note");
+  if (note) note.hidden = !locked;
+  const resetBtn = section.querySelector(".card-section-reset");
+  if (resetBtn) resetBtn.disabled = locked;
+  if (!locked) return;
+  section.querySelectorAll(".optimize-beginner-panel input, .optimize-beginner-panel select, .optimize-beginner-panel button")
+    .forEach((el) => { el.disabled = true; });
 }
 
 // The delta (a manual jog for the next job about to start, or an origin
@@ -1468,6 +1767,161 @@ function applyOptimizeEnabledStyle(card) {
   if (opts) opts.classList.toggle("disabled", !on);
 }
 
+// Grows a textarea to fit its content instead of scrolling internally —
+// overflow stays hidden (see .optimize-expert-cmd in style.css) so this is
+// the only thing that ever changes its height.
+function autoGrowTextarea(el) {
+  el.style.height = "auto";
+  el.style.height = el.scrollHeight + "px";
+}
+
+// Beginner vs expert mode: which panel shows, and the expert boxes' content.
+// Called from updateCard, so this also re-syncs after every WebSocket
+// broadcast — safe for the boxes' live text because typing them goes through
+// queueCardUpdate's immediate-update path (see the "input" handler below),
+// which overlays serverState before updateCard ever reads job.* (see
+// cardUpdateUnconfirmed / applyUnconfirmedEdits).
+function applyOptimizeMode(card, job) {
+  const mode = job.optimize_mode === "expert" ? "expert" : "beginner";
+  setSegmentedValue(card.querySelector(".optimize-mode"), mode);
+  card.querySelector(".optimize-beginner-panel").hidden = mode === "expert";
+  card.querySelector(".optimize-expert-panel").hidden = mode !== "expert";
+  for (const n of [1, 2, 3]) {
+    const enabledEl = card.querySelector(`.optimize-expert-${n}-enabled`);
+    const cmdEl = card.querySelector(`.optimize-expert-${n}-cmd`);
+    enabledEl.checked = !!job[`optimize_expert_${n}_enabled`];
+    cmdEl.value = job[`optimize_expert_${n}_cmd`] || "";
+    cmdEl.disabled = !enabledEl.checked;
+    autoGrowTextarea(cmdEl);
+  }
+}
+
+function optimizeExpertUiRefs(card) {
+  return {
+    btn: card.querySelector(".optimize-expert-execute"),
+    spinner: card.querySelector(".optimize-expert-spinner"),
+    statusEl: card.querySelector(".optimize-expert-status"),
+    logEl: card.querySelector(".optimize-expert-log"),
+  };
+}
+
+function setOptimizeExpertStatus(card, msg, isError) {
+  const { statusEl } = optimizeExpertUiRefs(card);
+  statusEl.textContent = msg;
+  statusEl.className = "optimize-expert-status muted" + (isError ? " error" : "");
+}
+
+// Polls GET .../optimize-expert/status on a self-rescheduling setTimeout
+// chain (same shape as startUpdate's tick — waits for each fetch to resolve
+// before scheduling the next, so a slow Pi never piles up overlapping polls)
+// until the run finishes, then reloads the card's preview from the .opt.svg
+// Execute just produced. Also the resume path after a page reload: the run
+// lives in the server's queue, not the browser, so a reload just needs to
+// start polling again, never to re-POST.
+function pollOptimizeExpertStatus(card) {
+  const { btn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const finish = (msg, isError) => {
+    btn.disabled = false;
+    spinner.hidden = true;
+    setOptimizeExpertStatus(card, msg, isError);
+  };
+  const tick = async () => {
+    if (!card.isConnected) return;  // job's card was removed while we polled
+    let d;
+    try {
+      const r = await fetch(`/jobs/${card.dataset.id}/optimize-expert/status`, { cache: "no-store" });
+      if (!r.ok) { setTimeout(tick, 1000); return; }
+      d = await r.json();
+    } catch (e) {
+      setTimeout(tick, 1000);
+      return;
+    }
+    if (d.log) {
+      logEl.textContent = d.log;
+      logEl.hidden = false;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    if (d.status === "running") { setTimeout(tick, 1000); return; }
+    if (d.status === "done") {
+      finish(t("optimize.expert_done"), false);
+      const fresh = serverState.queue.find((j) => j.job_id === card.dataset.id);
+      if (fresh) reloadCardSvg(card, fresh);
+      return;
+    }
+    if (d.status === "error") {
+      finish(t("optimize.expert_failed", { message: d.error || "" }), true);
+    }
+    // "idle" shouldn't normally appear mid-poll; nothing to report if it does.
+  };
+  tick();
+}
+
+async function runOptimizeExpert(card) {
+  const { btn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const boxes = {};
+  for (const n of [1, 2, 3]) {
+    boxes[`optimize_expert_${n}_enabled`] = card.querySelector(`.optimize-expert-${n}-enabled`).checked;
+    boxes[`optimize_expert_${n}_cmd`] = card.querySelector(`.optimize-expert-${n}-cmd`).value;
+  }
+  const hasCommand = [1, 2, 3].some((n) =>
+    boxes[`optimize_expert_${n}_enabled`] && boxes[`optimize_expert_${n}_cmd`].trim());
+  if (!hasCommand) {
+    setOptimizeExpertStatus(card, t("optimize.expert_no_command"), true);
+    return;
+  }
+  btn.disabled = true;
+  spinner.hidden = false;
+  setOptimizeExpertStatus(card, t("optimize.expert_running"), false);
+  logEl.hidden = true;
+  logEl.textContent = "";
+  let res;
+  try {
+    res = await fetch(`/jobs/${card.dataset.id}/optimize-expert/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(boxes),
+    });
+  } catch (e) {
+    btn.disabled = false;
+    spinner.hidden = true;
+    setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: e.message }), true);
+    return;
+  }
+  if (!res.ok) {
+    const msg = await readErr(res);
+    btn.disabled = false;
+    spinner.hidden = true;
+    setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: msg }), true);
+    return;
+  }
+  pollOptimizeExpertStatus(card);
+}
+
+// Called once at card creation. A run started before a page reload keeps
+// going server-side (see app/optimize_expert_queue.py), so the only thing a
+// fresh card is missing is knowing to poll for it.
+async function resumeOptimizeExpertStatus(card, job) {
+  if (job.optimize_mode !== "expert") return;
+  try {
+    const r = await fetch(`/jobs/${card.dataset.id}/optimize-expert/status`, { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.status === "running") {
+      const { btn, spinner } = optimizeExpertUiRefs(card);
+      btn.disabled = true;
+      spinner.hidden = false;
+      setOptimizeExpertStatus(card, t("optimize.expert_running"), false);
+      pollOptimizeExpertStatus(card);
+    } else if (d.status === "done" || d.status === "error") {
+      const { logEl } = optimizeExpertUiRefs(card);
+      if (d.log) { logEl.textContent = d.log; logEl.hidden = false; }
+      setOptimizeExpertStatus(card,
+        d.status === "done" ? t("optimize.expert_done") : t("optimize.expert_failed", { message: d.error || "" }),
+        d.status === "error");
+    }
+  } catch (e) {}
+}
+
 // Keep the master toggle consistent with the sub-options: if all four steps
 // are off, the master can't do anything, so untick it.
 function syncOptimizeMaster(card) {
@@ -1486,10 +1940,6 @@ function resetOptimize(card) {
   card.querySelector(".optimize-reloop").checked = !!appSettings.optimize_svg_reloop_default;
   card.querySelector(".optimize-tolerance").value =
     (appSettings.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
-  card.querySelector(".optimize-min-length").checked = !!appSettings.optimize_svg_min_length_default;
-  card.querySelector(".optimize-min-length-mm").value =
-    (appSettings.optimize_svg_min_length_mm_default ?? 1.0).toFixed(2);
-  card.querySelector(".optimize-min-length-options").hidden = !card.querySelector(".optimize-min-length").checked;
   applyOptimizeEnabledStyle(card);
   queueCardUpdate(card);
 }
@@ -1736,6 +2186,7 @@ function renderLayers(card, job) {
       (ctx.svg.layerColors || {})[sel.index] || null,
       ctx.svg.pageColor || null,
     );
+    const estSecs = layerEstimateSeconds(job, ctx, sel.index);
     li.innerHTML = `
       <label>
         <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} />
@@ -1744,6 +2195,7 @@ function renderLayers(card, job) {
           penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
         }</span>
       </label>
+      ${estSecs != null ? `<span class="layer-time">${escapeHtml(formatHoursMinutes(estSecs))}</span>` : ""}
       <div class="layer-move">
         <button type="button" class="icon-btn layer-move-up" data-index="${sel.index}" ${i === 0 ? "disabled" : ""} title="${t("a11y.move_up")}" data-i18n-title="a11y.move_up">↑</button>
         <button type="button" class="icon-btn layer-move-down" data-index="${sel.index}" ${i === total - 1 ? "disabled" : ""} title="${t("a11y.move_down")}" data-i18n-title="a11y.move_down">↓</button>
@@ -2013,9 +2465,11 @@ async function sendCardUpdate(card, pending) {
     updates.optimize_svg_reloop = card.querySelector(".optimize-reloop").checked;
     const tol = parseFloat(card.querySelector(".optimize-tolerance").value);
     if (isFinite(tol) && tol > 0) updates.optimize_svg_tolerance_mm = tol;
-    updates.optimize_svg_min_length = card.querySelector(".optimize-min-length").checked;
-    const minLen = parseFloat(card.querySelector(".optimize-min-length-mm").value);
-    if (isFinite(minLen) && minLen > 0) updates.optimize_svg_min_length_mm = minLen;
+    updates.optimize_mode = getSegmentedValue(card.querySelector(".optimize-mode"), "beginner");
+    for (const n of [1, 2, 3]) {
+      updates[`optimize_expert_${n}_enabled`] = card.querySelector(`.optimize-expert-${n}-enabled`).checked;
+      updates[`optimize_expert_${n}_cmd`] = card.querySelector(`.optimize-expert-${n}-cmd`).value;
+    }
   }
   Object.assign(updates, pending.explicit);
   // An emptied number field parses to NaN, which JSON-encodes as null — and a
@@ -2052,6 +2506,14 @@ async function sendCardUpdate(card, pending) {
     // and the overlay has nothing left to protect.
     cardUpdateUnconfirmed.delete(card.dataset.id);
     if (errEl) { errEl.hidden = true; errEl.textContent = ""; }
+    // Mirrors app/main.py's _persist_expert_defaults: the server just
+    // remembered this box's text as the next new job's pre-fill, but
+    // appSettings was only fetched once at page load, so a job created right
+    // after this one would otherwise still see the old (or empty) default.
+    for (const n of [1, 2, 3]) {
+      const key = `optimize_expert_${n}_cmd`;
+      if (key in updates) appSettings[`${key}_default`] = updates[key];
+    }
   } catch (e) {
     cardUpdateUnconfirmed.delete(card.dataset.id);
     if (errEl) {
@@ -2064,10 +2526,41 @@ async function sendCardUpdate(card, pending) {
   if (updates.paper_width_mm) updatePreviewTransform(card, { ...job, ...updates });
 }
 
+// A queueCardUpdate edit (e.g. a layer reorder) sits debounced for up to
+// 150ms before its PATCH goes out. Starting the queue reads whatever's on the
+// job record at that instant, so an edit made just before hitting Plot has to
+// land first — otherwise the job can start with the pre-edit order/settings.
+// Any action that immediately reads job state server-side should await this.
+async function flushPendingCardUpdates() {
+  const ids = [...cardUpdateTimers.keys()];
+  await Promise.all(ids.map((id) => {
+    clearTimeout(cardUpdateTimers.get(id));
+    cardUpdateTimers.delete(id);
+    const pending = cardUpdatePending.get(id);
+    cardUpdatePending.delete(id);
+    const card = queueList.querySelector(`[data-id="${id}"]`);
+    return (pending && card) ? sendCardUpdate(card, pending) : Promise.resolve();
+  }));
+}
+
 async function deleteJob(id) {
   const res = await fetch(`/jobs/${id}`, { method: "DELETE" });
   if (!res.ok) {
     topMessage.textContent = t("error.cannot_delete", { message: await readErr(res) });
+    topMessage.className = "error";
+  }
+  // Deleting a job can free its drawing, so an in-use badge may have cleared.
+  loadLibrary();
+}
+
+// Commit a draft to the queue. The card redraws from the broadcast that
+// follows, which is what hides the button.
+async function queueJob(id) {
+  try {
+    const res = await fetch(`/jobs/${id}/queue`, { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+  } catch (e) {
+    topMessage.textContent = t("error.requeue_failed", { message: e.message });
     topMessage.className = "error";
   }
 }
@@ -2125,7 +2618,10 @@ async function moveJob(id, delta) {
 
 // ───── Top-level controls ────────────────────────────────────────────────
 
-plotBtn.addEventListener("click", () => postAction("/queue/start"));
+plotBtn.addEventListener("click", async () => {
+  await flushPendingCardUpdates();
+  postAction("/queue/start");
+});
 pauseBtn.addEventListener("click", () => postAction("/queue/pause"));
 pausePenUpBtn.addEventListener("click", () => postAction("/queue/pause-at-pen-up"));
 resumeBtn.addEventListener("click", () => postAction("/queue/resume"));
@@ -2594,6 +3090,32 @@ function formatDuration(secs) {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// Hours:minutes only, for the compact per-layer estimate in the layer panel
+// (see layerEstimateSeconds) — that number is an approximation, so it isn't
+// worth the width formatDuration's seconds digit costs there.
+function formatHoursMinutes(secs) {
+  const totalMin = Math.round(secs / 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}:${String(m).padStart(2, "0")}`;
+}
+
+// Approximates one layer's share of the job's single simulated estimate by
+// its share of the selected layers' total pen-down distance — cheap (no
+// per-layer simulation) and good enough for an hours:minutes readout. Travel
+// moves and pen-lift overhead aren't split out, so this is directional, not
+// exact.
+function layerEstimateSeconds(job, ctx, layerIndex) {
+  const lengths = ctx && ctx.layerLengthsMm;
+  const total = job.estimated_total_seconds;
+  if (!lengths || total == null) return null;
+  const selected = job.layer_selections.filter((s) => s.selected !== false).map((s) => s.index);
+  if (!selected.includes(layerIndex)) return null;
+  const totalLen = selected.reduce((sum, i) => sum + (lengths[i] || 0), 0);
+  if (!totalLen) return null;
+  return (lengths[layerIndex] || 0) / totalLen * total;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -2751,9 +3273,6 @@ const settingsOptimizeLinesimplify = $("settings-optimize-linesimplify");
 const settingsOptimizeLinesort = $("settings-optimize-linesort");
 const settingsOptimizeReloop = $("settings-optimize-reloop");
 const settingsOptimizeTolerance = $("settings-optimize-tolerance");
-const settingsOptimizeMinLength = $("settings-optimize-min-length");
-const settingsOptimizeMinLengthMm = $("settings-optimize-min-length-mm");
-const settingsOptimizeMinLengthOptions = $("settings-optimize-min-length-options");
 const settingsDisplayUnit = $("settings-display-unit");
 const settingsLanguage = $("settings-language");
 settingsBtn.addEventListener("click", openSettings);
@@ -2807,8 +3326,9 @@ function applyAppSettings(data) {
     optimize_svg_linesimplify_default: data.optimize_svg_linesimplify_default ?? appSettings.optimize_svg_linesimplify_default,
     optimize_svg_linesort_default: data.optimize_svg_linesort_default ?? appSettings.optimize_svg_linesort_default,
     optimize_svg_reloop_default: data.optimize_svg_reloop_default ?? appSettings.optimize_svg_reloop_default,
-    optimize_svg_min_length_default: data.optimize_svg_min_length_default ?? appSettings.optimize_svg_min_length_default,
-    optimize_svg_min_length_mm_default: data.optimize_svg_min_length_mm_default ?? appSettings.optimize_svg_min_length_mm_default,
+    optimize_expert_1_cmd_default: data.optimize_expert_1_cmd_default ?? appSettings.optimize_expert_1_cmd_default,
+    optimize_expert_2_cmd_default: data.optimize_expert_2_cmd_default ?? appSettings.optimize_expert_2_cmd_default,
+    optimize_expert_3_cmd_default: data.optimize_expert_3_cmd_default ?? appSettings.optimize_expert_3_cmd_default,
     display_unit: data.display_unit ?? appSettings.display_unit,
     machine_custom_enabled: data.machine_custom_enabled ?? appSettings.machine_custom_enabled,
     machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
@@ -2855,7 +3375,7 @@ function applyAppSettings(data) {
   // visual lock there.
   cardEls.forEach((card, id) => {
     const job = serverState.queue.find((j) => j.job_id === id);
-    if (job && job.status === "queued") {
+    if (job && IDLE_JOB_STATUSES.includes(job.status)) {
       onPaperChange(card);
     } else {
       applyMachineAutoRotateToCard(card);
@@ -2904,9 +3424,6 @@ async function openSettings() {
     settingsOptimizeLinesort.checked = data.optimize_svg_linesort_default !== false;
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
-    settingsOptimizeMinLength.checked = !!(data.optimize_svg_min_length_default ?? false);
-    settingsOptimizeMinLengthMm.value = (data.optimize_svg_min_length_mm_default ?? 1.0).toFixed(2);
-    settingsOptimizeMinLengthOptions.hidden = !settingsOptimizeMinLength.checked;
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
@@ -2929,7 +3446,6 @@ async function openSettings() {
 async function saveSettings() {
   try {
     const tol = parseFloat(settingsOptimizeTolerance.value);
-    const minLen = parseFloat(settingsOptimizeMinLengthMm.value);
     captureMachineFields();
     const body = {
       machines: machineDraft,
@@ -2948,8 +3464,6 @@ async function saveSettings() {
       optimize_svg_linesimplify_default: settingsOptimizeLinesimplify.checked,
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
-      optimize_svg_min_length_default: settingsOptimizeMinLength.checked,
-      optimize_svg_min_length_mm_default: isFinite(minLen) && minLen > 0 ? minLen : 1.0,
       display_unit: settingsDisplayUnit.value,
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
@@ -3384,9 +3898,6 @@ function resetSettingsOptimize() {
   settingsOptimizeLinesort.checked = true;
   settingsOptimizeReloop.checked = true;
   settingsOptimizeTolerance.value = (0.10).toFixed(2);
-  settingsOptimizeMinLength.checked = false;
-  settingsOptimizeMinLengthMm.value = (1.0).toFixed(2);
-  settingsOptimizeMinLengthOptions.hidden = true;
   applySettingsOptimizeEnabledStyle();
 }
 
@@ -3408,9 +3919,6 @@ settingsOptimize?.addEventListener("change", () => {
 [settingsOptimizeLinemerge, settingsOptimizeLinesimplify,
  settingsOptimizeLinesort, settingsOptimizeReloop]
   .forEach((el) => el?.addEventListener("change", syncSettingsOptimizeMaster));
-settingsOptimizeMinLength?.addEventListener("change", () => {
-  settingsOptimizeMinLengthOptions.hidden = !settingsOptimizeMinLength.checked;
-});
 
 // Wire collapsible sections + reset button inside the Settings modal
 function resetSettingsSpeed() {
@@ -3551,12 +4059,16 @@ function connectWs() {
       updatePenCursor(msg);
     }
   };
+  // Fixed 2s, no backoff: this is a plotter on a LAN with one client, and a
+  // reconnect that lags behind a service restart is more annoying than the
+  // handful of failed opens it costs.
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
 connectWs();
 loadAppSettings();
 loadAppVersion();
 loadUpdateStatus();
+loadLibrary();
 
 async function loadAppVersion() {
   try {
@@ -3587,6 +4099,28 @@ I18N.onLanguageChange(() => {
 
 function renderUpdateStatus(status) {
   updateStatus = status;
+
+  // Self-update is compiled out on this fork (updates._UPDATES_DISABLED), and
+  // the server says so via `enabled`. Without reading it, every field below is
+  // indistinguishable from a healthy "you are up to date" answer — so the
+  // banner, the pill and Check now all stayed live over a feature that can do
+  // nothing, and pressing Check now returned a permanently reassuring result
+  // that meant nothing. Hide the controls; keep the version line, which is
+  // still true and still useful.
+  //
+  // Hidden rather than removed: `updateBanner` is captured once at load and
+  // several handlers bind unconditionally, so removing the nodes would throw.
+  const enabled = !status || status.enabled !== false;
+  const actions = document.querySelector(".settings-update-actions");
+  if (actions) actions.hidden = !enabled;
+  const pillEl = $("settings-update-pill");
+  if (pillEl) pillEl.hidden = !enabled;
+  if (!enabled) {
+    updateBanner.hidden = true;
+    const curOnly = $("settings-current-version");
+    if (curOnly) curOnly.textContent = status ? status.current : "";
+    return;
+  }
 
   // Header banner: only when there's a newer version the user hasn't skipped.
   const show = status && status.update_available && !status.skipped;

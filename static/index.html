@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <!-- No <meta name="viewport"> on purpose. Without it a phone lays this page
+       out in a ~980px virtual viewport and scales it down — the desktop layout,
+       pinch-zoomed — which is the intended experience. This UI is built around a
+       paper preview sitting beside the controls that change it, and the stacked
+       single-column layout separates the two, which is worse. Adding the tag
+       would switch that stacked layout on (see the @media rule in style.css,
+       which consequently only ever matches a narrowed desktop window). -->
   <title>Plotterosaurus</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__" />
 </head>
@@ -128,6 +135,18 @@
         <button id="update-confirm-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
         <button id="update-confirm-overwrite" class="danger" data-i18n="update.confirm_overwrite">Overwrite &amp; update</button>
       </div>
+    </div>
+  </div>
+
+  <div id="library-clean-modal" class="modal" hidden>
+    <div class="modal-card">
+      <h2 data-i18n="library.clean_title">Delete every drawing no job is using</h2>
+      <p class="muted" id="library-clean-note"></p>
+      <div class="actions">
+        <button id="library-clean-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
+        <button id="library-clean-confirm" class="danger" data-i18n="library.clean">Clean up</button>
+      </div>
+      <div id="library-clean-message" class="muted"></div>
     </div>
   </div>
 
@@ -328,16 +347,6 @@
               <span class="field-label" data-i18n="optimize.tolerance_label">Tolerance (mm) — used by linemerge + linesimplify</span>
               <input type="number" id="settings-optimize-tolerance" min="0.01" max="10" step="0.01" value="0.10" />
             </label>
-            <label class="inline-check">
-              <input type="checkbox" id="settings-optimize-min-length" />
-              <span data-i18n="optimize.min_length">Drop segments shorter than a minimum length</span>
-            </label>
-            <div class="optimize-min-length-options" id="settings-optimize-min-length-options" hidden>
-              <label class="field">
-                <span class="field-label" data-i18n="optimize.min_length_label">Minimum segment length (mm)</span>
-                <input type="number" id="settings-optimize-min-length-mm" min="0.01" max="100" step="0.01" value="1.00" />
-              </label>
-            </div>
           </div>
         </div>
       </section>
@@ -667,9 +676,21 @@
 
   <main>
     <section id="upload-section">
-      <label class="drop-zone" id="drop-zone" for="file-input">
-        <span data-i18n="upload.drop_hint">Drop SVGs here (or click) to add to the queue</span>
-      </label>
+      <div class="upload-columns">
+        <label class="drop-zone" id="drop-zone" for="file-input">
+          <span data-i18n="upload.drop_hint">Drop SVGs here (or click) to add them as drafts</span>
+        </label>
+        <div id="library-panel">
+          <div class="library-head">
+            <span class="library-title" data-i18n="library.title">Library</span>
+            <span class="library-usage" id="library-usage"></span>
+            <button id="library-clean" class="neutral" type="button"
+                    title="Delete every drawing no job is using"
+                    data-i18n="library.clean" data-i18n-title="library.clean_title">Clean up</button>
+          </div>
+          <ul id="library-list"></ul>
+        </div>
+      </div>
       <input type="file" id="file-input" accept=".svg,image/svg+xml" multiple class="visually-hidden" />
       <div id="upload-error" class="error" hidden></div>
     </section>
@@ -730,6 +751,9 @@
         </div>
         <div class="job-status-pill status"></div>
         <div class="job-actions">
+          <button class="job-queue-btn primary" type="button" hidden
+                  title="Add this job to the plot queue"
+                  data-i18n="card.queue_btn" data-i18n-title="a11y.queue_job">Queue</button>
           <button class="icon-btn job-move-up" title="Move up" data-i18n-title="a11y.move_up">↑</button>
           <button class="icon-btn job-move-down" title="Move down" data-i18n-title="a11y.move_down">↓</button>
           <button class="icon-btn job-requeue" title="Plot again" hidden data-i18n-title="a11y.plot_again">↻</button>
@@ -948,41 +972,72 @@
                 <span class="card-section-caret" aria-hidden="true">▼</span>
               </header>
               <div class="card-section-body">
-                <label class="inline-check">
-                  <input type="checkbox" class="optimize" />
-                  <span data-i18n="optimize.enable">Optimize SVG before plotting</span>
-                </label>
-                <div class="optimize-options">
+                <div class="segmented optimize-mode">
+                  <button type="button" data-val="beginner" class="active" data-i18n="optimize.mode_beginner">Beginner</button>
+                  <button type="button" data-val="expert" data-i18n="optimize.mode_expert">Expert</button>
+                </div>
+
+                <div class="optimize-beginner-panel">
+                  <p class="optimize-locked-note muted" hidden data-i18n="library.pre_optimized_note">This drawing is already optimized, so optimization is switched off for it.</p>
                   <label class="inline-check">
-                    <input type="checkbox" class="optimize-linemerge" />
-                    <span data-i18n="optimize.linemerge">Merge nearby endpoints (linemerge)</span>
+                    <input type="checkbox" class="optimize" />
+                    <span data-i18n="optimize.enable">Optimize SVG before plotting</span>
                   </label>
-                  <label class="inline-check">
-                    <input type="checkbox" class="optimize-linesimplify" />
-                    <span data-i18n="optimize.linesimplify">Simplify paths (linesimplify)</span>
-                  </label>
-                  <label class="inline-check">
-                    <input type="checkbox" class="optimize-linesort" />
-                    <span data-i18n="optimize.linesort">Reorder for less travel (linesort)</span>
-                  </label>
-                  <label class="inline-check">
-                    <input type="checkbox" class="optimize-reloop" />
-                    <span data-i18n="optimize.reloop">Randomize closed-path start (reloop)</span>
-                  </label>
-                  <label class="field">
-                    <span class="field-label" data-i18n="optimize.tolerance_label">Tolerance (mm) — used by linemerge + linesimplify</span>
-                    <input type="number" class="optimize-tolerance" min="0.01" max="10" step="0.01" value="0.10" />
-                  </label>
-                  <label class="inline-check">
-                    <input type="checkbox" class="optimize-min-length" />
-                    <span data-i18n="optimize.min_length">Drop segments shorter than a minimum length</span>
-                  </label>
-                  <div class="optimize-min-length-options" hidden>
+                  <div class="optimize-options">
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-linemerge" />
+                      <span data-i18n="optimize.linemerge">Merge nearby endpoints (linemerge)</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-linesimplify" />
+                      <span data-i18n="optimize.linesimplify">Simplify paths (linesimplify)</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-linesort" />
+                      <span data-i18n="optimize.linesort">Reorder for less travel (linesort)</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-reloop" />
+                      <span data-i18n="optimize.reloop">Randomize closed-path start (reloop)</span>
+                    </label>
                     <label class="field">
-                      <span class="field-label" data-i18n="optimize.min_length_label">Minimum segment length (mm)</span>
-                      <input type="number" class="optimize-min-length-mm" min="0.01" max="100" step="0.01" value="1.00" />
+                      <span class="field-label" data-i18n="optimize.tolerance_label">Tolerance (mm) — used by linemerge + linesimplify</span>
+                      <input type="number" class="optimize-tolerance" min="0.01" max="10" step="0.01" value="0.10" />
                     </label>
                   </div>
+                </div>
+
+                <div class="optimize-expert-panel" hidden>
+                  <p class="muted" data-i18n="optimize.expert_note">Each ticked box runs its vpype command, in order, when you press Execute. Optimization does not run automatically at plot time in this mode — press Execute again after changing a box.</p>
+
+                  <div class="optimize-expert-box">
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-expert-1-enabled" />
+                      <span data-i18n="optimize.expert_box_1">Command 1</span>
+                    </label>
+                    <textarea class="optimize-expert-cmd optimize-expert-1-cmd" rows="1" spellcheck="false" data-i18n-placeholder="optimize.expert_placeholder" placeholder="e.g. linesimplify --tolerance 0.1mm"></textarea>
+                  </div>
+                  <div class="optimize-expert-box">
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-expert-2-enabled" />
+                      <span data-i18n="optimize.expert_box_2">Command 2</span>
+                    </label>
+                    <textarea class="optimize-expert-cmd optimize-expert-2-cmd" rows="1" spellcheck="false" data-i18n-placeholder="optimize.expert_placeholder" placeholder="e.g. linesimplify --tolerance 0.1mm"></textarea>
+                  </div>
+                  <div class="optimize-expert-box">
+                    <label class="inline-check">
+                      <input type="checkbox" class="optimize-expert-3-enabled" />
+                      <span data-i18n="optimize.expert_box_3">Command 3</span>
+                    </label>
+                    <textarea class="optimize-expert-cmd optimize-expert-3-cmd" rows="1" spellcheck="false" data-i18n-placeholder="optimize.expert_placeholder" placeholder="e.g. linesimplify --tolerance 0.1mm"></textarea>
+                  </div>
+
+                  <div class="optimize-expert-run-row">
+                    <button type="button" class="primary optimize-expert-execute" data-i18n="optimize.expert_execute">Execute</button>
+                    <span class="optimize-expert-spinner" hidden aria-hidden="true"></span>
+                    <span class="optimize-expert-status muted"></span>
+                  </div>
+                  <pre class="optimize-expert-log" hidden></pre>
                 </div>
               </div>
             </section>

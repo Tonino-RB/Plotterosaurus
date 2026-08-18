@@ -88,9 +88,11 @@ def test_all_numbers_are_plain_json(client, job):
     """vpype measures with numpy. np.float64 happens to serialize, but the
     wire contract is plain numbers and must not depend on that."""
     body = placement_with_ink(client, job, A4)
-    numeric = [v for k, v in body.items() if k not in ("ink", "ink_measured")]
+    numeric = [v for k, v in body.items()
+               if k not in ("ink", "ink_measured", "layer_lengths_mm")]
     assert all(isinstance(v, (int, float)) for v in numeric)
     assert all(isinstance(v, float) for v in body["ink"].values())
+    assert all(isinstance(v, float) for v in (body["layer_lengths_mm"] or {}).values())
 
 
 @pytest.mark.parametrize("overrides", [

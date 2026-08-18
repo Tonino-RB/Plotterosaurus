@@ -100,12 +100,12 @@ def _run() -> None:
         key = _work.get()
         try:
             with workload.heavy("ink"):
-                rects = svg_utils.ink_rects_by_layer(Path(key[0]))
+                measurements = svg_utils.measure_layers(Path(key[0]))
         except Exception:
             log.exception("ink_cache: could not measure %s", key[0])
-            rects = {}
+            measurements = {}
         with _lock:
-            _cache[key] = rects
+            _cache[key] = measurements
             _cache.move_to_end(key)
             while len(_cache) > _CACHE_MAX:
                 _cache.popitem(last=False)
@@ -150,10 +150,30 @@ def rect_for(path: Path, layer_indices) -> tuple[bool, tuple | None]:
     if key is None:
         return False, None
     with _lock:
-        rects = _cache.get(key)
-        if rects is not None:
+        measurements = _cache.get(key)
+        if measurements is not None:
             _cache.move_to_end(key)
-    if rects is None:
+    if measurements is None:
         request(path)
         return False, None
-    return True, svg_utils.union_rect(rects.get(i) for i in layer_indices)
+    return True, svg_utils.union_rect(
+        (measurements.get(i) or {}).get("rect") for i in layer_indices)
+
+
+def lengths_for(path: Path) -> tuple[bool, dict[int, float] | None]:
+    """``(measured, {layer_index: pendown_length_mm})`` for every layer in the
+    document — the per-layer half of the same ``measure_layers`` read
+    ``rect_for`` draws its rectangles from. Used to split a job's single
+    simulated time estimate across its layers proportionally, without a
+    per-layer simulation of its own (see plot_worker.compute_preview)."""
+    key = _key(path)
+    if key is None:
+        return False, None
+    with _lock:
+        measurements = _cache.get(key)
+        if measurements is not None:
+            _cache.move_to_end(key)
+    if measurements is None:
+        request(path)
+        return False, None
+    return True, {i: v["length_mm"] for i, v in measurements.items()}

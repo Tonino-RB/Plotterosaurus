@@ -11,11 +11,13 @@ downstream ``svg_utils.filter_to_layers`` keeps working on the optimized file.
 """
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -44,15 +46,11 @@ def build_pipeline(
     linesimplify: bool,
     linesort: bool,
     reloop: bool,
-    min_length_enabled: bool = False,
-    min_length_mm: float = 1.0,
 ) -> list[str]:
     cmd = _vpype_cmd()
     cmd += ["read", str(src)]
     if linemerge:
         cmd += ["linemerge", "--tolerance", f"{tolerance_mm}mm"]
-    if min_length_enabled:
-        cmd += ["filter", "--min-length", f"{min_length_mm}mm"]
     if linesimplify:
         cmd += ["linesimplify", "--tolerance", f"{tolerance_mm}mm"]
     if linesort:
@@ -90,8 +88,6 @@ def optimize_svg(
     linesimplify: bool,
     linesort: bool,
     reloop: bool,
-    min_length_enabled: bool = False,
-    min_length_mm: float = 1.0,
 ) -> None:
     """Produce ``dst`` from ``src``. Raises ``OptimizeError`` on vpype failure.
 
@@ -107,13 +103,12 @@ def optimize_svg(
     within a directory is atomic on POSIX, so a reader sees the previous
     complete file or the new complete one, never the middle of one.
     """
-    if not any([linemerge, linesimplify, linesort, reloop, min_length_enabled]):
+    if not any([linemerge, linesimplify, linesort, reloop]):
         # No-op pipeline: copy source to keep downstream code uniform.
         _atomic_copy(src, dst)
         return
     tmp = _partial(dst)
-    cmd = build_pipeline(src, tmp, tolerance_mm, linemerge, linesimplify, linesort, reloop,
-                         min_length_enabled, min_length_mm)
+    cmd = build_pipeline(src, tmp, tolerance_mm, linemerge, linesimplify, linesort, reloop)
     log.info("optimize: %s", " ".join(cmd))
     env = {**os.environ, "VPYPE_NO_COLOR": "1"}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -181,6 +176,97 @@ def normalize_layers(src: Path, dst: Path) -> bool:
         return False
     os.replace(_partial(dst), dst)
     return True
+
+
+def build_custom_pipeline(src: Path, dst: Path, box_texts: list[str]) -> list[str]:
+    """Compose a vpype command line from expert mode's raw command boxes.
+
+    Each non-blank box's text is ``shlex.split`` and chained onto the command
+    line, in order, between ``read`` and ``write`` — one vpype pipeline, as
+    opposed to beginner mode's fixed four-toggle pipeline. Raises
+    ``ValueError`` (from shlex) on malformed quoting.
+    """
+    cmd = _vpype_cmd()
+    cmd += ["read", str(src)]
+    for text in box_texts:
+        text = (text or "").strip()
+        if not text:
+            continue
+        cmd += shlex.split(text)
+    cmd += ["write", str(dst)]
+    return cmd
+
+
+def run_custom_pipeline(
+    src: Path,
+    dst: Path,
+    box_texts: list[str],
+    on_output: Callable[[str], None] | None = None,
+    timeout_s: float = 180.0,
+) -> None:
+    """Produce ``dst`` from ``src`` using expert mode's raw command boxes.
+
+    Same atomic-write shape as ``optimize_svg`` (see its docstring), but the
+    pipeline is arbitrary user-typed text rather than four fixed toggles, so
+    two things beginner mode doesn't need are added here:
+
+    - ``on_output`` is called with each line of the subprocess's combined
+      stdout/stderr as it runs, so a caller can show live progress.
+    - A wall-clock ``timeout_s`` bounds the run — raw command text could
+      describe a pipeline that never finishes, and a stuck subprocess would
+      hold the single heavy-work slot (app/workload.py) indefinitely. A timer
+      thread terminates the process if it's still running past the deadline,
+      independent of whether it's producing output.
+    """
+    non_blank = [t for t in box_texts if (t or "").strip()]
+    if not non_blank:
+        _atomic_copy(src, dst)
+        return
+    tmp = _partial(dst)
+    try:
+        cmd = build_custom_pipeline(src, tmp, box_texts)
+    except ValueError as e:
+        raise OptimizeError(f"could not parse command: {e}") from e
+    log.info("optimize (expert): %s", " ".join(cmd))
+    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1, env=env)
+    with _proc_lock:
+        global _current_proc
+        _current_proc = proc
+
+    timed_out = threading.Event()
+
+    def _on_timeout() -> None:
+        timed_out.set()
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    timer = threading.Timer(timeout_s, _on_timeout)
+    timer.daemon = True
+    timer.start()
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if on_output is not None:
+                on_output(line.rstrip("\n"))
+        proc.wait()
+    finally:
+        timer.cancel()
+        with _proc_lock:
+            _current_proc = None
+
+    if timed_out.is_set():
+        tmp.unlink(missing_ok=True)
+        raise OptimizeError(f"timed out after {timeout_s:.0f}s")
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise OptimizeError(f"vpype exited with code {proc.returncode}")
+    if not tmp.exists():
+        raise OptimizeError("the document contains no plottable geometry")
+    os.replace(tmp, dst)
 
 
 def cancel_current() -> None:

@@ -399,24 +399,23 @@ def ink_rect_doc_mm(svg_path: Path,
     return xmin, ymin, xmax, ymax
 
 
-def ink_rects_by_layer(svg_path: Path) -> dict[int, tuple[float, float, float, float]]:
-    """Every layer's ink bounding box in document mm, keyed by layer index.
+def measure_layers(svg_path: Path) -> dict[int, dict]:
+    """Every layer's ink bounding box and pen-down path length, in document mm,
+    keyed by layer index — one vpype read of the whole document, versus one per
+    layer combination the user might select. That difference is the whole
+    point: on an 8MB drawing a single read costs 15-75 seconds, and asking for
+    a fresh one per layer toggle — with the UI re-requesting on every state
+    broadcast while an answer is outstanding — is how several piled up at once
+    and took four cores of Raspberry Pi with them.
 
-    One vpype read of the whole document, versus one per layer combination the
-    user might select. That difference is the whole point: on an 8MB drawing a
-    single read costs 15-75 seconds, and ``ink_rect_doc_mm`` was being asked
-    for a fresh one on every layer toggle — and, because the UI re-requests on
-    every state broadcast while an answer is outstanding, several at once.
-    Four cores of Raspberry Pi disappear quickly that way.
+    Any selection's rectangle is the union of its layers', and its pen-down
+    distance is their sum, so measuring each layer once answers every question
+    that can be asked about the file. Layers vpype found nothing plottable in
+    are absent rather than present-and-empty.
 
-    Any selection's rectangle is the union of its layers', so measuring each
-    layer once answers every question that can be asked about the file. Layers
-    vpype found nothing plottable in are absent rather than present-and-empty,
-    which is the same thing ``ink_rect_doc_mm`` reports as None.
-
-    No temp file either. ``ink_rect_doc_mm`` writes a filtered copy of the
-    document first — multiple megabytes onto an SD card, per call, and orphaned
-    entirely if the service restarts mid-parse.
+    No temp file either. Writing a filtered copy of the document first would
+    mean multiple megabytes onto an SD card per call, orphaned entirely if the
+    service restarts mid-parse.
     """
     import vpype
 
@@ -424,15 +423,25 @@ def ink_rects_by_layer(svg_path: Path) -> dict[int, tuple[float, float, float, f
     # vpype numbers layers by its own rule, not by document order; replicate it
     # to get back to the indices everything else addresses layers by.
     root = etree.parse(str(svg_path)).getroot()
-    rects: dict[int, tuple[float, float, float, float]] = {}
+    result: dict[int, dict] = {}
     for index, group in enumerate(_top_level_layers(root)):
         vpype_id = _vpype_layer_id(group.get(LABEL_ATTR) or "",
                                    group.get("id") or "", index + 1)
         layer = document.layers.get(vpype_id)
-        bounds = layer.bounds() if layer is not None else None
-        if bounds is not None:
-            rects[index] = tuple(v / PX_PER_MM for v in bounds)
-    return rects
+        if layer is None:
+            continue
+        bounds = layer.bounds()
+        result[index] = {
+            "rect": tuple(v / PX_PER_MM for v in bounds) if bounds is not None else None,
+            "length_mm": layer.length() / PX_PER_MM,
+        }
+    return result
+
+
+def ink_rects_by_layer(svg_path: Path) -> dict[int, tuple[float, float, float, float]]:
+    """Every layer's ink bounding box in document mm, keyed by layer index.
+    See ``measure_layers`` — this is the bounds half of that one read."""
+    return {i: v["rect"] for i, v in measure_layers(svg_path).items() if v["rect"] is not None}
 
 
 def union_rect(rects) -> tuple[float, float, float, float] | None:

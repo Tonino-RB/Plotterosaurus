@@ -28,6 +28,12 @@ VERSION_PATH = BASE_DIR / "VERSION"
 CALIBRATION_DIR = BASE_DIR / "calibration"
 CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
 
+# Wall-clock cap on one expert-mode vpype run (app/svg_optimize.py
+# run_custom_pipeline). Raw user-typed commands aren't otherwise bounded, and
+# a stuck subprocess would hold the single heavy-work slot (app/workload.py)
+# indefinitely. Not user-configurable — there's no UI need for it.
+OPTIMIZE_EXPERT_TIMEOUT_S = 180
+
 
 def _read_version() -> str:
     try:
@@ -65,9 +71,11 @@ _SETTINGS: list[_Setting] = [
     _Setting("optimize_svg_linesimplify_default", bool, True),
     _Setting("optimize_svg_linesort_default", bool, True),
     _Setting("optimize_svg_reloop_default", bool, True),
-    _Setting("optimize_svg_min_length_default", bool, False),
-    _Setting("optimize_svg_min_length_mm_default", float, 1.0,
-             lambda v: 0.01 <= v <= 100.0),
+    # Expert-mode raw vpype command boxes: remembers the last text typed into
+    # each box (any job), so a newly created job starts pre-filled with it.
+    _Setting("optimize_expert_1_cmd_default", str, ""),
+    _Setting("optimize_expert_2_cmd_default", str, ""),
+    _Setting("optimize_expert_3_cmd_default", str, ""),
     _Setting("display_unit", str, None,
              lambda v: v in ("mm", "cm", "in")),
     # Last update the user chose to skip. The update banner stays hidden while

@@ -148,9 +148,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, background 0.4s ease;
 }
 .job-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* Briefly flashed when re-selecting a library item that already has an
+   untouched draft card, so jumping to it reads as a deliberate action
+   rather than a click that silently did nothing. */
+.job-card.card-highlight { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-wash); }
 .job-card-head {
   display: flex;
   align-items: center;
@@ -162,13 +166,22 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 }
 .job-card-head .card-section-caret { color: var(--text-soft); }
 .job-card:not(.expanded) .job-card-head .card-section-caret { transform: rotate(-90deg); }
-.job-summary { flex: 1; display: flex; flex-direction: column; }
+/* min-width: 0 is the fix, not the ellipsis. A flex item defaults to
+   min-width: auto — its min-content width — so a long unbroken filename refused
+   to shrink and pushed the status pill and the ↑ ↓ ↻ ✕ buttons past the card's
+   edge, where .job-card's overflow: hidden clipped them away entirely. The card
+   became unusable: no way to reorder or remove the job. The ellipsis below is
+   cosmetic on its own; flex-none on the two siblings keeps them from being
+   squeezed instead. Full name stays available via the title attribute. */
+.job-summary { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .job-filename { font-weight: 600; }
 .job-sub { font-size: 0.85rem; color: var(--text-soft); margin-top: 0.1rem; }
-.job-status-pill { font-size: 0.75rem; padding: 0.2rem 0.6rem; }
-.job-actions { display: flex; gap: 0.15rem; align-items: center; }
+.job-filename, .job-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-status-pill { font-size: 0.75rem; padding: 0.2rem 0.6rem; flex: none; }
+.job-actions { display: flex; gap: 0.15rem; align-items: center; flex: none; }
 .job-actions .icon-btn { color: var(--text-soft); font-size: 1.3rem; min-width: 2rem; height: 2rem; padding: 0 0.4rem; font-weight: 500; }
 .job-actions .icon-btn:hover { color: var(--text); }
+.job-queue-btn { height: 2rem; padding: 0 0.6rem; font-size: 0.85rem; line-height: 2rem; }
 
 #queue-progress { margin-top: 0.5rem; }
 #queue-progress .progress-bar { margin: 0.25rem 0; }
@@ -209,11 +222,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
   align-items: center;
   justify-content: center;
   height: 160px;
+  padding: 0 1rem;
   border: 2px dashed var(--text-faint);
   border-radius: 12px;
   background: var(--surface);
   cursor: pointer;
   color: var(--text-soft);
+  text-align: center;
   transition: border-color 0.1s, background 0.1s;
 }
 .drop-zone:hover, .drop-zone.drag { border-color: var(--accent); background: var(--accent-wash); }
@@ -238,7 +253,22 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem; }
-@media (max-width: 800px) { .columns { grid-template-columns: 1fr; } }
+
+/* The upload area: drop zone left, library right. Its own class rather than
+   .columns above — that one is scoped to a job card's body and carries a
+   margin-top this area doesn't want. */
+.upload-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+
+/* The only breakpoint in this stylesheet, and it is for a narrowed desktop
+   window, NOT for phones. index.html deliberately ships no viewport meta tag,
+   so a phone lays the page out at ~980px and scales it down — the desktop
+   layout, pinch-zoomed, which is the intended experience. That means this query
+   never matches on a phone. Adding the viewport tag would switch the stacked
+   layout on, and the stacked layout is worse for a UI built around a preview
+   canvas sitting next to the controls that change it. Don't "fix" it. */
+@media (max-width: 800px) {
+  .columns, .upload-columns { grid-template-columns: 1fr; }
+}
 
 h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 
@@ -405,6 +435,7 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 .layer-move .icon-btn { font-size: 1rem; min-width: 1.6rem; height: 1.6rem; padding: 0; }
 /* Optional pen name, trailing the layer name in the same grey as .muted. */
 .layer-pen { color: var(--text-faint); font-size: 0.85rem; margin-left: 0.6em; }
+.layer-time { flex: 0 0 auto; color: var(--text-soft); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .layer-swatch {
   width: 18px; height: 18px; flex: 0 0 18px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -692,6 +723,58 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 .optimize-options .field { margin-top: 0.5rem; }
 .optimize-options .field input[type="number"] { max-width: 8rem; }
 
+.optimize-mode { margin-bottom: 0.75rem; }
+.optimize-expert-panel .muted { margin-top: 0; margin-bottom: 0.75rem; }
+.optimize-expert-box { margin-bottom: 0.75rem; }
+.optimize-expert-box .inline-check { margin-bottom: 0.35rem; }
+/* Auto-grow: JS sets height to scrollHeight on input, so no resize handle
+   and no internal scrollbar fighting the height it just set. */
+.optimize-expert-cmd {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  min-height: 2.35rem;
+  max-height: 40vh;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.optimize-expert-cmd:disabled { background: var(--disabled); opacity: 0.6; }
+.optimize-expert-run-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
+.optimize-expert-status { margin: 0; }
+.optimize-expert-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: optimize-expert-spin 0.7s linear infinite;
+}
+.optimize-expert-spinner[hidden] { display: none; }
+@keyframes optimize-expert-spin { to { transform: rotate(360deg); } }
+/* Same terminal look as .update-log (software-update flow), smaller — this
+   one lives inside a job card, not a modal. */
+.optimize-expert-log {
+  background: #1a1a1a;
+  color: #e5e5e5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.75rem;
+  border-radius: 6px;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.5rem 0 0 0;
+}
+
 .muted { color: var(--text-faint); font-size: 0.85rem; margin-top: 0.5rem; }
 /* Size on the left, paper stock (optional, may be empty) on the right. */
 .preview-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
@@ -941,4 +1024,91 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0.5rem 0;
+}
+
+/* ───── Library ──────────────────────────────────────────────────────────
+   The uploads folder, made addressable. Rows are the same drawing seen twice
+   when a cached optimization exists — the original and the optimized copy —
+   so the variant badge has to be legible at a glance. */
+
+#library-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  /* Matches the drop zone's fixed height so the two columns line up, with the
+     list scrolling inside rather than growing the page. */
+  height: 160px;
+}
+.library-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.library-title { font-weight: 600; font-size: 0.9rem; }
+.library-usage {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#library-clean { flex: none; font-size: 0.8rem; padding: 0.25rem 0.6rem; }
+
+#library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  overflow-y: auto;
+  flex: 1;
+}
+#library-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+}
+#library-list li:hover { background: var(--surface-alt); }
+.library-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-meta { font-size: 0.75rem; color: var(--text-faint); flex: none; }
+.library-badge {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  flex: none;
+  background: var(--accent-wash);
+  color: var(--text);
+}
+.library-badge.in-use { background: var(--surface-alt); color: var(--text-soft); }
+.library-actions { display: flex; gap: 0.1rem; flex: none; }
+.library-actions .icon-btn { font-size: 1rem; min-width: 1.7rem; height: 1.7rem; padding: 0 0.3rem; }
+.library-empty { padding: 1.25rem; text-align: center; color: var(--text-faint); font-size: 0.85rem; }
+
+/* A source whose geometry has already been through vpype once already (via
+   the beginner pipeline). Locks the beginner panel specifically — not
+   .optimize-options alone, because the master checkbox sits outside it, and
+   .optimize-options.disabled is pointer-events only, which still allows
+   keyboard focus — and the section's reset button, which only resets
+   beginner-panel fields. Expert mode is unaffected: typing further custom
+   vpype commands on an already-optimized source is still meaningful. */
+.card-section.locked .optimize-beginner-panel { opacity: 0.55; }
+.card-section.locked .card-section-reset { display: none; }
+.optimize-locked-note {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+  margin-top: 0.4rem;
 }

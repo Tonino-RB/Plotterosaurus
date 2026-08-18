@@ -1,6 +1,7 @@
 import asyncio
 import json as _json
 import logging
+import shutil
 import subprocess
 import threading
 import uuid
@@ -23,8 +24,8 @@ from pydantic import BaseModel, Field, ValidationError
 from lxml import etree
 
 from . import (
-    camera, config, ink_cache, notify, optimize_queue, placement, plan_queue,
-    plot_worker, state, svg_optimize, svg_utils, updates,
+    camera, config, ink_cache, notify, optimize_expert_queue, optimize_queue,
+    placement, plan_queue, plot_worker, state, svg_optimize, svg_utils, updates,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -170,6 +171,7 @@ async def lifespan(_app: FastAPI):
     state.init(asyncio.get_running_loop())
     optimize_queue.start()
     plan_queue.start()
+    optimize_expert_queue.start()
     optimize_queue.bootstrap_from_disk()
     plan_queue.bootstrap_from_state()
     camera.apply_camera_settings()
@@ -186,6 +188,7 @@ async def lifespan(_app: FastAPI):
         # nothing else is competing for CPU.
         plan_queue.shutdown()
         optimize_queue.shutdown()
+        optimize_expert_queue.shutdown()
         drain_task.cancel()
 
 
@@ -271,6 +274,10 @@ async def upload(file: UploadFile = File(...)):
     if not info["layers"]:
         path.unlink(missing_ok=True)
         raise _coded(400, "no_layers")
+    # Record the name the user knows this drawing by. The file on disk is named
+    # after a uuid fragment, and the job record's copy of the filename dies with
+    # the job — so without this the library can only ever show "a792743a".
+    state.set_upload_meta(svg_id, file.filename or "upload.svg")
     optimize_queue.enqueue_for_upload(svg_id)
     # Start measuring now, in the background. The size readout and the bounds
     # overlay both want this, and on a real drawing it takes long enough that
@@ -301,6 +308,264 @@ def get_job_svg(job_id: str):
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(str(path), media_type="image/svg+xml")
+
+
+# Library ------------------------------------------------------------------
+#
+# The uploads folder, addressable. Every SVG that has ever been uploaded stays
+# on disk after its job is deleted, and nothing reclaimed it — an empty queue
+# sat on top of 19MB of drawings and their derivatives, and every restart
+# re-ran vpype over all of it (see optimize_queue.bootstrap_from_disk).
+#
+# Deliberately not solved by sweeping at startup. These files are the user's
+# own artwork; deleting it to reclaim space is the wrong default. So the folder
+# is made visible and the decisions are handed over: replot a previous drawing,
+# delete one, or empty everything nothing is using.
+#
+# A drawing with a cached optimization appears twice — the original and the
+# optimized copy — because they plot differently and choosing between them is
+# the point. Selecting the optimized row promotes it to a source of its own
+# (see _promote_optimized) so the rest of the pipeline needs to know nothing
+# about variants.
+
+LIBRARY_SOURCE = "source"
+LIBRARY_OPTIMIZED = "optimized"
+
+
+def _library_svg_ids() -> set[str]:
+    """Every svg_id the uploads folder holds, derived from the filenames.
+
+    An upload is ``<svg_id>.svg`` where svg_id is a uuid fragment with no dot
+    in it; everything else in the folder is a derivative of one
+    (``.opt.svg``, ``.preview.svg``, ``.s0.filt.svg``, …). Both shapes are
+    scanned, because a ``.opt.svg`` can outlive the source it came from.
+    """
+    ids: set[str] = set()
+    if not UPLOAD_DIR.exists():
+        return ids
+    for path in UPLOAD_DIR.glob("*.svg"):
+        if not path.is_file():
+            continue
+        # Leading dot means a scratch file mid-rename (see svg_optimize._partial).
+        # Splitting one of those yields an empty id, which globs as ".*" and
+        # would put every hidden file in the folder behind a single delete
+        # button. They are transient and belong to no drawing — skip them; the
+        # startup sweep in ink_cache is what removes the leaked ones.
+        if path.name.startswith("."):
+            continue
+        svg_id = path.name[:-len(".svg")].split(".", 1)[0]
+        if svg_id:
+            ids.add(svg_id)
+    return ids
+
+
+def _jobs_by_svg_id() -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for job in state.snapshot()["queue"]:
+        out.setdefault(job.get("svg_id"), []).append(job["job_id"])
+    return out
+
+
+def _size_of(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _entry_bytes(svg_id: str, variant: str) -> int:
+    """Every byte the given row is responsible for.
+
+    A source row owns its derivatives — deleting it takes the whole
+    ``{svg_id}.*`` family with it (see delete_svg_files), so reporting only the
+    source file would understate what the row reclaims by several times.
+    The optimized row is scoped to the one file it names, since deleting it
+    leaves the source and its other derivatives alone.
+    """
+    if variant == LIBRARY_OPTIMIZED:
+        return _size_of(UPLOAD_DIR / f"{svg_id}.opt.svg")
+    return sum(_size_of(p) for p in UPLOAD_DIR.glob(f"{svg_id}.*")
+               if p.name != f"{svg_id}.opt.svg")
+
+
+def _library_entries() -> list[dict]:
+    jobs = _jobs_by_svg_id()
+    meta = state.all_upload_meta()
+    entries: list[dict] = []
+    for svg_id in sorted(_library_svg_ids()):
+        source = UPLOAD_DIR / f"{svg_id}.svg"
+        optimized = UPLOAD_DIR / f"{svg_id}.opt.svg"
+        info = meta.get(svg_id) or {}
+        # No metadata means the file predates the library, or was written by
+        # something other than /upload. The svg_id is a poor name but an honest
+        # one — better than inventing a filename that was never real.
+        filename = info.get("filename") or f"{svg_id}.svg"
+        job_ids = jobs.get(svg_id, [])
+        common = {
+            "svg_id": svg_id,
+            "filename": filename,
+            "uploaded_at": info.get("uploaded_at") or 0.0,
+            "pre_optimized": bool(info.get("pre_optimized")),
+            "derived_from": info.get("derived_from"),
+            "job_ids": job_ids,
+            "in_use": bool(job_ids),
+        }
+        if source.is_file():
+            entries.append({
+                **common,
+                "key": svg_id,
+                "variant": LIBRARY_SOURCE,
+                "size_bytes": _entry_bytes(svg_id, LIBRARY_SOURCE),
+                "modified_at": source.stat().st_mtime,
+            })
+        if optimized.is_file():
+            entries.append({
+                **common,
+                "key": f"{svg_id}:opt",
+                "variant": LIBRARY_OPTIMIZED,
+                "size_bytes": _entry_bytes(svg_id, LIBRARY_OPTIMIZED),
+                "modified_at": optimized.stat().st_mtime,
+                # An optimized file is never itself in use: jobs reference the
+                # source and resolve to this one through _effective_svg_path.
+                # Deleting it only costs a re-run, so it is never protected.
+                "in_use": False,
+                "job_ids": [],
+            })
+    entries.sort(key=lambda e: e["modified_at"], reverse=True)
+    return entries
+
+
+@app.get("/library")
+def get_library():
+    entries = _library_entries()
+    return {
+        "entries": entries,
+        "total_bytes": sum(e["size_bytes"] for e in entries),
+        "reclaimable_bytes": sum(e["size_bytes"] for e in entries if not e["in_use"]),
+    }
+
+
+class LibrarySelect(BaseModel):
+    svg_id: str
+    variant: Literal["source", "optimized"] = LIBRARY_SOURCE
+
+
+def _promote_optimized(svg_id: str) -> str:
+    """Make ``{svg_id}.opt.svg`` a source in its own right, and return its id.
+
+    Everything downstream — the plot worker, the placement endpoint, the ink
+    cache — resolves a job's document as ``uploads/{svg_id}.svg``. Rather than
+    teach all of them about a second variant, the optimized file is copied to
+    its own upload id once and behaves like any other drawing from then on.
+
+    Copied once, not per selection: a previous promotion of the same parent is
+    reused if its file is still there, so replotting an optimized drawing five
+    times costs one copy rather than five.
+    """
+    for candidate, info in state.all_upload_meta().items():
+        if (info.get("derived_from") == svg_id
+                and (UPLOAD_DIR / f"{candidate}.svg").is_file()):
+            return candidate
+
+    src = UPLOAD_DIR / f"{svg_id}.opt.svg"
+    if not src.is_file():
+        raise _coded(404, "svg_not_found")
+    new_id = uuid.uuid4().hex[:8]
+    dst = UPLOAD_DIR / f"{new_id}.svg"
+    try:
+        shutil.copyfile(src, dst)
+    except OSError:
+        log.exception("library: could not promote %s", src.name)
+        raise _coded(500, "library_promote_failed")
+
+    parent = state.get_upload_meta(svg_id) or {}
+    stem = Path(parent.get("filename") or f"{svg_id}.svg").stem
+    state.set_upload_meta(new_id, f"{stem} (optimized).svg",
+                          pre_optimized=True, derived_from=svg_id)
+    # Deliberately no optimize_queue.enqueue_for_upload: this file is already
+    # what vpype produced, and running it through again would simplify
+    # already-simplified geometry.
+    ink_cache.request(dst)
+    return new_id
+
+
+@app.post("/library/select")
+def library_select(req: LibrarySelect):
+    """Resolve a library row into something a job can be built from.
+
+    Returns the svg_id to use plus the same layer/size payload ``/upload``
+    returns, so the browser builds a job from a previous drawing by exactly the
+    path it uses for a fresh one.
+    """
+    svg_id = req.svg_id
+    if req.variant == LIBRARY_OPTIMIZED:
+        svg_id = _promote_optimized(svg_id)
+
+    path = UPLOAD_DIR / f"{svg_id}.svg"
+    if not path.is_file():
+        raise _coded(404, "svg_not_found")
+    try:
+        info = svg_utils.parse_layers(path)
+    except Exception:
+        raise _coded(422, "invalid_svg")
+    if not info["layers"]:
+        raise _coded(400, "no_layers")
+
+    meta = state.get_upload_meta(svg_id) or {}
+    ink_cache.request(path)
+    return {
+        "id": svg_id,
+        "filename": meta.get("filename") or f"{svg_id}.svg",
+        "pre_optimized": bool(meta.get("pre_optimized")),
+        **info,
+    }
+
+
+@app.delete("/library/{svg_id}")
+def library_delete(svg_id: str, variant: Literal["source", "optimized"] = LIBRARY_SOURCE):
+    """Remove one library row.
+
+    A source still referenced by a job is refused rather than deleted along
+    with the job: losing a queued job as a side effect of tidying the folder is
+    not something a delete button should be able to do.
+    """
+    if svg_id not in _library_svg_ids():
+        raise _coded(404, "svg_not_found")
+    if variant == LIBRARY_OPTIMIZED:
+        opt = UPLOAD_DIR / f"{svg_id}.opt.svg"
+        if not opt.is_file():
+            raise _coded(404, "svg_not_found")
+        optimize_queue.cancel(svg_id)
+        try:
+            opt.unlink()
+        except OSError:
+            log.exception("library: could not delete %s", opt.name)
+            raise _coded(500, "library_delete_failed")
+        return {"ok": True, "removed": 1}
+
+    job_ids = _jobs_by_svg_id().get(svg_id, [])
+    if job_ids:
+        raise _coded(409, "library_in_use", count=len(job_ids))
+    delete_svg_files(svg_id)
+    state.drop_upload_meta(svg_id)
+    return {"ok": True, "removed": 1}
+
+
+@app.post("/library/clean")
+def library_clean():
+    """Delete every drawing no job is using. Files a job references survive."""
+    in_use = set(_jobs_by_svg_id())
+    removed = 0
+    freed = 0
+    for svg_id in sorted(_library_svg_ids()):
+        if svg_id in in_use:
+            continue
+        freed += (_entry_bytes(svg_id, LIBRARY_SOURCE)
+                  + _entry_bytes(svg_id, LIBRARY_OPTIMIZED))
+        delete_svg_files(svg_id)
+        state.drop_upload_meta(svg_id)
+        removed += 1
+    return {"ok": True, "removed": removed, "kept": len(in_use), "freed_bytes": freed}
 
 
 _svg_meta_cache: "OrderedDict[tuple, dict]" = OrderedDict()
@@ -484,6 +749,18 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         ink = {"left_mm": float(left), "top_mm": float(top),
                "width_mm": float(right - left), "height_mm": float(bottom - top)}
 
+    # Every layer's pen-down length, not just the selected ones — the layer
+    # panel shows a per-layer time estimate for each row regardless of which
+    # are currently checked. Same cached read as `ink`, so this costs nothing
+    # extra once it's measured.
+    layer_lengths_mm = None
+    if req.include_ink:
+        _, lengths = ink_cache.lengths_for(path)
+        # float() for the same reason as `ink` above: vpype measures with
+        # numpy, and the wire contract is plain JSON numbers.
+        if lengths is not None:
+            layer_lengths_mm = {i: float(v) for i, v in lengths.items()}
+
     return {
         "doc_width_mm": doc_w_mm,
         "doc_height_mm": doc_h_mm,
@@ -506,6 +783,7 @@ def get_job_placement(job_id: str, req: PlacementQuery):
         # include_ink was false; ink_measured distinguishes the two.
         "ink": ink,
         "ink_measured": measured,
+        "layer_lengths_mm": layer_lengths_mm,
     }
 
 
@@ -524,8 +802,17 @@ class _OptimizeCreateFields(BaseModel):
     optimize_svg_linesimplify: bool = True
     optimize_svg_linesort: bool = True
     optimize_svg_reloop: bool = True
-    optimize_svg_min_length: bool = False
-    optimize_svg_min_length_mm: float = 1.0
+    # "beginner" runs the toggles above automatically at plot start. "expert"
+    # instead uses the three raw-command boxes below, run explicitly via
+    # POST /jobs/{id}/optimize-expert/execute ahead of time — plot start does
+    # not re-run vpype for an expert-mode job (see plot_worker._effective_svg_path).
+    optimize_mode: Literal["beginner", "expert"] = "beginner"
+    optimize_expert_1_enabled: bool = False
+    optimize_expert_1_cmd: str = ""
+    optimize_expert_2_enabled: bool = False
+    optimize_expert_2_cmd: str = ""
+    optimize_expert_3_enabled: bool = False
+    optimize_expert_3_cmd: str = ""
 
 
 class _OptimizeOptionalFields(BaseModel):
@@ -535,13 +822,24 @@ class _OptimizeOptionalFields(BaseModel):
     optimize_svg_linesimplify: bool | None = None
     optimize_svg_linesort: bool | None = None
     optimize_svg_reloop: bool | None = None
-    optimize_svg_min_length: bool | None = None
-    optimize_svg_min_length_mm: float | None = None
+    optimize_mode: Literal["beginner", "expert"] | None = None
+    optimize_expert_1_enabled: bool | None = None
+    optimize_expert_1_cmd: str | None = None
+    optimize_expert_2_enabled: bool | None = None
+    optimize_expert_2_cmd: str | None = None
+    optimize_expert_3_enabled: bool | None = None
+    optimize_expert_3_cmd: str | None = None
 
 
 class JobCreate(_OptimizeCreateFields):
     svg_id: str
     filename: str = "upload.svg"
+    # Set when the source is a copy promoted out of a .opt.svg (see
+    # /library/select). Its geometry has already been through vpype, so the
+    # optimize step is forced off and the UI locks the panel — running
+    # linesimplify over already-simplified paths only loses more of the
+    # original curve.
+    pre_optimized: bool = False
     name: str | None = None
     paper_size_name: str | None = None
     paper_name: str | None = None
@@ -601,8 +899,6 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesimplify_default: bool | None = None
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
-    optimize_svg_min_length_default: bool | None = None
-    optimize_svg_min_length_mm_default: float | None = Field(None, ge=0.01, le=100.0)
     display_unit: Literal["mm", "cm", "in"] | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
@@ -654,7 +950,6 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "transform_scale": (0.01, 5.0),
     "transform_rotation_deg": (-360.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
-    "optimize_svg_min_length_mm": (0.01, 100.0),
 }
 
 
@@ -678,7 +973,9 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "delete_on_complete", "record_plot", "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
-    "optimize_svg_min_length", "optimize_svg_min_length_mm",
+    "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
+    "optimize_expert_2_enabled", "optimize_expert_2_cmd",
+    "optimize_expert_3_enabled", "optimize_expert_3_cmd",
 })
 
 
@@ -753,6 +1050,19 @@ def create_job(req: JobCreate):
     if not any(s.get("selected", True) for s in (req.layer_selections or [])):
         raise _coded(400, "select_one_layer")
     payload = req.model_dump()
+    # Enforced here rather than trusted from the client, so an API caller can't
+    # queue a double-optimization either.
+    if payload.get("pre_optimized"):
+        payload["optimize_svg"] = False
+    # Parked, not runnable. A dropped SVG used to become a plottable job the
+    # instant it finished uploading, which made the queue a record of what had
+    # been dropped rather than of what the user had decided to plot. The card is
+    # identical and fully editable — only the status differs, and the plot
+    # worker cannot see it until Queue is pressed (see queue_job).
+    #
+    # /api/v1/jobs deliberately does NOT do this: an external client posting a
+    # job, especially one passing auto_plot, means it to run.
+    payload["status"] = "draft"
     _clamp_job_fields(payload, payload.get("paper_width_mm"),
                       payload.get("paper_height_mm"))
     job = state.add_job(payload)
@@ -779,7 +1089,7 @@ def update_job(job_id: str, req: JobUpdate):
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
-    if j["status"] not in ("queued", "completed", "failed", "cancelled"):
+    if j["status"] not in ("draft", "queued", "completed", "failed", "cancelled"):
         raise _coded(409, "cannot_edit_active")
     # exclude_unset so the client distinguishes "not sent" from "explicitly null"
     # — needed e.g. for paper_size_name which can be cleared back to None.
@@ -788,9 +1098,16 @@ def update_job(job_id: str, req: JobUpdate):
     # the existing job's so transform offsets clamp against the right extent.
     paper_w = updates.get("paper_width_mm", j.get("paper_width_mm"))
     paper_h = updates.get("paper_height_mm", j.get("paper_height_mm"))
+    # A pre-optimized source can never be optimized again, whatever a PATCH
+    # asks for — see JobCreate.pre_optimized.
+    if j.get("pre_optimized"):
+        updates["optimize_svg"] = False
     _clamp_job_fields(updates, paper_w, paper_h)
-    # Re-queue on edit so user can re-plot a finished/cancelled job without extra steps
-    if j["status"] != "queued":
+    # Re-queue on edit so user can re-plot a finished/cancelled job without extra
+    # steps. A draft is exempt: editing one is the whole point of it being parked,
+    # and promoting it on the first slider drag would defeat the feature — it
+    # leaves `draft` only when the user presses Queue (see queue_job).
+    if j["status"] not in ("draft", "queued"):
         updates["status"] = "queued"
         updates["error"] = None
     # Any edit can change the preview cache key, so the on-record estimate is
@@ -805,12 +1122,80 @@ def update_job(job_id: str, req: JobUpdate):
         "plan_error": None,
         "run_elapsed_seconds": 0.0,
     })
+    _persist_expert_defaults(updates)
     state.update_job(job_id, **updates)
     fresh = state.get_job(job_id)
     plan_queue.cancel(job_id)
     optimize_queue.enqueue_for_job(fresh)
     plan_queue.enqueue(fresh)
     return fresh
+
+
+class OptimizeExpertExecute(BaseModel):
+    """Body of POST /jobs/{id}/optimize-expert/execute — the three expert-mode
+    boxes' current on-screen state, so Execute always runs exactly what's
+    displayed rather than whatever was last saved to the job record."""
+    optimize_expert_1_enabled: bool = False
+    optimize_expert_1_cmd: str = ""
+    optimize_expert_2_enabled: bool = False
+    optimize_expert_2_cmd: str = ""
+    optimize_expert_3_enabled: bool = False
+    optimize_expert_3_cmd: str = ""
+
+
+def _persist_expert_defaults(updates: dict) -> None:
+    """Whenever an expert-mode box's command text changes, remember it as the
+    pre-fill for the next new job's box (see config.OPTIMIZE_EXPERT_*_CMD_DEFAULT
+    and the default-picking in api_create_job; the plain-upload flow prefills
+    from these same defaults client-side, in static/app.js buildJobPayload)."""
+    kw = {}
+    for n in (1, 2, 3):
+        key = f"optimize_expert_{n}_cmd"
+        if updates.get(key) is not None:
+            kw[f"{key}_default"] = updates[key]
+    if kw:
+        config.update(**kw)
+
+
+@app.post("/jobs/{job_id}/optimize-expert/execute")
+def optimize_expert_execute(job_id: str, req: OptimizeExpertExecute):
+    """Run the expert-mode pipeline now, ahead of plotting (see
+    plot_worker._run_optimize_phase — an expert-mode job's plot never re-runs
+    vpype; this is the only thing that produces/refreshes its .opt.svg)."""
+    j = state.get_job(job_id)
+    if j is None:
+        raise _coded(404, "job_not_found")
+    if j["status"] not in ("draft", "queued", "completed", "failed", "cancelled"):
+        raise _coded(409, "cannot_edit_active")
+    box_texts = [
+        req.optimize_expert_1_cmd if req.optimize_expert_1_enabled else "",
+        req.optimize_expert_2_cmd if req.optimize_expert_2_enabled else "",
+        req.optimize_expert_3_cmd if req.optimize_expert_3_enabled else "",
+    ]
+    if not any(t.strip() for t in box_texts):
+        raise _coded(400, "no_command")
+    updates = {
+        "optimize_expert_1_enabled": req.optimize_expert_1_enabled,
+        "optimize_expert_1_cmd": req.optimize_expert_1_cmd,
+        "optimize_expert_2_enabled": req.optimize_expert_2_enabled,
+        "optimize_expert_2_cmd": req.optimize_expert_2_cmd,
+        "optimize_expert_3_enabled": req.optimize_expert_3_enabled,
+        "optimize_expert_3_cmd": req.optimize_expert_3_cmd,
+    }
+    _persist_expert_defaults(updates)
+    state.update_job(job_id, **updates)
+    optimize_expert_queue.enqueue_execute(
+        job_id, j["svg_id"], UPLOAD_DIR / f"{j['svg_id']}.svg", box_texts,
+    )
+    return {"ok": True}
+
+
+@app.get("/jobs/{job_id}/optimize-expert/status")
+def optimize_expert_status(job_id: str):
+    j = state.get_job(job_id)
+    if j is None:
+        raise _coded(404, "job_not_found")
+    return optimize_expert_queue.get_status(job_id)
 
 
 def delete_svg_files(svg_id: str | None) -> None:
@@ -830,8 +1215,33 @@ def delete_svg_files(svg_id: str | None) -> None:
             log.exception("delete_svg_files: failed to unlink %s", p)
 
 
+def _cancel_svg_work(svg_id: str | None) -> None:
+    """Drop pending/in-flight preprocessing for an SVG without touching files.
+
+    Split out of delete_svg_files because removing a job has to stop the work
+    queued on its behalf even though the drawing itself now survives.
+    """
+    if not svg_id:
+        return
+    optimize_queue.cancel(svg_id)
+    plan_queue.cancel_for_svg(svg_id)
+
+
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
+    """Remove the job. The drawing stays in the library.
+
+    It used to take the SVG with it, which was right when the uploads folder
+    was invisible and a file had no purpose beyond its job. Now that the
+    library exists to replot a previous drawing, that coupling made it useless:
+    a drawing could only be reselected while a job still referenced it, so
+    tidying the queue silently emptied the library too.
+
+    Reclaiming disk is the library's own job — delete a row, or Clean up, both
+    of which say plainly that a drawing is about to be destroyed. What still
+    deletes the file with the job is `delete_on_complete`, because that one is
+    the user asking for exactly that (see plot_worker._run_staged_loop_impl).
+    """
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
@@ -839,7 +1249,8 @@ def delete_job(job_id: str):
         raise _coded(409, "cannot_remove_active")
     svg_id = j.get("svg_id")
     state.remove_job(job_id)
-    delete_svg_files(svg_id)
+    _cancel_svg_work(svg_id)
+    optimize_expert_queue.forget(job_id)
     return {"ok": True}
 
 
@@ -968,10 +1379,17 @@ async def api_create_job(file: UploadFile = File(...),
     else:
         meta = ApiJobMetadata()
 
-    # Persist the SVG (mirrors /upload).
+    # Persist the SVG (mirrors /upload, size cap included — an external client
+    # is if anything more likely to send something unreasonable than the
+    # browser is, and this route runs on the same small board).
+    try:
+        data = await _read_capped(file)
+    except HTTPException:
+        raise HTTPException(
+            413, f"file exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit")
     svg_id = uuid.uuid4().hex[:8]
     path = UPLOAD_DIR / f"{svg_id}.svg"
-    path.write_bytes(await file.read())
+    path.write_bytes(data)
     try:
         info = svg_utils.parse_layers(path)
     except Exception as e:
@@ -981,6 +1399,9 @@ async def api_create_job(file: UploadFile = File(...),
     if not info["layers"]:
         path.unlink(missing_ok=True)
         raise HTTPException(400, "SVG contains no Inkscape layers")
+    # Same as /upload: record the name before anything else, so a drawing sent
+    # by an API client is as readable in the library as a dropped one.
+    state.set_upload_meta(svg_id, file.filename or "upload.svg")
     # Only enqueue once the SVG is known to be usable — an optimize task that
     # outlives the file it was queued for writes a .opt.svg nothing will ever
     # clean up.
@@ -1061,9 +1482,13 @@ async def api_create_job(file: UploadFile = File(...),
         "optimize_svg_linesimplify": pick(meta.optimize_svg_linesimplify, config.OPTIMIZE_SVG_LINESIMPLIFY_DEFAULT),
         "optimize_svg_linesort": pick(meta.optimize_svg_linesort, config.OPTIMIZE_SVG_LINESORT_DEFAULT),
         "optimize_svg_reloop": pick(meta.optimize_svg_reloop, config.OPTIMIZE_SVG_RELOOP_DEFAULT),
-        "optimize_svg_min_length": pick(meta.optimize_svg_min_length, config.OPTIMIZE_SVG_MIN_LENGTH_DEFAULT),
-        "optimize_svg_min_length_mm": pick(meta.optimize_svg_min_length_mm,
-                                          config.OPTIMIZE_SVG_MIN_LENGTH_MM_DEFAULT),
+        "optimize_mode": meta.optimize_mode or "beginner",
+        "optimize_expert_1_enabled": bool(meta.optimize_expert_1_enabled),
+        "optimize_expert_1_cmd": pick(meta.optimize_expert_1_cmd, config.OPTIMIZE_EXPERT_1_CMD_DEFAULT),
+        "optimize_expert_2_enabled": bool(meta.optimize_expert_2_enabled),
+        "optimize_expert_2_cmd": pick(meta.optimize_expert_2_cmd, config.OPTIMIZE_EXPERT_2_CMD_DEFAULT),
+        "optimize_expert_3_enabled": bool(meta.optimize_expert_3_enabled),
+        "optimize_expert_3_cmd": pick(meta.optimize_expert_3_cmd, config.OPTIMIZE_EXPERT_3_CMD_DEFAULT),
     }
     _clamp_job_fields(job_payload, paper_width_mm, paper_height_mm)
     # auto_plot: only kick the worker if no other job is in a runnable or
@@ -1222,13 +1647,45 @@ def move_job(job_id: str, req: MoveRequest):
     return {"ok": True}
 
 
+@app.post("/jobs/{job_id}/queue")
+def queue_job(job_id: str):
+    """Commit a draft to the queue — the one way out of `draft`.
+
+    Idempotent on an already-queued job so a double-click is harmless. Nothing
+    else about the job changes: the estimate the plan queue computed while it
+    sat parked is still valid, which is why this is a status flip and not a
+    requeue (that one deliberately resets the plan, see requeue_job).
+    """
+    j = state.get_job(job_id)
+    if j is None:
+        raise _coded(404, "job_not_found")
+    if j["status"] == "queued":
+        return j
+    if j["status"] != "draft":
+        raise _coded(409, "not_a_draft")
+    state.update_job(job_id, status="queued")
+    fresh = state.get_job(job_id)
+    # The plan may have been skipped or cancelled while it was a draft; asking
+    # again is free when it is already ready (plan_queue dedups on job_id).
+    plan_queue.enqueue(fresh)
+    return fresh
+
+
+@app.post("/api/v1/jobs/{job_id}/queue", dependencies=[Depends(require_api_key)])
+def api_queue_job(job_id: str):
+    return queue_job(job_id)
+
+
 @app.post("/jobs/{job_id}/requeue")
 def requeue_job(job_id: str):
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
-    if j["status"] == "queued":
-        return j  # already runnable — nothing to do (idempotent).
+    # A draft has never run, so there is nothing to re-queue and resetting its
+    # stages/estimate would only throw away the plan it already has. Queue is
+    # the action that applies to it.
+    if j["status"] in ("queued", "draft"):
+        return j  # already runnable, or not eligible — nothing to do (idempotent).
     if j["status"] in ("plotting", "planning", "paused", "awaiting_pen_change", "homing"):
         raise _coded(409, "cannot_requeue_running")
     state.update_job(job_id, status="queued", error=None, resume_path=None,

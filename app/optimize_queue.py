@@ -43,8 +43,6 @@ def settings_key(settings: dict) -> str:
         f"ls={int(bool(settings['linesimplify']))}",
         f"so={int(bool(settings['linesort']))}",
         f"rl={int(bool(settings['reloop']))}",
-        f"ml={int(bool(settings['min_length_enabled']))}",
-        f"mlm={float(settings['min_length_mm']):.4f}",
     ])
 
 
@@ -55,8 +53,6 @@ def settings_from_config() -> dict:
         "linesimplify": bool(config.OPTIMIZE_SVG_LINESIMPLIFY_DEFAULT),
         "linesort": bool(config.OPTIMIZE_SVG_LINESORT_DEFAULT),
         "reloop": bool(config.OPTIMIZE_SVG_RELOOP_DEFAULT),
-        "min_length_enabled": bool(config.OPTIMIZE_SVG_MIN_LENGTH_DEFAULT),
-        "min_length_mm": float(config.OPTIMIZE_SVG_MIN_LENGTH_MM_DEFAULT),
     }
 
 
@@ -67,8 +63,6 @@ def settings_from_job(job: dict) -> dict:
         "linesimplify": bool(job.get("optimize_svg_linesimplify", True)),
         "linesort": bool(job.get("optimize_svg_linesort", True)),
         "reloop": bool(job.get("optimize_svg_reloop", True)),
-        "min_length_enabled": bool(job.get("optimize_svg_min_length", False)),
-        "min_length_mm": float(job.get("optimize_svg_min_length_mm", 1.0)),
     }
 
 
@@ -191,9 +185,11 @@ def enqueue_for_job(job: dict) -> None:
     finished. This closes the common "API client sends custom settings; the
     upload-time pre-opt with config defaults misses cache" case.
 
-    No-op if the job has optimize_svg disabled — there's nothing to do.
+    No-op if the job has optimize_svg disabled, or is in expert mode — expert
+    mode's vpype run is triggered explicitly (see optimize_expert_queue), not
+    automatically here.
     """
-    if not job.get("optimize_svg"):
+    if job.get("optimize_mode", "beginner") != "beginner" or not job.get("optimize_svg"):
         return
     _enqueue(job["svg_id"], settings_from_job(job), kind="job")
 

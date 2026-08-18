@@ -194,13 +194,13 @@ def test_repeated_asks_do_not_stack_up_measurements(client, heavy_job, monkeypat
     from app import ink_cache
 
     calls = []
-    real = svg_utils.ink_rects_by_layer
+    real = svg_utils.measure_layers
 
     def counting(path):
         calls.append(str(path))
         return real(path)
 
-    monkeypatch.setattr(ink_cache.svg_utils, "ink_rects_by_layer", counting)
+    monkeypatch.setattr(ink_cache.svg_utils, "measure_layers", counting)
 
     for _ in range(25):                       # 25 broadcasts' worth of asking
         placement(client, heavy_job, include_ink=True)

@@ -19,6 +19,16 @@ from . import optimize_queue, plot_worker, state, workload
 
 log = logging.getLogger(__name__)
 
+# Statuses worth planning. A draft is included on purpose: it exists so the user
+# can set a job up before committing it, and setting one up without knowing how
+# long it will take is most of the value gone. The cost is bounded — the plan
+# queue is single-slot, niced below the plot worker (see app/workload.py), and
+# cancelled the moment the job is edited or deleted.
+#
+# Everything past these two belongs to the plot worker, which is already
+# planning the job itself; re-planning underneath it would just duplicate work.
+_PLANNABLE = ("queued", "draft")
+
 
 # Plan task --------------------------------------------------------------
 
@@ -82,7 +92,7 @@ def bootstrap_from_state() -> None:
     """
     snap = state.snapshot()
     for job in snap["queue"]:
-        if job["status"] != "queued":
+        if job["status"] not in _PLANNABLE:
             continue
         if job.get("plan_status") == "ready" and job.get("estimated_total_seconds"):
             continue
@@ -177,14 +187,15 @@ def _process(task: _Task) -> None:
     job = state.get_job(task.job_id)
     if job is None:
         return  # job was deleted before we got to it
-    if job["status"] != "queued":
+    if job["status"] not in _PLANNABLE:
         # Plot worker already picked this up (or it's terminal). Don't fight it.
         return
 
     # Wait for the SVG's optimize task to complete first, if any. on_running=None
     # so we don't flip the job's status — the user's job stays "queued" and
-    # plot_status moves through pending → planning → ready.
-    if job.get("optimize_svg"):
+    # plot_status moves through pending → planning → ready. Expert mode's
+    # optimize is triggered explicitly (optimize_expert_queue), never here.
+    if job.get("optimize_mode", "beginner") == "beginner" and job.get("optimize_svg"):
         settings = optimize_queue.settings_from_job(job)
         ok, err = optimize_queue.request_for_job(
             job["svg_id"], settings, on_running=None, cancel_flag=task.cancel_event,
@@ -201,7 +212,7 @@ def _process(task: _Task) -> None:
     # Re-read the job: optimize might have written optimized_with_key, and
     # the user may have edited fields between enqueue and now.
     job = state.get_job(task.job_id)
-    if job is None or job["status"] != "queued":
+    if job is None or job["status"] not in _PLANNABLE:
         return
     if task.cancel_event.is_set():
         return
@@ -220,7 +231,7 @@ def _process(task: _Task) -> None:
 
     # Job may have been edited or deleted while preview ran.
     current = state.get_job(task.job_id)
-    if current is None or current["status"] != "queued":
+    if current is None or current["status"] not in _PLANNABLE:
         return
 
     if estimate:
