@@ -838,14 +838,18 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
 def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:
     """Shift the origin of the remaining (not-yet-plotted) stages by a small
     delta, to compensate for paper drift between layers during a pen-change
-    pause. Belongs to this run only: added on top of the job's own transform
-    offset when rendering each remaining stage (see _run_staged_loop /
-    _run_calibration_phase), never written back to the job record, and walked
-    back off the carriage when the run ends (see _undo_origin_nudge).
+    pause. Belongs to this run only: never written back to the job record,
+    and walked back off the carriage when the run ends (see
+    _undo_origin_nudge).
 
-    Also physically jogs the carriage by the same delta (pen-up, relative),
-    the same way manual_pen/manual_motors do, so the user sees/feels the
-    correction against the paper before continuing.
+    Physically jogs the carriage by the same delta (pen-up, relative), the
+    same way manual_pen/manual_motors do — this *is* the correction, not just
+    a preview of it: an AxiDraw has no home switches, so pyaxidraw treats
+    wherever the carriage is sitting when a stage's plot connects as that
+    plot's own zero (see _jog_carriage). Leaving the carriage here is what
+    makes every remaining stage land shifted by this delta; _run_staged_loop
+    and _run_calibration_phase render their absolute coordinates from the
+    job's own offset alone, deliberately not adding the nudge again on top.
 
     Rejected outright — nothing is moved or stored — if the resulting delta
     would push the paper past the machine bed's far edge, or the content's
@@ -1480,9 +1484,12 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
         # A calibration side-plot is not part of the deliverable, so it must
         # not drag along the document's un-layered content.
         svg_utils.filter_to_layers(svg_path, cal_indices, filt, include_orphans=False)
-        # Reflect any pending origin nudge so the calibration plot shows the
-        # alignment the user is about to commit the next stage to.
-        nudge_x, nudge_y = state.origin_nudge()
+        # Any pending origin nudge is already realized physically: nudge_origin
+        # jogged the carriage there, and pyaxidraw treats wherever it's
+        # sitting when this plot connects as its own zero (it has no home
+        # switches to know otherwise — see _jog_carriage). Adding the nudge
+        # into the transform here too would apply it a second time on top of
+        # the jog that already moved the carriage.
         svg_utils.transform_to_paper(
             filt, cal_svg,
             job["paper_width_mm"], job["paper_height_mm"],
@@ -1491,8 +1498,8 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             job["fit_content"],
             transform_scale=job.get("transform_scale", 1.0),
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
-            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
@@ -1542,7 +1549,9 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
     output_svg = ""
     stopped = STOPPED_COMPLETED
     try:
-        nudge_x, nudge_y = state.origin_nudge()
+        # A pending origin nudge is already realized physically by the
+        # carriage jog in nudge_origin — see the matching note in
+        # _run_calibration_phase — so it isn't added into the transform here.
         svg_utils.transform_to_paper(
             src, scratch,
             job["paper_width_mm"], job["paper_height_mm"],
@@ -1555,8 +1564,8 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             fit_content=True,
             transform_scale=job.get("transform_scale", 1.0),
             transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
-            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+            transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+            transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             # Reconcile the calibration file's orientation to the job's paper
             # regardless of the machine-wide auto-rotate setting: any value
             # other than "off" makes _auto_rotation_deg rotate mismatched
@@ -1833,10 +1842,12 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                                            include_orphans=(i == 0))
                 current_svg = svg_path.with_name(f"{job['svg_id']}.s{i}.svg")
                 # A fine origin nudge dialed in at a pen-change pause (see
-                # nudge_origin) shifts every subsequently-rendered stage on top of
-                # the job's own offset — but never a res_plot resume, which
-                # continues a partial SVG mid-stroke at its existing coordinates.
-                nudge_x, nudge_y = state.origin_nudge()
+                # nudge_origin) is already realized physically — the carriage
+                # sits wherever the jog left it, and pyaxidraw treats that as
+                # its own zero for this stage's plot (no home switches to know
+                # otherwise). Baking the nudge into this transform too would
+                # apply it a second time on top of the jog that already moved
+                # the carriage.
                 svg_utils.transform_to_paper(
                     filtered, current_svg,
                     job["paper_width_mm"], job["paper_height_mm"],
@@ -1845,8 +1856,8 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     job["fit_content"],
                     transform_scale=job.get("transform_scale", 1.0),
                     transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-                    transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0) + nudge_x,
-                    transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0) + nudge_y,
+                    transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+                    transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
                 )
             except Exception:
