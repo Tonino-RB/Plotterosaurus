@@ -1,4 +1,5 @@
 import itertools
+import math
 import re
 
 from lxml import etree
@@ -585,6 +586,19 @@ def transform_to_paper(
     machine's own skew accumulates from. Pre-distorting about the same origin
     means the machine's error cancels it exactly, so the ink lands both the
     right *shape* and in the right *place*, rather than square but shifted.
+
+    That correction slides content sideways by up to ``H * |tan(shear)|``, and
+    for a positive shear it slides *left*, past x = 0. The driver cannot
+    express a negative coordinate — it clips those moves away, which is how a
+    full-bleed rectangle loses a wedge down one side — so the page grows by
+    the allowance and the content is shifted into it. Both are the same single
+    modification the artwork gets, applied to the paper as well, so that
+    everything still fits inside the document instead of hanging off it.
+
+    The shift is a uniform translation of the whole plot, so the artwork keeps
+    its shape and its position *relative to itself*; what moves is where the
+    plot sits against the carriage's parked origin. Park the carriage that far
+    to the left (or nudge the origin) and the ink lands back on the sheet.
     """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
@@ -595,12 +609,24 @@ def transform_to_paper(
         transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
 
+    # The correction's sideways reach over the full height of the page, and
+    # the shift that keeps it out of negative territory. A positive shear
+    # moves content left (x - y*tan), so the whole plot is pushed right by the
+    # full allowance; a negative one already moves it right, and needs none.
+    shear_tan = math.tan(math.radians(shear_deg))
+    x_allowance_mm = abs(shear_tan) * paper_height_mm
+    x_shift_mm = x_allowance_mm if shear_tan > 0 else 0.0
+    # Left as the caller's own value when there is no correction: adding a
+    # float zero would widen an int paper size into "210.0mm" and rewrite the
+    # page of every document the placement corpus records.
+    page_width_mm = paper_width_mm + x_allowance_mm if shear_deg else paper_width_mm
+
     nsmap = {k: v for k, v in root.nsmap.items() if k}
     nsmap[None] = SVG_NS
     new_root = etree.Element(f"{{{SVG_NS}}}svg", nsmap=nsmap)
-    new_root.set("width", f"{paper_width_mm}mm")
+    new_root.set("width", f"{page_width_mm}mm")
     new_root.set("height", f"{paper_height_mm}mm")
-    new_root.set("viewBox", f"0 0 {paper_width_mm} {paper_height_mm}")
+    new_root.set("viewBox", f"0 0 {page_width_mm} {paper_height_mm}")
 
     # An uncalibrated machine adds no wrapper at all, so the output is byte
     # for byte what it was before axis-skew correction existed.
@@ -610,7 +636,7 @@ def transform_to_paper(
         # skewX(a) maps (x, y) -> (x + y*tan(a), y). The machine's own skew is
         # what we are undoing, so the sign is inverted: commanding
         # x - y*tan(shear) makes the machine draw at x.
-        parent.set("transform", f"skewX({-shear_deg})")
+        parent.set("transform", f"translate({x_shift_mm},0) skewX({-shear_deg})")
 
     group = etree.SubElement(parent, f"{{{SVG_NS}}}g")
     group.set("transform", place.group_transform())

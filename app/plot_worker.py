@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import math
 import subprocess
 import sys
 import threading
@@ -384,6 +385,25 @@ def _shear_deg() -> float:
     return config.MACHINE_SHEAR_DEG
 
 
+def _shear_x_allowance_mm(paper_height_mm: float) -> float:
+    """The extra X travel a sheared plot needs, in mm.
+
+    Correcting a skew of ``t`` slides a point sideways in proportion to how
+    far down the page it sits, so over a page of height H the artwork's
+    commanded X span widens by exactly ``H * |tan(t)|`` — 1.5mm on A3 at 0.2
+    degrees. It has to come from somewhere: with paper the same size as the
+    bed and no margins, the plot already uses every millimetre of travel, and
+    the driver simply drops the pen-down moves that fall outside (they are
+    absent from its output, which is what "the rectangle came out clipped"
+    looks like).
+
+    So the envelope grows with the correction rather than the artwork being
+    quietly trimmed to fit it. See svg_utils.transform_to_paper for the
+    matching shift that keeps the commanded coordinates non-negative.
+    """
+    return abs(math.tan(math.radians(_shear_deg()))) * paper_height_mm
+
+
 def _bed_travel_params() -> tuple[str, str, float, float]:
     """The two driver params that carry travel bounds for the configured
     model, plus the active machine's bed in inches — everything needed to
@@ -400,13 +420,22 @@ def _bed_travel_params() -> tuple[str, str, float, float]:
     return x_attr, y_attr, bed_x_mm / 25.4, bed_y_mm / 25.4
 
 
-def _apply_bed_size(ad: axidraw.AxiDraw) -> None:
+def _apply_bed_size(ad: axidraw.AxiDraw, extra_x_mm: float = 0.0) -> None:
     """Make machine_bounds_mm() a real travel-bounds limit: override the
     driver's own per-model params.x_travel_*/y_travel_* (read by
     AxiDraw.update_options() to build self.bounds, which clips out-of-bounds
-    pen-down moves)."""
+    pen-down moves).
+
+    ``extra_x_mm`` widens that clip limit by the skew correction's allowance
+    (see _shear_x_allowance_mm). Only the driver's limit moves: the profile's
+    own bed, which machine_bounds_mm() reports and the paper-too-big warning
+    measures against, is what the user said their machine reaches and is not
+    ours to inflate. This is the narrower claim that the last 1.5mm of a
+    corrected plot is still reachable — which it is, because the origin is
+    wherever the carriage was parked, not a hardware end stop.
+    """
     x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
-    setattr(ad.params, x_attr, bed_x_in)
+    setattr(ad.params, x_attr, bed_x_in + extra_x_mm / 25.4)
     setattr(ad.params, y_attr, bed_y_in)
 
 
@@ -471,7 +500,9 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # rotation) and the physical plot disagree. We always hand pyaxidraw a
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
-        _apply_bed_size(ad)
+        # The document handed over here was rendered with the same shear, so
+        # its commanded X span is wider than the paper by exactly this much.
+        _apply_bed_size(ad, _shear_x_allowance_mm(job["paper_height_mm"]))
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.

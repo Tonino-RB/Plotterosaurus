@@ -114,14 +114,22 @@ def _edges(pts):
 
 # The correction is invisible until it is asked for ------------------------
 
-def test_zero_shear_is_byte_identical(tmp_path):
+@pytest.mark.parametrize("paper", [
+    pytest.param(dict(paper_width_mm=200.0, paper_height_mm=200.0), id="float-page"),
+    # Int sizes are what tests/placement_cases.py passes, and they are the
+    # case that catches an allowance added unconditionally: 210 + 0.0 renders
+    # as "210.0mm", rewriting the page of every row in the golden corpus.
+    pytest.param(dict(paper_width_mm=210, paper_height_mm=297), id="int-page"),
+])
+def test_zero_shear_is_byte_identical(tmp_path, paper):
     """An uncalibrated machine must produce exactly the SVG it always did —
     this is what keeps the golden placement corpus meaningful."""
+    page = {**PAGE, **paper}
     src = _square_svg(tmp_path / "src.svg")
     without = tmp_path / "without.svg"
     zero = tmp_path / "zero.svg"
-    svg_utils.transform_to_paper(src, without, **PAGE)
-    svg_utils.transform_to_paper(src, zero, **PAGE, shear_deg=0.0)
+    svg_utils.transform_to_paper(src, without, **page)
+    svg_utils.transform_to_paper(src, zero, **page, shear_deg=0.0)
     assert without.read_bytes() == zero.read_bytes()
 
 
@@ -155,16 +163,82 @@ def test_correction_makes_the_drawn_square_square(tmp_path):
     assert max(_edges(drawn)) == _close(min(_edges(drawn)))
 
 
-def test_correction_keeps_the_artwork_where_the_preview_promised(tmp_path):
-    """Shearing about the paper origin — the carriage's own zero — cancels the
-    machine's error in position as well as in shape. A correction applied
-    about any other point would come out square but shifted, and the plot
-    would no longer match the on-screen placement it was never allowed to
-    change."""
+def test_correction_moves_the_plot_only_as_a_whole(tmp_path):
+    """The correction cancels the machine's error exactly, up to one uniform
+    sideways translation — the shift that keeps commanded X out of negative
+    territory (see transform_to_paper). The artwork is not distorted and not
+    repositioned relative to itself; the whole plot simply sits that far along
+    the carriage's travel, which is absorbed by where the paper is placed."""
     skew = 0.4
+    drawn = _drawn(_commanded(tmp_path, skew), skew)
+    shift = PAGE["paper_height_mm"] * math.tan(math.radians(skew))
+    for got, want in zip(drawn, CORNERS):
+        assert math.dist(got, (want[0] + shift, want[1])) == _close(0.0)
+
+
+def test_negative_shear_needs_no_shift(tmp_path):
+    """A negative shear already pushes content the safe way, so it costs no
+    translation at all and the plot lands exactly where it was placed."""
+    skew = -0.4
     drawn = _drawn(_commanded(tmp_path, skew), skew)
     for got, want in zip(drawn, CORNERS):
         assert math.dist(got, want) == _close(0.0)
+
+
+# Nothing is commanded where the machine cannot go -------------------------
+
+def test_full_bleed_artwork_survives_the_correction(tmp_path):
+    """The bug this fixes: artwork filling the sheet edge to edge, on a
+    machine whose bed is the same size, lost a wedge down one side because
+    the correction pushed it to negative X and the driver dropped those moves.
+
+    Asserted for both signs and at the corners that actually reach the edges.
+    """
+    for skew in (0.2, 0.4, -0.2, -0.4):
+        full = [(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)]
+        src = tmp_path / "full.svg"
+        src.write_text(
+            '<?xml version="1.0"?>'
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            'width="200mm" height="200mm" viewBox="0 0 200 200">'
+            '<g inkscape:groupmode="layer" inkscape:label="sq">'
+            '<rect x="0" y="0" width="200" height="200" fill="none" stroke="black"/>'
+            "</g></svg>"
+        )
+        out = tmp_path / "full_out.svg"
+        svg_utils.transform_to_paper(src, out, **PAGE, shear_deg=skew)
+
+        m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        node = etree.parse(str(out)).getroot()
+        while (g := node.find(f"{{{SVG_NS}}}g")) is not None:
+            if g.get("transform"):
+                m = _mul(m, _parse_transform(g.get("transform")))
+            node = g
+        a, b, c, d, e, f = m
+        cmd = [(a * x + c * y + e, b * x + d * y + f) for x, y in full]
+
+        allowance = PAGE["paper_height_mm"] * abs(math.tan(math.radians(skew)))
+        page_w = PAGE["paper_width_mm"] + allowance
+        assert min(x for x, _ in cmd) >= -1e-9, f"skew {skew} commands negative X"
+        assert max(x for x, _ in cmd) <= page_w + 1e-9, f"skew {skew} overruns the page"
+
+
+def test_page_grows_by_exactly_the_allowance(tmp_path):
+    """The page carries the same modification as the artwork, so the content
+    stays inside its own document instead of hanging off the edge — and the
+    driver's clip limit is widened to match (plot_worker._apply_bed_size)."""
+    skew = 0.4
+    out = tmp_path / "out.svg"
+    svg_utils.transform_to_paper(_square_svg(tmp_path / "src.svg"), out,
+                                 **PAGE, shear_deg=skew)
+    root = etree.parse(str(out)).getroot()
+    allowance = PAGE["paper_height_mm"] * math.tan(math.radians(skew))
+    expected = PAGE["paper_width_mm"] + allowance
+    assert float(root.get("width").removesuffix("mm")) == _close(expected)
+    assert root.get("viewBox").split()[2] == str(expected)
+    # The height is untouched: a skewX correction moves nothing vertically.
+    assert float(root.get("height").removesuffix("mm")) == _close(PAGE["paper_height_mm"])
 
 
 def test_opposite_edges_stay_parallel(tmp_path):
