@@ -8,11 +8,15 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
+from . import config
+
 log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATE_PATH = BASE_DIR / "state.json"
 UPLOAD_DIR = BASE_DIR / "uploads"
+# See emit_position / draw_trace_snapshot below.
+DRAW_TRACE_PATH = BASE_DIR / "draw_trace.jsonl"
 
 # Jobs that were mid-run when the service died need normalization on load.
 # With a valid resume_path on disk the worker's existing res_plot flow can
@@ -115,6 +119,14 @@ _last_active_id: str | None = None
 _awaiting_next_job: bool = False
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
+# Writer for the active job's draw-stream trace (see emit_position /
+# draw_trace_snapshot). Backed by a file rather than an in-memory list: a
+# multi-hour job emits one point per motion segment (see
+# plot_worker._feed_sm_and_emit_position), and an unbounded in-process list of
+# that many points was OOM-killing long multi-layer jobs. Only opened when
+# draw_stream_enabled, since most installs never read the trace at all.
+_draw_trace_fp = None
+_draw_trace_job_id: str | None = None
 # Always None: nothing sets it, and the setter that used to has been removed as
 # dead code. The field stays in snapshot() because API.md publishes it in the
 # WebSocket state payload, so dropping it is a wire-format change for external
@@ -429,10 +441,27 @@ def move_job(job_id: str, new_index: int) -> bool:
 
 
 def set_active(job_id: str | None) -> None:
-    global _active_id, _last_active_id
+    global _active_id, _last_active_id, _draw_trace_fp, _draw_trace_job_id
     _active_id = job_id
     if job_id is not None:
         _last_active_id = job_id
+        # Called exactly once per genuine run start (queue_loop wraps each
+        # _run_job/_resume_job with set_active(id) ... set_active(None)), so
+        # this is the one reliable "a new plot is starting" signal — unlike
+        # comparing job_id in emit_position below, which can't tell a
+        # requeued run (same job_id) from the one that just finished.
+        _draw_trace_job_id = job_id
+        if _draw_trace_fp is not None:
+            _draw_trace_fp.close()
+            _draw_trace_fp = None
+        if config.DRAW_STREAM_ENABLED:
+            try:
+                # Line-buffered so a concurrent reader (draw_trace_snapshot)
+                # never sees a partial line. Never allowed to fail the run —
+                # trace recording is a bonus, not a plotting dependency.
+                _draw_trace_fp = open(DRAW_TRACE_PATH, "w", buffering=1)
+            except OSError:
+                log.exception("state: could not open %s", DRAW_TRACE_PATH)
     _broadcast()
 
 
@@ -583,10 +612,43 @@ def _broadcast() -> None:
 def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
     global _last_pen_position
     _last_pen_position = {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
+    # Append every sample for the active job to disk (see DRAW_TRACE_PATH
+    # above) so the /draw-stream OBS overlay can replay what's already been
+    # drawn after a browser refresh, instead of starting blank. _draw_trace_fp
+    # is only non-None while draw_stream_enabled and a job is active (opened
+    # in set_active); writes stop as soon as active_id goes back to None on
+    # completion, but the file itself is left alone so a finished job's trace
+    # is still replayable until the next job actually starts, matching
+    # last_active_id's "hold the last run" behaviour above.
+    if _draw_trace_fp is not None and _active_id is not None:
+        job = _get(_active_id)
+        stage_index = (job or {}).get("current_stage_index", 0)
+        _draw_trace_fp.write(json.dumps(
+            {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down,
+             "stage_index": stage_index}) + "\n")
     if _loop is None or _event_queue is None:
         return
     payload = {"type": "position", "x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
     _loop.call_soon_threadsafe(_event_queue.put_nowait, payload)
+
+
+def draw_trace_snapshot() -> dict:
+    points: list[dict] = []
+    try:
+        with open(DRAW_TRACE_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    points.append(json.loads(line))
+                except ValueError:
+                    # Last line of a file still being written to can be cut
+                    # mid-write; skip rather than fail the whole snapshot.
+                    continue
+    except OSError:
+        pass
+    return {"job_id": _draw_trace_job_id, "points": points}
 
 
 async def drain_events() -> None:

@@ -133,6 +133,21 @@ _SETTINGS: list[_Setting] = [
     _Setting("camera_timelapse_interval_s_default", float, 5.0, lambda v: v > 0),
     _Setting("camera_speed_multiplier_default", float, 4.0, lambda v: v > 1.0),
     _Setting("record_plot_default", bool, False),
+    # Live "draw progress" page for an OBS Browser Source (see app/main.py's
+    # /draw-stream routes). Opt-in the same way camera_enabled is: only present
+    # when install.sh was run with ENABLE_DRAW_STREAM=1.
+    _Setting("draw_stream_enabled", bool, os.environ.get("ENABLE_DRAW_STREAM") == "1"),
+    # Fallback stroke width (px) for content with no resolvable SVG
+    # stroke-width (e.g. fill-only shapes) — the normal case reads width and
+    # color straight off the SVG (see static/draw-stream.js resolveLayerColor
+    # / resolveLayerWidth), scaled to canvas px via the same mm-per-px factor
+    # used for pen position, so line weight always matches the real plot.
+    _Setting("draw_stream_stroke_width_px", int, 4, lambda v: 1 <= v <= 40),
+    _Setting("draw_stream_background", str, "black", lambda v: v in ("black", "white")),
+    # The canvas is always sized to the active job's own paper aspect ratio
+    # (no separate ratio setting) — this just caps how many pixels its longer
+    # edge renders at, for sharper lines on larger paper sizes.
+    _Setting("draw_stream_max_resolution_px", int, 2560, lambda v: 480 <= v <= 4096),
 ]
 
 # Static API key for /api/v1/* routes — kept outside the schema because it

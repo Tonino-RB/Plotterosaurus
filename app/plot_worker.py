@@ -8,12 +8,33 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+from axidrawinternal import dripfeed
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
 from . import camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
 
 log = logging.getLogger(__name__)
+
+# dripfeed.feed_sm is where AxiDraw dispatches each shattered motion segment
+# and advances ad.pen.phys.xpos/ypos to that segment's endpoint. Emitting the
+# draw-stream position right here, once per real segment, gives the live
+# preview the exact polyline AxiDraw computed — sampling on a timer instead
+# (as this used to) skips segment endpoints once the plot moves fast enough
+# for segments to complete between polls, which flattens curves into
+# straight-edged "triangles" on the live stream.
+_orig_feed_sm = dripfeed.feed_sm
+
+
+def _feed_sm_and_emit_position(ad_ref, move, drip_logger):
+    _orig_feed_sm(ad_ref, move, drip_logger)
+    x_in = ad_ref.pen.phys.xpos
+    y_in = ad_ref.pen.phys.ypos
+    if x_in is not None and y_in is not None:
+        state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
+
+
+dripfeed.feed_sm = _feed_sm_and_emit_position
 
 STOPPED_COMPLETED = 0
 STOPPED_PROGRAMMATIC_PAUSE = 1
@@ -197,21 +218,14 @@ def _preview_cache_put(key: str, value: dict) -> None:
 # Background polling -------------------------------------------------------
 
 def _position_poll_loop() -> None:
-    last = (None, None, None)
+    # Draw-stream position is emitted directly from dripfeed.feed_sm (see
+    # _feed_sm_and_emit_position above) now, not sampled here. This loop just
+    # watches for the pen lifting so a pending pause-at-pen-up can fire.
     while not _stop_position.is_set():
         ad = _current_ad
         if ad is not None and hasattr(ad, "pen") and hasattr(ad.pen, "phys"):
             try:
-                x_in = ad.pen.phys.xpos
-                y_in = ad.pen.phys.ypos
-                z_up = getattr(ad.pen.phys, "z_up", None)
-                if x_in is not None and y_in is not None:
-                    pen_down = (z_up is False)
-                    key = (x_in, y_in, pen_down)
-                    if key != last:
-                        state.emit_position(x_in * 25.4, y_in * 25.4, pen_down)
-                        last = key
-                if z_up is True and state.pause_at_pen_up_pending():
+                if ad.pen.phys.z_up is True and state.pause_at_pen_up_pending():
                     state.set_pause_at_pen_up_pending(False)
                     try:
                         ad.transmit_pause_request()

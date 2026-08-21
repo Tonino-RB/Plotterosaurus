@@ -8,6 +8,9 @@
 #   PLOTTER_MODEL=<1-8>       — set axidraw model for this installation
 #   ENABLE_CAMERA=1           — set up plot recording via a Pi Camera Module 3 +
 #                               MediaMTX (opt-in: skipped entirely otherwise)
+#   ENABLE_DRAW_STREAM=1      — turn on the /draw-stream live "draw progress"
+#                               page for an OBS Browser Source (opt-in: pure
+#                               app code, no extra packages/services either way)
 #   ENABLE_SELF_UPDATE=1      — install the in-app "Update now" path (root-owned
 #                               wrapper + passwordless sudo rule that does
 #                               `git fetch` + `git reset --hard` against
@@ -279,6 +282,37 @@ PYEOF
         chmod 644 "$ENABLE_CAMERA_PY"
         as_user python3 "$ENABLE_CAMERA_PY" "$PROJECT_DIR/config.json"
         rm -f "$ENABLE_CAMERA_PY"
+    fi
+fi
+
+# Draw-stream OBS overlay (opt-in) ------------------------------------------
+# Pure application code — no system packages, no separate service. Just flips
+# the same kind of env-var-seeded default the camera uses (see app/config.py
+# draw_stream_enabled), so the settings UI/page stay hidden until asked for.
+if [ "${ENABLE_DRAW_STREAM:-}" = "1" ]; then
+    echo ">>> Enabling draw-stream in plotterosaurus.service"
+    run_sudo sed -i "s/^Environment=ENABLE_DRAW_STREAM=.*/Environment=ENABLE_DRAW_STREAM=1/" "$UNIT_DST"
+
+    # Same reasoning as the camera_enabled patch above: the env var only seeds
+    # the default the first time config.json is created, so a re-run against
+    # an already-configured install needs a direct patch to flip it on.
+    if [ -f "$PROJECT_DIR/config.json" ]; then
+        echo "    enabling draw_stream_enabled in existing config.json"
+        ENABLE_DRAW_STREAM_PY="$(mktemp --suffix=.py)"
+        cat > "$ENABLE_DRAW_STREAM_PY" <<'PYEOF'
+import json, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+data["draw_stream_enabled"] = True
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+        chmod 644 "$ENABLE_DRAW_STREAM_PY"
+        as_user python3 "$ENABLE_DRAW_STREAM_PY" "$PROJECT_DIR/config.json"
+        rm -f "$ENABLE_DRAW_STREAM_PY"
     fi
 fi
 

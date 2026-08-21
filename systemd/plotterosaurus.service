@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 Environment=PLOTTER_MODEL=2
 Environment=ENABLE_CAMERA=0
+Environment=ENABLE_DRAW_STREAM=0
 ExecStart=__WORKDIR__/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80
 WorkingDirectory=__WORKDIR__
 User=__SERVICE_USER__

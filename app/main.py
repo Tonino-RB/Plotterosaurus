@@ -248,6 +248,20 @@ def index():
     return HTMLResponse(html.replace("__ASSET_VERSION__", config.APP_VERSION))
 
 
+@app.get("/draw-stream")
+def draw_stream_page():
+    # Standalone page for an OBS Browser Source — not part of the SPA, so it
+    # gets its own route rather than living under the immutably-cached
+    # /static mount (see _ImmutableStatic below).
+    html = (STATIC_DIR / "draw-stream.html").read_text()
+    return HTMLResponse(html.replace("__ASSET_VERSION__", config.APP_VERSION))
+
+
+@app.get("/draw-stream/trace")
+def draw_stream_trace():
+    return state.draw_trace_snapshot()
+
+
 # SVG storage -------------------------------------------------------------
 
 @app.post("/upload")
@@ -286,6 +300,48 @@ async def upload(file: UploadFile = File(...)):
     # the number being there and the user watching a spinner.
     ink_cache.request(path)
     return {"id": svg_id, "filename": file.filename or "upload.svg", **info}
+
+
+# Draw-stream background image ---------------------------------------------
+# A single shared "paper" photo/texture, used as the /draw-stream page's
+# background (see app/main.py's draw_stream_page). Fixed filename rather than
+# a job-scoped id: there is exactly one background image at a time, shared
+# across jobs. Presence of the file *is* the on/off state — no separate
+# enabled flag to keep in sync.
+
+_DRAW_STREAM_BG_STEM = "draw_stream_background"
+_DRAW_STREAM_BG_EXTS = (("png", "image/png"), ("jpg", "image/jpeg"))
+
+
+@app.post("/draw-stream/background")
+async def upload_draw_stream_background(file: UploadFile = File(...)):
+    data = await _read_capped(file)
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        ext = "png"
+    elif data[:3] == b"\xff\xd8\xff":
+        ext = "jpg"
+    else:
+        raise _coded(400, "not_image")
+    for old_ext, _ in _DRAW_STREAM_BG_EXTS:
+        (UPLOAD_DIR / f"{_DRAW_STREAM_BG_STEM}.{old_ext}").unlink(missing_ok=True)
+    (UPLOAD_DIR / f"{_DRAW_STREAM_BG_STEM}.{ext}").write_bytes(data)
+    return {"ok": True}
+
+
+@app.get("/draw-stream/background")
+def get_draw_stream_background():
+    for ext, media in _DRAW_STREAM_BG_EXTS:
+        path = UPLOAD_DIR / f"{_DRAW_STREAM_BG_STEM}.{ext}"
+        if path.exists():
+            return FileResponse(path, media_type=media)
+    raise HTTPException(404)
+
+
+@app.delete("/draw-stream/background")
+def delete_draw_stream_background():
+    for ext, _ in _DRAW_STREAM_BG_EXTS:
+        (UPLOAD_DIR / f"{_DRAW_STREAM_BG_STEM}.{ext}").unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/svg/{svg_id}")
@@ -956,6 +1012,10 @@ class SettingsUpdate(BaseModel):
     camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
     camera_speed_multiplier_default: float | None = Field(None, gt=1.0)
     record_plot_default: bool | None = None
+    draw_stream_enabled: bool | None = None
+    draw_stream_stroke_width_px: int | None = Field(None, ge=1, le=40)
+    draw_stream_background: Literal["black", "white"] | None = None
+    draw_stream_max_resolution_px: int | None = Field(None, ge=480, le=4096)
 
 
 # Numeric job fields that get clamped on create/update. Out-of-range values

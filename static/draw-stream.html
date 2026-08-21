@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Plotterosaurus — Draw Stream</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: transparent; overflow: hidden;
+    width: 100%; height: 100%;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* The canvas is rendered at its full configured resolution (e.g.
+     1920x1080) via JS width/height attributes — that's what OBS captures
+     1:1 when its Browser Source is set to match. In an arbitrary browser
+     window (not that exact size), max-width/max-height + auto scales it
+     down while keeping its aspect ratio, instead of silently cropping it
+     via overflow:hidden and hiding whatever's centered in the middle. */
+  canvas {
+    display: block;
+    max-width: 100vw;
+    max-height: 100vh;
+    width: auto;
+    height: auto;
+  }
+  .idle-msg {
+    position: fixed; top: 12px; left: 16px;
+    background: rgba(0, 0, 0, 0.55); color: #fff;
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 5px 10px; border-radius: 6px;
+    pointer-events: none; z-index: 2;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="idle-msg" class="idle-msg">Waiting for a plot to start…</div>
+<script src="/static/draw-stream.js?v=__ASSET_VERSION__"></script>
+</body>
+</html>

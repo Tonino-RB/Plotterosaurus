@@ -3348,6 +3348,18 @@ const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
 const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
 const settingsWebhookTest = $("settings-webhook-test");
 const settingsWebhookMessage = $("settings-webhook-message");
+const drawStreamSettingsBtn = $("draw-stream-settings-btn");
+const drawStreamSettingsModal = $("draw-stream-settings-modal");
+const drawStreamSettingsMessage = $("draw-stream-settings-message");
+const settingsDrawStreamUrl = $("settings-draw-stream-url");
+const settingsDrawStreamStrokeWidth = $("settings-draw-stream-stroke-width");
+const settingsDrawStreamBackground = $("settings-draw-stream-background");
+const settingsDrawStreamMaxResolution = $("settings-draw-stream-max-resolution");
+const settingsDrawStreamBgThumb = $("settings-draw-stream-bg-thumb");
+const settingsDrawStreamBgFile = $("settings-draw-stream-bg-file");
+const settingsDrawStreamBgUpload = $("settings-draw-stream-bg-upload");
+const settingsDrawStreamBgRemove = $("settings-draw-stream-bg-remove");
+const settingsDrawStreamBgMessage = $("settings-draw-stream-bg-message");
 const settingsOptimize = $("settings-optimize");
 const settingsOptimizeLinemerge = $("settings-optimize-linemerge");
 const settingsOptimizeLinesimplify = $("settings-optimize-linesimplify");
@@ -3445,6 +3457,10 @@ function applyAppSettings(data) {
     camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
     camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
     record_plot_default: data.record_plot_default ?? appSettings.record_plot_default,
+    draw_stream_enabled: data.draw_stream_enabled ?? appSettings.draw_stream_enabled,
+    draw_stream_stroke_width_px: data.draw_stream_stroke_width_px ?? appSettings.draw_stream_stroke_width_px,
+    draw_stream_background: data.draw_stream_background ?? appSettings.draw_stream_background,
+    draw_stream_max_resolution_px: data.draw_stream_max_resolution_px ?? appSettings.draw_stream_max_resolution_px,
   };
   if (effectiveDisplayUnit() !== prevUnit) refreshUnitDependentDisplays();
   // applyMachineAutoRotateToCard only locks the orientation *button* visually;
@@ -3468,6 +3484,7 @@ function applyAppSettings(data) {
   document.querySelectorAll(".camera-job-options").forEach((el) => {
     el.hidden = !appSettings.camera_enabled;
   });
+  drawStreamSettingsBtn.hidden = !appSettings.draw_stream_enabled;
 }
 
 function refreshUnitDependentDisplays() {
@@ -3943,8 +3960,66 @@ cameraDenoise.addEventListener("change", applyLivePicture);
 cameraHflip.addEventListener("change", applyLivePicture);
 cameraVflip.addEventListener("change", applyLivePicture);
 
+// ───── Draw-stream settings modal ────────────────────────────────────────
+
+drawStreamSettingsBtn.addEventListener("click", openDrawStreamSettings);
+
+function closeDrawStreamSettings() {
+  drawStreamSettingsModal.hidden = true;
+}
+$("draw-stream-settings-cancel").addEventListener("click", closeDrawStreamSettings);
+drawStreamSettingsModal.addEventListener("click", (e) => {
+  if (e.target === drawStreamSettingsModal) closeDrawStreamSettings();
+});
+drawStreamSettingsModal.querySelectorAll(".card-section-head").forEach((head) => {
+  head.addEventListener("click", () => {
+    head.parentElement.classList.toggle("collapsed");
+    syncSectionCaret(head.parentElement);
+  });
+  syncSectionCaret(head.parentElement);
+});
+
+async function openDrawStreamSettings() {
+  drawStreamSettingsMessage.textContent = "";
+  try {
+    const res = await fetch("/settings");
+    const data = await res.json();
+    applyAppSettings(data);
+    settingsDrawStreamUrl.value = `${location.origin}/draw-stream`;
+    settingsDrawStreamStrokeWidth.value = String(data.draw_stream_stroke_width_px ?? 4);
+    setSegmentedValue(settingsDrawStreamBackground, data.draw_stream_background === "white" ? "white" : "black");
+    settingsDrawStreamMaxResolution.value = String(data.draw_stream_max_resolution_px ?? 2560);
+    refreshDrawStreamBgThumb();
+    settingsDrawStreamBgMessage.textContent = "";
+  } catch (e) {}
+  drawStreamSettingsModal.hidden = false;
+}
+
+async function saveDrawStreamSettings() {
+  try {
+    const body = {
+      draw_stream_stroke_width_px: parseInt(settingsDrawStreamStrokeWidth.value) || 4,
+      draw_stream_background: getSegmentedValue(settingsDrawStreamBackground, "black"),
+      draw_stream_max_resolution_px: parseInt(settingsDrawStreamMaxResolution.value) || 2560,
+    };
+    const res = await fetch("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+    applyAppSettings(await res.json());
+    closeDrawStreamSettings();
+  } catch (e) {
+    drawStreamSettingsMessage.textContent = t("settings.save_failed", { message: e.message });
+    drawStreamSettingsMessage.className = "error";
+  }
+}
+$("draw-stream-settings-save").addEventListener("click", saveDrawStreamSettings);
+
 for (const [inputId, copyId] of [["camera-rtsp-url", "camera-rtsp-url-copy"],
-                                  ["camera-hls-url", "camera-hls-url-copy"]]) {
+                                  ["camera-hls-url", "camera-hls-url-copy"],
+                                  ["settings-draw-stream-url", "settings-draw-stream-url-copy"]]) {
   const input = $(inputId);
   const btn = $(copyId);
   btn.addEventListener("click", async () => {
@@ -3955,6 +4030,51 @@ for (const [inputId, copyId] of [["camera-rtsp-url", "camera-rtsp-url-copy"],
     setTimeout(() => { btn.textContent = t("common.copy"); }, 1200);
   });
 }
+
+settingsDrawStreamBackground.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => setSegmentedValue(settingsDrawStreamBackground, btn.dataset.val));
+});
+
+// Draw-stream background image: uploaded/removed immediately (not part of
+// the batched settings Save), since it's a file on disk, not a _SETTINGS
+// value — reflected via the /draw-stream/background GET/DELETE routes.
+function refreshDrawStreamBgThumb() {
+  const url = `/draw-stream/background?t=${Date.now()}`;
+  const probe = new Image();
+  probe.onload = () => {
+    settingsDrawStreamBgThumb.src = url;
+    settingsDrawStreamBgThumb.hidden = false;
+    settingsDrawStreamBgRemove.hidden = false;
+  };
+  probe.onerror = () => {
+    settingsDrawStreamBgThumb.hidden = true;
+    settingsDrawStreamBgRemove.hidden = true;
+  };
+  probe.src = url;
+}
+settingsDrawStreamBgUpload.addEventListener("click", () => settingsDrawStreamBgFile.click());
+settingsDrawStreamBgFile.addEventListener("change", async () => {
+  const file = settingsDrawStreamBgFile.files[0];
+  if (!file) return;
+  settingsDrawStreamBgMessage.textContent = "";
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/draw-stream/background", { method: "POST", body: form });
+    if (!res.ok) throw new Error(await readErr(res));
+    refreshDrawStreamBgThumb();
+  } catch (e) {
+    settingsDrawStreamBgMessage.textContent = t("error.request_failed", { message: e.message });
+    settingsDrawStreamBgMessage.className = "error";
+  }
+  settingsDrawStreamBgFile.value = "";
+});
+settingsDrawStreamBgRemove.addEventListener("click", async () => {
+  try {
+    await fetch("/draw-stream/background", { method: "DELETE" });
+    refreshDrawStreamBgThumb();
+  } catch (e) {}
+});
 
 function resetSettingsDisplay() {
   settingsDisplayUnit.value = localeDefaultUnit();

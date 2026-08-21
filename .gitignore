@@ -15,6 +15,7 @@ recordings/
 .claude/
 config.json
 state.json
+draw_trace.jsonl
 update.log
 update.lock
 *.swp

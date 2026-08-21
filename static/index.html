@@ -40,6 +40,12 @@
           <circle cx="12" cy="13" r="4"></circle>
         </svg>
       </button>
+      <button id="draw-stream-settings-btn" class="icon-btn" title="Draw Stream" aria-label="Draw stream settings" data-i18n-title="a11y.draw_stream_settings" data-i18n-aria-label="a11y.draw_stream_settings" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+        </svg>
+      </button>
       <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings" data-i18n-title="a11y.settings" data-i18n-aria-label="a11y.settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"></circle>
@@ -675,6 +681,74 @@
         <button id="camera-settings-save" class="primary" data-i18n="common.save">Save</button>
       </div>
       <div id="camera-settings-message" class="muted"></div>
+    </div>
+  </div>
+
+  <div id="draw-stream-settings-modal" class="modal" hidden>
+    <div class="modal-card scrollable">
+      <h2 data-i18n="settings.draw_stream.title">Draw Stream</h2>
+      <div class="modal-body">
+
+      <section class="card-section" data-section="draw-stream-link">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="settings.draw_stream.link_title">Link for OBS / streaming software</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="settings.draw_stream.note">A live-updating page showing the plot being drawn in real time, for use as an OBS Browser Source.</p>
+          <div class="api-key-row">
+            <input id="settings-draw-stream-url" type="text" readonly />
+            <button id="settings-draw-stream-url-copy" class="neutral" type="button" data-i18n="common.copy">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card-section" data-section="draw-stream-appearance">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="settings.draw_stream.appearance_title">Appearance</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="settings.draw_stream.auto_style_note">Line color and thickness are read straight off each layer's own SVG stroke, to scale — no need to set them by hand. The canvas is always framed to the job's exact paper size.</p>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="settings.draw_stream.max_resolution_label">Max resolution (px, longer edge)</span>
+              <input type="number" id="settings-draw-stream-max-resolution" min="480" max="4096" step="1" value="2560" />
+            </label>
+            <div class="field">
+              <span class="field-label" data-i18n="settings.draw_stream.background_label">Background</span>
+              <div class="segmented" id="settings-draw-stream-background">
+                <button type="button" data-val="black" class="active" data-i18n="settings.draw_stream.background_black">Black</button>
+                <button type="button" data-val="white" data-i18n="settings.draw_stream.background_white">White</button>
+              </div>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="settings.draw_stream.stroke_width_label">Fallback stroke width (px)</span>
+              <input type="number" id="settings-draw-stream-stroke-width" min="1" max="40" step="1" />
+            </label>
+          </div>
+          <div class="field">
+            <span class="field-label" data-i18n="settings.draw_stream.background_image_label">Background image (photo of paper)</span>
+            <p class="muted" data-i18n="settings.draw_stream.background_image_note">Ink is composited onto it with a "multiply" blend to mimic real ink on paper. Uploading replaces any existing image.</p>
+            <img id="settings-draw-stream-bg-thumb" class="draw-stream-bg-thumb" hidden alt="" />
+            <div class="actions">
+              <input type="file" id="settings-draw-stream-bg-file" accept="image/png,image/jpeg" hidden />
+              <button id="settings-draw-stream-bg-upload" class="neutral" type="button" data-i18n="settings.draw_stream.upload_image">Upload image</button>
+              <button id="settings-draw-stream-bg-remove" class="neutral" type="button" data-i18n="settings.draw_stream.remove_image" hidden>Remove image</button>
+            </div>
+            <div id="settings-draw-stream-bg-message" class="muted"></div>
+          </div>
+        </div>
+      </section>
+
+      </div>
+      <div class="actions">
+        <button id="draw-stream-settings-cancel" class="neutral" data-i18n="common.cancel">Cancel</button>
+        <button id="draw-stream-settings-save" class="primary" data-i18n="common.save">Save</button>
+      </div>
+      <div id="draw-stream-settings-message" class="muted"></div>
     </div>
   </div>
 

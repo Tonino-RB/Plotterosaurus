@@ -469,6 +469,7 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 /* Optional pen name, trailing the layer name in the same grey as .muted. */
 .layer-pen { color: var(--text-faint); font-size: 0.85rem; margin-left: 0.6em; }
 .layer-time { flex: 0 0 auto; color: var(--text-soft); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.draw-stream-bg-thumb { display: block; max-width: 100%; max-height: 8rem; border-radius: 6px; border: 1px solid var(--border); margin: 0.4rem 0; }
 .layer-swatch {
   width: 18px; height: 18px; flex: 0 0 18px;
   display: inline-flex; align-items: center; justify-content: center;
