@@ -361,6 +361,29 @@ def machine_bounds_mm() -> tuple[float, float]:
     return machine["width_mm"], machine["height_mm"]
 
 
+def _shear_deg() -> float:
+    """The active machine's axis-skew correction, in degrees — how far its two
+    axes are out of square, measured by the user (see the Machine settings
+    note) and undone on the way to the hardware.
+
+    This is deliberately not part of app/placement.py, and so is deliberately
+    absent from the preview, the browser's own placement maths and the bounds
+    check. Placement answers "where does the artwork go on the page", and the
+    answer must stay identical whether or not the machine drawing it happens
+    to be out of square: the page is the same page. Skew correction is the
+    opposite kind of fact — a defect of one machine, cancelled out at the last
+    moment so that what lands on paper matches what the screen promised.
+    Folding it into placement would make every preview, every ink-bounds
+    answer and every golden row lean over with the machine.
+
+    It is also left out of the time/distance estimate. A shear of a fraction
+    of a degree changes path length by parts in ten thousand, far below the
+    estimate's own accuracy, and including it would mean keying the preview
+    cache on it too — real complexity for a number that would not move.
+    """
+    return config.MACHINE_SHEAR_DEG
+
+
 def _bed_travel_params() -> tuple[str, str, float, float]:
     """The two driver params that carry travel bounds for the configured
     model, plus the active machine's bed in inches — everything needed to
@@ -1515,6 +1538,7 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+            shear_deg=_shear_deg(),
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
@@ -1590,6 +1614,7 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             # was "off" (the default), which is why only the one corner that
             # happened to already be in-bounds ever plotted.
             machine_auto_rotate="portrait",
+            shear_deg=_shear_deg(),
         )
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
@@ -1873,6 +1898,12 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
                     transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+                    # Skew correction is applied here, on the way to the
+                    # hardware, and nowhere else. A res_plot resume replays
+                    # pyaxidraw's own output SVG, which was produced from an
+                    # already-corrected input, so it carries the correction
+                    # without applying it twice.
+                    shear_deg=_shear_deg(),
                 )
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)

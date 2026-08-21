@@ -959,6 +959,10 @@ class MachineProfile(BaseModel):
     width_mm: float = Field(..., gt=0)
     height_mm: float = Field(..., gt=0)
     auto_rotate: Literal["off", "portrait", "landscape"] = "off"
+    # Axis-skew correction for a gantry that isn't square. Plot-time only —
+    # it never reaches placement, so nothing on screen leans with it.
+    shear_deg: float = Field(0.0, ge=-config.MACHINE_SHEAR_DEG_MAX,
+                             le=config.MACHINE_SHEAR_DEG_MAX)
 
 
 class SettingsUpdate(BaseModel):
@@ -2180,6 +2184,7 @@ def _settings_payload() -> dict:
     snap["machine_auto_rotate"] = config.MACHINE_AUTO_ROTATE
     snap["machine_width_mm"] = config.MACHINE_WIDTH_MM
     snap["machine_height_mm"] = config.MACHINE_HEIGHT_MM
+    snap["machine_shear_deg"] = config.MACHINE_SHEAR_DEG
     return snap
 
 

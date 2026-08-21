@@ -565,12 +565,26 @@ def transform_to_paper(
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
     machine_auto_rotate: str = placement.AUTO_ROTATE_OFF,
+    shear_deg: float = 0.0,
 ) -> None:
     """Write a new SVG sized to the paper, with the source content wrapped in
     the ``<g transform>`` that places it (see app/placement.py).
 
     The output uses mm as its user-unit coordinate space
     (viewBox = 0 0 paper_w paper_h) so pyaxidraw renders it 1:1 on the bed.
+
+    ``shear_deg`` corrects a machine whose two axes are not square to each
+    other, and is the one thing here that is deliberately *not* part of the
+    placement: it describes the machine, not where the artwork goes, so it is
+    passed only by the call sites that drive real hardware and left at 0 by
+    the estimate and by everything the user looks at. See
+    ``plot_worker._shear_deg`` for why it lives outside placement.Placement.
+
+    The correction is applied about the output's own origin — the paper's
+    top-left, which is where the carriage starts — because that is where the
+    machine's own skew accumulates from. Pre-distorting about the same origin
+    means the machine's error cancels it exactly, so the ink lands both the
+    right *shape* and in the right *place*, rather than square but shifted.
     """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
@@ -588,7 +602,17 @@ def transform_to_paper(
     new_root.set("height", f"{paper_height_mm}mm")
     new_root.set("viewBox", f"0 0 {paper_width_mm} {paper_height_mm}")
 
-    group = etree.SubElement(new_root, f"{{{SVG_NS}}}g")
+    # An uncalibrated machine adds no wrapper at all, so the output is byte
+    # for byte what it was before axis-skew correction existed.
+    parent = new_root
+    if shear_deg:
+        parent = etree.SubElement(new_root, f"{{{SVG_NS}}}g")
+        # skewX(a) maps (x, y) -> (x + y*tan(a), y). The machine's own skew is
+        # what we are undoing, so the sign is inverted: commanding
+        # x - y*tan(shear) makes the machine draw at x.
+        parent.set("transform", f"skewX({-shear_deg})")
+
+    group = etree.SubElement(parent, f"{{{SVG_NS}}}g")
     group.set("transform", place.group_transform())
     for child in list(root):
         group.append(child)

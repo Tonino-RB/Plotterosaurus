@@ -256,6 +256,33 @@
             </div>
           </div>
           <p class="muted" data-i18n="settings.machine.note">Measure what the pen can actually reach — the bed is the whole machine here, and anything past it is clipped at plot time. The presets are only starting points: rename, resize or delete any of them.</p>
+          <label class="field">
+            <span class="field-label" data-i18n="settings.machine.shear_label">Axis-skew correction (°)</span>
+            <input type="number" id="settings-machine-shear" min="-5" max="5" step="0.001" value="0" />
+          </label>
+          <p class="muted" data-i18n="settings.machine.shear_note">For a gantry whose two axes aren't square, which draws rectangles as slight parallelograms. Applied only on the way to the plotter — the preview, the estimate and every measurement on screen stay exactly as they are. Leave at 0 unless you've measured a skew.</p>
+          <details class="machine-shear-calc">
+            <summary data-i18n="settings.machine.shear_calc_summary">Work it out from a test square</summary>
+            <p class="muted" data-i18n="settings.machine.shear_calc_note">Plot a square with skew set to 0, then measure it corner to corner. Both diagonals equal means no skew and nothing to correct.</p>
+            <div class="form-row">
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.shear_side">Side (mm)</span>
+                <input type="number" id="settings-shear-side" min="1" step="0.1" placeholder="100" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.shear_d1">↘ Top-left to bottom-right (mm)</span>
+                <input type="number" id="settings-shear-d1" min="0" step="0.1" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.shear_d2">↙ Top-right to bottom-left (mm)</span>
+                <input type="number" id="settings-shear-d2" min="0" step="0.1" />
+              </label>
+            </div>
+            <div class="machine-shear-calc-actions">
+              <button type="button" id="settings-shear-apply" class="neutral" data-i18n="settings.machine.shear_apply">Use this angle</button>
+              <span id="settings-shear-result" class="muted"></span>
+            </div>
+          </details>
         </div>
       </section>
 
