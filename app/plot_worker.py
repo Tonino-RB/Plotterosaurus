@@ -959,24 +959,30 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
         raise RuntimeError("Plotter busy")
     x, y = state.origin_nudge()
     new_x, new_y = x + dx_mm, y + dy_mm
+    # The delta the run actually plots at is the idle manual jog plus this
+    # nudge (nothing re-homes the carriage between them), so both guards below
+    # have to see both — checking the nudge alone lets two individually-fine
+    # deltas add up to one that runs off the page, or into the rail.
+    base_x, base_y = state.origin_base()
+    manual_x, manual_y = state.manual_origin_offset()
+
     # Overshoot on the far side runs the carriage into its own end stops, so
     # the paper's origin corner has to stay inside the bed's travel envelope.
-    # (Overshoot of the *page* is comparatively benign — pyaxidraw clips it,
-    # same as artwork that runs past the page edge, see _delta_correction_mm —
-    # so this only guards the bed's own outer extent, not the paper size on
-    # top of it.)
+    # Measured in real bed coordinates — the declared origin (see set_origin)
+    # is not necessarily the machine's own corner, and the manual jog is still
+    # physically applied — so all three add up to where the carriage would
+    # actually stand. (Overshoot of the *page* is comparatively benign —
+    # pyaxidraw clips it, same as artwork that runs past the page edge, see
+    # _delta_correction_mm — so this only guards the bed's own outer extent,
+    # not the paper size on top of it.)
     bed_w_mm, bed_h_mm = machine_bounds_mm()
-    if new_x > bed_w_mm or new_y > bed_h_mm:
+    if (base_x + manual_x + new_x > bed_w_mm
+            or base_y + manual_y + new_y > bed_h_mm):
         raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
     if (new_x < 0 or new_y < 0) and not confirm_below_origin:
         raise RuntimeError("Nudge would go above or left of the origin")
     x, y = new_x, new_y
 
-    # The delta the run actually plots at is the idle manual jog plus this
-    # nudge (nothing re-homes the carriage between them), so the artwork check
-    # has to see both — checking the nudge alone lets two individually-fine
-    # deltas add up to one that runs off the page.
-    manual_x, manual_y = state.manual_origin_offset()
     svg_path = _uploads() / f"{job['svg_id']}.svg"
     correction = _delta_correction_mm(job, svg_path, manual_x + x, manual_y + y)
     if correction is not None:
@@ -1007,13 +1013,22 @@ def _undo_origin_nudge() -> None:
 
     Failures are logged, not raised — the run is over and the caller is a
     finally block tidying up after an outcome (completed / cancelled / failed)
-    that must not be replaced by a homing error."""
+    that must not be replaced by a homing error. A failed walk-back is handed
+    to the manual jog instead of dropped: the carriage is still standing where
+    the nudge put it, so the displacement is real whether or not anything
+    records it, and the manual jog is the session-level "how far the carriage
+    is from the declared origin" that the readout shows, that _run_job's
+    pre-flight check measures, and that manual_jog_home can walk back.
+    Clearing it outright would leave exactly the same physical drift with
+    nothing left pointing at it."""
     x, y = state.origin_nudge()
     if x or y:
         try:
             _jog_carriage(-x, -y)
         except Exception:
             log.exception("could not walk the origin nudge back to the run's origin")
+            manual_x, manual_y = state.manual_origin_offset()
+            state.set_manual_origin_offset(manual_x + x, manual_y + y)
     state.set_origin_nudge(0.0, 0.0)
 
 

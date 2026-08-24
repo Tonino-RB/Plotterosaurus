@@ -12,7 +12,10 @@ button work" but "what does it leave behind", because the answer has to be:
 
 An origin nudge that outlived its run would silently offset the following
 plot, and because an AxiDraw has no home switches nothing would ever correct
-it: each run would inherit the sum of every nudge before it.
+it: each run would inherit the sum of every nudge before it. The one thing
+that may cross into the next job is a nudge the hardware refused to walk back,
+and only as a manual jog — visible in the readout and caught by the pre-flight
+check, which is the opposite of silent.
 """
 import pytest
 
@@ -55,9 +58,17 @@ def paused_job(monkeypatch):
     state.set_active(job["job_id"])
     # Never touch a serial port from a test.
     monkeypatch.setattr(plot_worker, "_jog_carriage", lambda dx, dy: None)
+    # All three are process-global session state, and the nudge is measured
+    # against the other two (see nudge_origin's guards) — so they have to be
+    # zeroed on the way in as well as out, or a test inherits whatever the
+    # previous one left behind.
     state.set_origin_nudge(0.0, 0.0)
+    state.set_manual_origin_offset(0.0, 0.0)
+    state.set_origin_base(0.0, 0.0)
     yield state.get_job(job["job_id"])
     state.set_origin_nudge(0.0, 0.0)
+    state.set_manual_origin_offset(0.0, 0.0)
+    state.set_origin_base(0.0, 0.0)
     state.set_active(None)
     state.remove_job(job["job_id"])
 
@@ -103,10 +114,17 @@ def test_the_nudge_is_walked_back_and_cleared_when_the_run_ends(paused_job, monk
     assert state.origin_nudge() == (0.0, 0.0)
 
 
-def test_the_nudge_is_cleared_even_when_walking_back_fails(paused_job, monkeypatch):
+def test_a_nudge_that_cannot_be_walked_back_becomes_a_manual_jog(paused_job, monkeypatch):
     """The undo runs from a finally block after an outcome that must not be
-    replaced by a homing error. A serial failure here cannot be allowed to
-    strand the nudge either, or the next run inherits it."""
+    replaced by a homing error, so a serial failure here cannot raise — and it
+    cannot leave the nudge stored either, or the next run inherits it.
+
+    What it must not do is drop the number. The carriage really is still
+    standing where the nudge put it, so the drift happens either way; clearing
+    the count only hides it. It moves to the manual jog instead — the
+    displacement the readout shows, the pre-flight check measures, and Return
+    to origin can walk back.
+    """
     plot_worker.nudge_origin(2.0, 2.0)        # stored while the jog still works
 
     def boom(dx, dy):
@@ -115,6 +133,26 @@ def test_the_nudge_is_cleared_even_when_walking_back_fails(paused_job, monkeypat
     monkeypatch.setattr(plot_worker, "_jog_carriage", boom)
     plot_worker._undo_origin_nudge()          # must not raise
     assert state.origin_nudge() == (0.0, 0.0)
+    assert state.manual_origin_offset() == (2.0, 2.0)
+
+
+def test_the_bed_guard_measures_from_where_the_carriage_really_is(paused_job):
+    """A nudge that is trivially small can still be the one that hits the rail.
+
+    The carriage stands at the declared origin (set_origin) plus the idle jog
+    that nothing has walked back, and the nudge is added on top of both.
+    Measuring the nudge on its own against the full bed lets a machine already
+    parked near its far end stop accept a move straight into it.
+    """
+    bed_w_mm, _ = plot_worker.machine_bounds_mm()
+    state.set_origin_base(bed_w_mm - 5.0, 0.0)    # origin declared near the rail
+    state.set_manual_origin_offset(3.0, 0.0)      # jog still physically applied
+
+    # 3mm is nothing against a bed this wide; from where the carriage actually
+    # stands it is 1mm past the end stop.
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.nudge_origin(3.0, 0.0)
+    assert state.origin_nudge() == (0.0, 0.0)     # refused outright, nothing stored
 
 
 def test_nudging_is_refused_when_no_job_is_paused():
