@@ -183,12 +183,6 @@ _MACHINE_PRESETS: list[dict] = [
 
 _AUTO_ROTATE_VALUES = ("off", "portrait", "landscape")
 _MACHINE_NAME_MAX = 60
-# Axis-skew correction, in degrees, clamped to a range that still describes a
-# machine worth plotting on. A gantry out of square by more than this has a
-# mechanical fault to fix rather than a number to compensate — and since the
-# correction shears the artwork across the bed, a wild value would only push
-# ink off the page. Applied at plot time only; see plot_worker._shear_deg.
-MACHINE_SHEAR_DEG_MAX = 5.0
 
 MACHINES: list[dict] = []
 ACTIVE_MACHINE_ID: str = ""
@@ -203,7 +197,6 @@ MACHINE_CUSTOM_ENABLED: bool = True
 MACHINE_WIDTH_MM: float = _MACHINE_PRESETS[1]["width_mm"]
 MACHINE_HEIGHT_MM: float = _MACHINE_PRESETS[1]["height_mm"]
 MACHINE_AUTO_ROTATE: str = "off"
-MACHINE_SHEAR_DEG: float = 0.0
 
 
 def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
@@ -226,21 +219,12 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     auto_rotate = raw.get("auto_rotate")
     if auto_rotate not in _AUTO_ROTATE_VALUES:
         auto_rotate = "off"
-    # Unlike the bed, a bad skew value is clamped rather than fatal: it is a
-    # correction on top of an otherwise usable machine, so a nonsense number
-    # is worth ignoring, not worth discarding the whole profile over.
-    try:
-        shear_deg = float(raw.get("shear_deg") or 0.0)
-    except (TypeError, ValueError):
-        shear_deg = 0.0
-    shear_deg = max(-MACHINE_SHEAR_DEG_MAX, min(MACHINE_SHEAR_DEG_MAX, shear_deg))
     machine_id = str(raw.get("id") or "").strip()
     while not machine_id or machine_id in used_ids:
         machine_id = secrets.token_hex(4)
     used_ids.add(machine_id)
     return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
-            "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate,
-            "shear_deg": shear_deg}
+            "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate}
 
 
 def _seed_machines(data: dict) -> tuple[list[dict], str]:
@@ -249,7 +233,7 @@ def _seed_machines(data: dict) -> tuple[list[dict], str]:
     they had the custom-bed checkbox on. Their selected plotter_model picks
     which preset starts out active, so an install that never touched the
     custom bed keeps exactly the machine it had."""
-    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "shear_deg": 0.0, **preset}
+    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", **preset}
                 for i, preset in enumerate(_MACHINE_PRESETS)]
     try:
         index = int(data.get("plotter_model")) - 1
@@ -286,13 +270,11 @@ def active_machine() -> dict:
 
 def _sync_active_machine() -> None:
     global ACTIVE_MACHINE_ID, MACHINE_WIDTH_MM, MACHINE_HEIGHT_MM, MACHINE_AUTO_ROTATE
-    global MACHINE_SHEAR_DEG
     machine = active_machine()
     ACTIVE_MACHINE_ID = machine["id"]
     MACHINE_WIDTH_MM = machine["width_mm"]
     MACHINE_HEIGHT_MM = machine["height_mm"]
     MACHINE_AUTO_ROTATE = machine["auto_rotate"]
-    MACHINE_SHEAR_DEG = machine["shear_deg"]
 
 
 def _load_machines(data: dict) -> None:

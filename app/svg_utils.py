@@ -1,5 +1,4 @@
 import itertools
-import math
 import re
 
 from lxml import etree
@@ -551,44 +550,6 @@ def ink_bounds_mm(
     return place.doc_mm_rect_to_page(*rect)
 
 
-def shear_metrics(paper_height_mm: float, shear_deg: float) -> tuple[float, float]:
-    """How a skew correction reshapes the commanded coordinate space, as
-    ``(x_shift_mm, x_allowance_mm)``.
-
-    Correcting a skew ``t`` maps a point to ``x - y*tan(t)``, so across a page
-    of height H the commanded X span widens by ``H*|tan(t)|`` — the allowance.
-    A *positive* shear moves content left, past x = 0, and the driver refuses
-    to go there: axidraw.plot_polyline truncates every vertex at a hardcoded
-    zero, below even the configurable travel bounds that the motion planner
-    itself honours. So the artwork is shifted right by the full allowance to
-    keep every commanded coordinate expressible.
-
-    That shift is cancelled in the driver's own frame, not left in: the
-    carriage does not move for it. plot_worker declares the same figure as
-    ``params.start_pos_x``, the driver's parking position, so the machine
-    believes it is already standing at ``x = x_shift_mm`` when the plot
-    starts. Every move is then planned relative to that, which — there being
-    no home switches, the origin being simply wherever the carriage was parked
-    — puts the logical origin under the pen instead of moving the artwork
-    across the paper. The two cancel exactly, so the ink lands where it was
-    placed on screen and the pen has not stirred beforehand.
-
-    Note what this does *not* ask of the machine. The pen still traces the
-    artwork exactly, never straying outside it; what dips below the parked
-    origin is the carriage's position along the beam, by at most the allowance
-    (1.5mm on A3 at 0.2 degrees), and only while drawing the lowest, leftmost
-    corner of a full-bleed page. That is real travel, but it is travel that
-    keeps the pen on the intended straight line.
-
-    One function because both halves have to agree: a shift the parking
-    position doesn't match is a plot that comes out square and in the wrong
-    place.
-    """
-    t = math.tan(math.radians(shear_deg))
-    x_allowance_mm = abs(t) * paper_height_mm
-    return (x_allowance_mm if t > 0 else 0.0), x_allowance_mm
-
-
 def transform_to_paper(
     svg_path: Path,
     out_path: Path,
@@ -604,40 +565,12 @@ def transform_to_paper(
     transform_offset_x_mm: float = 0.0,
     transform_offset_y_mm: float = 0.0,
     machine_auto_rotate: str = placement.AUTO_ROTATE_OFF,
-    shear_deg: float = 0.0,
 ) -> None:
     """Write a new SVG sized to the paper, with the source content wrapped in
     the ``<g transform>`` that places it (see app/placement.py).
 
     The output uses mm as its user-unit coordinate space
     (viewBox = 0 0 paper_w paper_h) so pyaxidraw renders it 1:1 on the bed.
-
-    ``shear_deg`` corrects a machine whose two axes are not square to each
-    other, and is the one thing here that is deliberately *not* part of the
-    placement: it describes the machine, not where the artwork goes, so it is
-    passed only by the call sites that drive real hardware and left at 0 by
-    the estimate and by everything the user looks at. See
-    ``plot_worker._shear_deg`` for why it lives outside placement.Placement.
-
-    The correction is applied about the output's own origin — the paper's
-    top-left, which is where the carriage starts — because that is where the
-    machine's own skew accumulates from. Pre-distorting about the same origin
-    means the machine's error cancels it exactly, so the ink lands both the
-    right *shape* and in the right *place*, rather than square but shifted.
-
-    That correction slides content sideways in proportion to how far down the
-    page it sits, and for a positive shear it slides *left* — potentially past
-    x = 0, where the driver cannot follow: axidraw.plot_polyline truncates
-    every vertex against a hardcoded zero, which is how a full-bleed rectangle
-    loses a wedge down one side. So the page grows by the allowance and the
-    content is shifted into it, keeping every commanded coordinate
-    expressible. See ``shear_metrics``, which sizes both.
-
-    The shift is a coordinate-space move, not a change to where the ink lands:
-    plot_worker hands the driver the same figure as its parking position, so
-    the machine starts the plot already believing itself to be standing there.
-    Nothing is asked of the carriage to pay for it and nothing moves before
-    the plot begins.
     """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
@@ -648,30 +581,14 @@ def transform_to_paper(
         transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
 
-    x_shift_mm, x_allowance_mm = shear_metrics(paper_height_mm, shear_deg)
-    # Left as the caller's own value when there is no correction: adding a
-    # float zero would widen an int paper size into "210.0mm" and rewrite the
-    # page of every document the placement corpus records.
-    page_width_mm = paper_width_mm + x_allowance_mm if shear_deg else paper_width_mm
-
     nsmap = {k: v for k, v in root.nsmap.items() if k}
     nsmap[None] = SVG_NS
     new_root = etree.Element(f"{{{SVG_NS}}}svg", nsmap=nsmap)
-    new_root.set("width", f"{page_width_mm}mm")
+    new_root.set("width", f"{paper_width_mm}mm")
     new_root.set("height", f"{paper_height_mm}mm")
-    new_root.set("viewBox", f"0 0 {page_width_mm} {paper_height_mm}")
+    new_root.set("viewBox", f"0 0 {paper_width_mm} {paper_height_mm}")
 
-    # An uncalibrated machine adds no wrapper at all, so the output is byte
-    # for byte what it was before axis-skew correction existed.
-    parent = new_root
-    if shear_deg:
-        parent = etree.SubElement(new_root, f"{{{SVG_NS}}}g")
-        # skewX(a) maps (x, y) -> (x + y*tan(a), y). The machine's own skew is
-        # what we are undoing, so the sign is inverted: commanding
-        # x - y*tan(shear) makes the machine draw at x.
-        parent.set("transform", f"translate({x_shift_mm},0) skewX({-shear_deg})")
-
-    group = etree.SubElement(parent, f"{{{SVG_NS}}}g")
+    group = etree.SubElement(new_root, f"{{{SVG_NS}}}g")
     group.set("transform", place.group_transform())
     for child in list(root):
         group.append(child)

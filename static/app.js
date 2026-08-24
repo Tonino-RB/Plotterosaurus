@@ -3343,12 +3343,6 @@ const settingsMachineName = $("settings-machine-name");
 const settingsMachineWidth = $("settings-machine-width");
 const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
-const settingsMachineShear = $("settings-machine-shear");
-const settingsShearSide = $("settings-shear-side");
-const settingsShearD1 = $("settings-shear-d1");
-const settingsShearD2 = $("settings-shear-d2");
-const settingsShearApply = $("settings-shear-apply");
-const settingsShearResult = $("settings-shear-result");
 const settingsWebhookUrl = $("settings-webhook-url");
 const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
 const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
@@ -3633,8 +3627,6 @@ settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
 // Save — which is also why deleting a machine asks for no confirmation.
 let machineDraft = [];
 let machineDraftActiveId = "";
-// Mirrors config.MACHINE_SHEAR_DEG_MAX; the server clamps to the same bound.
-const SHEAR_DEG_MAX = 5;
 
 function machineDraftEntry(id) {
   return machineDraft.find((m) => m.id === id) || null;
@@ -3661,7 +3653,6 @@ function loadMachineFields() {
   settingsMachineWidth.value = machine.width_mm;
   settingsMachineHeight.value = machine.height_mm;
   setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
-  settingsMachineShear.value = machine.shear_deg ?? 0;
 }
 
 // Fold whatever is in the fields back into the draft. Runs before anything
@@ -3674,13 +3665,6 @@ function captureMachineFields() {
   machine.width_mm = parseFloat(settingsMachineWidth.value) || machine.width_mm;
   machine.height_mm = parseFloat(settingsMachineHeight.value) || machine.height_mm;
   machine.auto_rotate = getSegmentedValue(settingsMachineAutoRotate, "off");
-  // Not the `|| fallback` the dimensions use: 0 is both falsy and the value
-  // this field holds on every machine that isn't skewed, so that pattern
-  // would make "back to no correction" the one edit you can't save.
-  const shear = parseFloat(settingsMachineShear.value);
-  machine.shear_deg = Number.isFinite(shear)
-    ? Math.max(-SHEAR_DEG_MAX, Math.min(SHEAR_DEG_MAX, shear))
-    : 0;
 }
 
 function loadMachineDraft(data) {
@@ -3720,10 +3704,6 @@ settingsMachineAdd.addEventListener("click", () => {
     width_mm: base ? base.width_mm : 430,
     height_mm: base ? base.height_mm : 297,
     auto_rotate: "off",
-    // Skew belongs to the physical machine, not to the profile it was copied
-    // from, so a new one starts uncorrected even when cloned from a calibrated
-    // entry — inheriting it would silently distort a different plotter.
-    shear_deg: 0,
   };
   machineDraft.push(machine);
   machineDraftActiveId = machine.id;
@@ -3731,32 +3711,6 @@ settingsMachineAdd.addEventListener("click", () => {
   loadMachineFields();
   settingsMachineName.focus();
   settingsMachineName.select();
-});
-
-// Turn two measured diagonals into the skew angle. A square commanded with
-// side L comes off a skewed machine as a parallelogram whose diagonals differ
-// by exactly d1² - d2² = 4L²·tan(shear), so the angle falls straight out of
-// what a ruler can tell you. d1 is the top-left/bottom-right diagonal: when it
-// is the longer one the machine drifts +x as it travels down the page, which
-// is the positive direction here.
-settingsShearApply.addEventListener("click", () => {
-  const side = parseFloat(settingsShearSide.value);
-  const d1 = parseFloat(settingsShearD1.value);
-  const d2 = parseFloat(settingsShearD2.value);
-  if (!(side > 0) || !(d1 > 0) || !(d2 > 0)) {
-    settingsShearResult.textContent = t("settings.machine.shear_calc_incomplete");
-    settingsShearResult.className = "error";
-    return;
-  }
-  const deg = Math.atan((d1 * d1 - d2 * d2) / (4 * side * side)) * 180 / Math.PI;
-  if (Math.abs(deg) > SHEAR_DEG_MAX) {
-    settingsShearResult.textContent = t("settings.machine.shear_calc_too_large");
-    settingsShearResult.className = "error";
-    return;
-  }
-  settingsMachineShear.value = deg.toFixed(3);
-  settingsShearResult.textContent = t("settings.machine.shear_calc_result", { deg: deg.toFixed(3) });
-  settingsShearResult.className = "muted";
 });
 
 settingsMachineDelete.addEventListener("click", () => {

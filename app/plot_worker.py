@@ -28,16 +28,9 @@ _orig_feed_sm = dripfeed.feed_sm
 
 def _feed_sm_and_emit_position(ad_ref, move, drip_logger):
     _orig_feed_sm(ad_ref, move, drip_logger)
-    # phys.xpos is a *commanded* coordinate, and on a skew-corrected machine
-    # the commanded frame is offset from the page by the parking position (see
-    # _apply_shear_origin). Both consumers of this — the card's pen cursor and
-    # the draw-stream overlay — scale it against the paper, so hand them the
-    # page coordinate rather than the driver's, or the cursor and the live
-    # trace sit a millimetre or two to the right of the actual pen.
     x_in = ad_ref.pen.phys.xpos
     y_in = ad_ref.pen.phys.ypos
     if x_in is not None and y_in is not None:
-        x_in -= ad_ref.params.start_pos_x
         state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
 
 
@@ -368,62 +361,6 @@ def machine_bounds_mm() -> tuple[float, float]:
     return machine["width_mm"], machine["height_mm"]
 
 
-def _shear_deg() -> float:
-    """The active machine's axis-skew correction, in degrees — how far its two
-    axes are out of square, measured by the user (see the Machine settings
-    note) and undone on the way to the hardware.
-
-    This is deliberately not part of app/placement.py, and so is deliberately
-    absent from the preview, the browser's own placement maths and the bounds
-    check. Placement answers "where does the artwork go on the page", and the
-    answer must stay identical whether or not the machine drawing it happens
-    to be out of square: the page is the same page. Skew correction is the
-    opposite kind of fact — a defect of one machine, cancelled out at the last
-    moment so that what lands on paper matches what the screen promised.
-    Folding it into placement would make every preview, every ink-bounds
-    answer and every golden row lean over with the machine.
-
-    It is also left out of the time/distance estimate. A shear of a fraction
-    of a degree changes path length by parts in ten thousand, far below the
-    estimate's own accuracy, and including it would mean keying the preview
-    cache on it too — real complexity for a number that would not move.
-    """
-    return config.MACHINE_SHEAR_DEG
-
-
-def _shear_metrics(paper_height_mm: float) -> tuple[float, float]:
-    """This job's ``(x_shift_mm, x_allowance_mm)`` for the active machine —
-    svg_utils.shear_metrics, asked with the angle the machine is set to.
-
-    Both figures are pure functions of the paper height and that angle, which
-    is what lets the driver be configured to match a document it did not
-    render: a res_plot resume replays pyaxidraw's own output SVG, and asking
-    here gives the same answer that produced it.
-    """
-    return svg_utils.shear_metrics(paper_height_mm, _shear_deg())
-
-
-def _apply_shear_origin(ad: axidraw.AxiDraw, x_shift_mm: float) -> None:
-    """Tell the driver it is already parked at the shifted origin.
-
-    transform_to_paper moves a corrected plot right by ``x_shift_mm`` so that
-    no commanded coordinate goes negative, since plot_polyline truncates those
-    against a hardcoded zero. That shift has to come back out, or the plot
-    lands that far to the right of where it was placed on screen.
-
-    It comes out here rather than by moving anything. params.start_pos_x is
-    the driver's parking position — where it believes the carriage is when a
-    plot begins (axidraw.effect) and where it returns at the end — so setting
-    it to the same shift makes every move relative to the pen's real resting
-    place. The carriage does not stir beforehand and ends where it started.
-
-    Always set, never left over: params is the shared axidraw_conf *module*,
-    so a value written for one job would otherwise still be there for the
-    next. Zero shear writes a zero.
-    """
-    ad.params.start_pos_x = x_shift_mm / 25.4
-
-
 def _bed_travel_params() -> tuple[str, str, float, float]:
     """The two driver params that carry travel bounds for the configured
     model, plus the active machine's bed in inches — everything needed to
@@ -440,22 +377,13 @@ def _bed_travel_params() -> tuple[str, str, float, float]:
     return x_attr, y_attr, bed_x_mm / 25.4, bed_y_mm / 25.4
 
 
-def _apply_bed_size(ad: axidraw.AxiDraw, extra_x_mm: float = 0.0) -> None:
+def _apply_bed_size(ad: axidraw.AxiDraw) -> None:
     """Make machine_bounds_mm() a real travel-bounds limit: override the
     driver's own per-model params.x_travel_*/y_travel_* (read by
     AxiDraw.update_options() to build self.bounds, which clips out-of-bounds
-    pen-down moves).
-
-    ``extra_x_mm`` widens that clip limit by the skew correction's allowance
-    (see _shear_metrics). Only the driver's limit moves: the profile's
-    own bed, which machine_bounds_mm() reports and the paper-too-big warning
-    measures against, is what the user said their machine reaches and is not
-    ours to inflate. This is the narrower claim that the last 1.5mm of a
-    corrected plot is still reachable — which it is, because the origin is
-    wherever the carriage was parked, not a hardware end stop.
-    """
+    pen-down moves)."""
     x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
-    setattr(ad.params, x_attr, bed_x_in + extra_x_mm / 25.4)
+    setattr(ad.params, x_attr, bed_x_in)
     setattr(ad.params, y_attr, bed_y_in)
 
 
@@ -520,13 +448,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # rotation) and the physical plot disagree. We always hand pyaxidraw a
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
-        # The document handed over here was rendered with the same shear, so
-        # its commanded X span is wider than the paper by exactly this much,
-        # and sits that much further along it. Both halves are set from the
-        # one pair of figures so they cannot drift apart.
-        x_shift_mm, x_allowance_mm = _shear_metrics(job["paper_height_mm"])
-        _apply_bed_size(ad, x_allowance_mm)
-        _apply_shear_origin(ad, x_shift_mm)
+        _apply_bed_size(ad)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -915,10 +837,6 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
     ad.options.units = 2  # millimeters
     ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
     _apply_bed_size(ad)
-    # A jog is in the machine's own frame, not a corrected plot's — and params
-    # is a shared module, so the last plot's parking origin would otherwise
-    # still be sitting there and skew what this move reports.
-    _apply_shear_origin(ad, 0.0)
     if not ad.connect():
         raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
     try:
@@ -1612,7 +1530,6 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-            shear_deg=_shear_deg(),
         )
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
@@ -1688,7 +1605,6 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             # was "off" (the default), which is why only the one corner that
             # happened to already be in-bounds ever plotted.
             machine_auto_rotate="portrait",
-            shear_deg=_shear_deg(),
         )
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
@@ -1972,12 +1888,6 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
                     transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-                    # Skew correction is applied here, on the way to the
-                    # hardware, and nowhere else. A res_plot resume replays
-                    # pyaxidraw's own output SVG, which was produced from an
-                    # already-corrected input, so it carries the correction
-                    # without applying it twice.
-                    shear_deg=_shear_deg(),
                 )
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)
