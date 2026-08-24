@@ -78,11 +78,11 @@ def _parse_transform(text):
     return m
 
 
-def _commanded(tmp_path, shear_deg):
+def _commanded(tmp_path, shear_deg, page=None):
     """The four corner positions the output SVG sends to the machine."""
     src = _square_svg(tmp_path / "src.svg")
     out = tmp_path / "out.svg"
-    svg_utils.transform_to_paper(src, out, **PAGE, shear_deg=shear_deg)
+    svg_utils.transform_to_paper(src, out, **(page or PAGE), shear_deg=shear_deg)
 
     m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     node = etree.parse(str(out)).getroot()
@@ -94,10 +94,20 @@ def _commanded(tmp_path, shear_deg):
     return [(a * x + c * y + e, b * x + d * y + f) for x, y in CORNERS]
 
 
-def _drawn(points, machine_skew_deg):
-    """What the machine actually puts on paper, given its own skew."""
+def _drawn(points, machine_skew_deg, page=None):
+    """What the machine actually puts on paper.
+
+    Two things stand between a commanded coordinate and a mark on the sheet,
+    and the correction is only right if both are modelled. The driver reckons
+    every move from its parking position (params.start_pos_x, which
+    plot_worker sets to the same shift transform_to_paper baked in — see
+    _apply_shear_origin), and the machine then drags the carriage sideways in
+    proportion to how far down the page it has travelled.
+    """
+    height = (page or PAGE)["paper_height_mm"]
+    parking_x, _ = svg_utils.shear_metrics(height, machine_skew_deg)
     t = math.tan(math.radians(machine_skew_deg))
-    return [(x + y * t, y) for x, y in points]
+    return [(x - parking_x + y * t, y) for x, y in points]
 
 
 def _close(v):
@@ -163,17 +173,88 @@ def test_correction_makes_the_drawn_square_square(tmp_path):
     assert max(_edges(drawn)) == _close(min(_edges(drawn)))
 
 
-def test_correction_moves_the_plot_only_as_a_whole(tmp_path):
-    """The correction cancels the machine's error exactly, up to one uniform
-    sideways translation — the shift that keeps commanded X out of negative
-    territory (see transform_to_paper). The artwork is not distorted and not
-    repositioned relative to itself; the whole plot simply sits that far along
-    the carriage's travel, which is absorbed by where the paper is placed."""
+def test_the_plot_lands_exactly_where_it_was_placed(tmp_path):
+    """The whole point: not merely square, but square *and in the right
+    place*. No residual translation at any angle, either sign, margins or
+    none — the plot starts under the pen and the ink lands where the preview
+    put it."""
+    for skew in (0.2, 0.4, -0.2, -0.4):
+        drawn = _drawn(_commanded(tmp_path, skew), skew)
+        for got, want in zip(drawn, CORNERS):
+            assert math.dist(got, want) == _close(0.0)
+
+    margined = {**PAGE, "fit_content": True,
+                "margin_top_mm": 20.0, "margin_right_mm": 20.0,
+                "margin_bottom_mm": 20.0, "margin_left_mm": 20.0}
+    for skew in (0.2, 0.4, -0.2, -0.4):
+        placed = _commanded(tmp_path, 0.0, margined)   # where placement puts it
+        drawn = _drawn(_commanded(tmp_path, skew, margined), skew, margined)
+        for got, want in zip(drawn, placed):
+            assert math.dist(got, want) == _close(0.0)
+
+
+def test_the_shift_and_the_parking_origin_are_the_same_number(tmp_path):
+    """The contract between the two halves. transform_to_paper moves the
+    artwork right so nothing is commanded negative; plot_worker gives the
+    driver the identical figure as its parking position so that move costs
+    nothing. A mismatch is a plot that comes out square and in the wrong
+    place, which is why one function answers both."""
     skew = 0.4
-    drawn = _drawn(_commanded(tmp_path, skew), skew)
-    shift = PAGE["paper_height_mm"] * math.tan(math.radians(skew))
-    for got, want in zip(drawn, CORNERS):
-        assert math.dist(got, (want[0] + shift, want[1])) == _close(0.0)
+    x_shift_mm, _ = svg_utils.shear_metrics(PAGE["paper_height_mm"], skew)
+
+    # what the SVG actually got shifted by
+    out = tmp_path / "out.svg"
+    svg_utils.transform_to_paper(_square_svg(tmp_path / "src.svg"), out,
+                                 **PAGE, shear_deg=skew)
+    wrapper = etree.parse(str(out)).getroot().find(f"{{{SVG_NS}}}g")
+    baked = _parse_transform(wrapper.get("transform"))[4]
+
+    assert baked == _close(x_shift_mm)
+    assert x_shift_mm > 0  # this fixture is full-bleed; it genuinely needs one
+
+
+def test_the_carriage_never_takes_the_pen_off_the_artwork(tmp_path):
+    """What the shift does *not* ask of the machine.
+
+    The correction does make the carriage dip below its parked position along
+    the beam — that travel is real and unavoidable, since drawing a straight
+    left edge on a skewed gantry requires it. But it is bounded by the
+    allowance, and while it happens the pen is tracing the artwork exactly,
+    never straying outside it.
+    """
+    skew = 0.4
+    parking_x, allowance = svg_utils.shear_metrics(PAGE["paper_height_mm"], skew)
+
+    full = [(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)]
+    src = tmp_path / "full.svg"
+    src.write_text(
+        '<?xml version="1.0"?>'
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        'width="200mm" height="200mm" viewBox="0 0 200 200">'
+        '<g inkscape:groupmode="layer" inkscape:label="sq">'
+        '<rect x="0" y="0" width="200" height="200" fill="none" stroke="black"/>'
+        "</g></svg>")
+    out = tmp_path / "out.svg"
+    svg_utils.transform_to_paper(src, out, **PAGE, shear_deg=skew)
+
+    m = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    node = etree.parse(str(out)).getroot()
+    while (g := node.find(f"{{{SVG_NS}}}g")) is not None:
+        if g.get("transform"):
+            m = _mul(m, _parse_transform(g.get("transform")))
+        node = g
+    a, b, c, d, e, f = m
+    commanded = [(a * x + c * y + e, b * x + d * y + f) for x, y in full]
+
+    # Nothing is commanded negative — that is what the shift bought.
+    assert min(x for x, _ in commanded) >= -1e-9
+    # The carriage's own excursion past the parked origin stays within the
+    # allowance, and the pen lands on the artwork throughout.
+    beam = [x - parking_x for x, _ in commanded]
+    assert min(beam) >= -allowance - 1e-9
+    for got, want in zip(_drawn(commanded, skew), full):
+        assert math.dist(got, want) == _close(0.0)
 
 
 def test_negative_shear_needs_no_shift(tmp_path):
@@ -271,3 +352,42 @@ def test_diagonals_recover_the_skew_angle(tmp_path):
         d1, d2 = _diagonals(_drawn(_commanded(tmp_path, 0.0), skew))
         recovered = math.degrees(math.atan((d1 * d1 - d2 * d2) / (4 * SIDE * SIDE)))
         assert recovered == _close(skew)
+
+
+# The correction stays out of sight ----------------------------------------
+
+def test_the_live_position_is_reported_in_page_coordinates(monkeypatch):
+    """The pen cursor on the job card and the draw-stream overlay both scale
+    the emitted position against the paper, so it has to be a page
+    coordinate. The driver's own phys.xpos is not one on a corrected machine:
+    it is offset by the parking position. Reporting it raw puts the cursor and
+    the live trace a millimetre or two right of the real pen.
+    """
+    from app import plot_worker, state
+
+    seen = []
+    monkeypatch.setattr(state, "emit_position",
+                        lambda x, y, down: seen.append((x, y)))
+    monkeypatch.setattr(plot_worker, "_orig_feed_sm", lambda *a: None)
+
+    x_shift_mm, _ = svg_utils.shear_metrics(420.0, 0.2)
+
+    class _Phys:
+        z_up = True
+        def __init__(self, x_in, y_in):
+            self.xpos, self.ypos = x_in, y_in
+
+    class _AdRef:
+        def __init__(self, x_mm, y_mm, parking_mm):
+            self.pen = type("P", (), {"phys": _Phys(x_mm / 25.4, y_mm / 25.4)})()
+            self.params = type("Pa", (), {"start_pos_x": parking_mm / 25.4})()
+
+    # The pen is physically at page x=20; the driver calls that 20 + shift.
+    plot_worker._feed_sm_and_emit_position(
+        _AdRef(20.0 + x_shift_mm, 50.0, x_shift_mm), None, None)
+    assert seen[-1][0] == pytest.approx(20.0, abs=1e-9)
+    assert seen[-1][1] == pytest.approx(50.0, abs=1e-9)
+
+    # An uncorrected machine parks at zero and is reported unchanged.
+    plot_worker._feed_sm_and_emit_position(_AdRef(20.0, 50.0, 0.0), None, None)
+    assert seen[-1][0] == pytest.approx(20.0, abs=1e-9)

@@ -551,6 +551,44 @@ def ink_bounds_mm(
     return place.doc_mm_rect_to_page(*rect)
 
 
+def shear_metrics(paper_height_mm: float, shear_deg: float) -> tuple[float, float]:
+    """How a skew correction reshapes the commanded coordinate space, as
+    ``(x_shift_mm, x_allowance_mm)``.
+
+    Correcting a skew ``t`` maps a point to ``x - y*tan(t)``, so across a page
+    of height H the commanded X span widens by ``H*|tan(t)|`` — the allowance.
+    A *positive* shear moves content left, past x = 0, and the driver refuses
+    to go there: axidraw.plot_polyline truncates every vertex at a hardcoded
+    zero, below even the configurable travel bounds that the motion planner
+    itself honours. So the artwork is shifted right by the full allowance to
+    keep every commanded coordinate expressible.
+
+    That shift is cancelled in the driver's own frame, not left in: the
+    carriage does not move for it. plot_worker declares the same figure as
+    ``params.start_pos_x``, the driver's parking position, so the machine
+    believes it is already standing at ``x = x_shift_mm`` when the plot
+    starts. Every move is then planned relative to that, which — there being
+    no home switches, the origin being simply wherever the carriage was parked
+    — puts the logical origin under the pen instead of moving the artwork
+    across the paper. The two cancel exactly, so the ink lands where it was
+    placed on screen and the pen has not stirred beforehand.
+
+    Note what this does *not* ask of the machine. The pen still traces the
+    artwork exactly, never straying outside it; what dips below the parked
+    origin is the carriage's position along the beam, by at most the allowance
+    (1.5mm on A3 at 0.2 degrees), and only while drawing the lowest, leftmost
+    corner of a full-bleed page. That is real travel, but it is travel that
+    keeps the pen on the intended straight line.
+
+    One function because both halves have to agree: a shift the parking
+    position doesn't match is a plot that comes out square and in the wrong
+    place.
+    """
+    t = math.tan(math.radians(shear_deg))
+    x_allowance_mm = abs(t) * paper_height_mm
+    return (x_allowance_mm if t > 0 else 0.0), x_allowance_mm
+
+
 def transform_to_paper(
     svg_path: Path,
     out_path: Path,
@@ -587,18 +625,19 @@ def transform_to_paper(
     means the machine's error cancels it exactly, so the ink lands both the
     right *shape* and in the right *place*, rather than square but shifted.
 
-    That correction slides content sideways by up to ``H * |tan(shear)|``, and
-    for a positive shear it slides *left*, past x = 0. The driver cannot
-    express a negative coordinate — it clips those moves away, which is how a
-    full-bleed rectangle loses a wedge down one side — so the page grows by
-    the allowance and the content is shifted into it. Both are the same single
-    modification the artwork gets, applied to the paper as well, so that
-    everything still fits inside the document instead of hanging off it.
+    That correction slides content sideways in proportion to how far down the
+    page it sits, and for a positive shear it slides *left* — potentially past
+    x = 0, where the driver cannot follow: axidraw.plot_polyline truncates
+    every vertex against a hardcoded zero, which is how a full-bleed rectangle
+    loses a wedge down one side. So the page grows by the allowance and the
+    content is shifted into it, keeping every commanded coordinate
+    expressible. See ``shear_metrics``, which sizes both.
 
-    The shift is a uniform translation of the whole plot, so the artwork keeps
-    its shape and its position *relative to itself*; what moves is where the
-    plot sits against the carriage's parked origin. Park the carriage that far
-    to the left (or nudge the origin) and the ink lands back on the sheet.
+    The shift is a coordinate-space move, not a change to where the ink lands:
+    plot_worker hands the driver the same figure as its parking position, so
+    the machine starts the plot already believing itself to be standing there.
+    Nothing is asked of the carriage to pay for it and nothing moves before
+    the plot begins.
     """
     tree = etree.parse(str(svg_path))
     root = tree.getroot()
@@ -609,13 +648,7 @@ def transform_to_paper(
         transform_offset_x_mm, transform_offset_y_mm, machine_auto_rotate,
     )
 
-    # The correction's sideways reach over the full height of the page, and
-    # the shift that keeps it out of negative territory. A positive shear
-    # moves content left (x - y*tan), so the whole plot is pushed right by the
-    # full allowance; a negative one already moves it right, and needs none.
-    shear_tan = math.tan(math.radians(shear_deg))
-    x_allowance_mm = abs(shear_tan) * paper_height_mm
-    x_shift_mm = x_allowance_mm if shear_tan > 0 else 0.0
+    x_shift_mm, x_allowance_mm = shear_metrics(paper_height_mm, shear_deg)
     # Left as the caller's own value when there is no correction: adding a
     # float zero would widen an int paper size into "210.0mm" and rewrite the
     # page of every document the placement corpus records.
