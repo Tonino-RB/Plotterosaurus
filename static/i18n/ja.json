@@ -188,6 +188,7 @@
   "swatch.pen_color": "ペンの色 {hex}",
   "apierror.not_svg": "SVGファイルではありません。.svgファイルをドロップしてください。",
   "apierror.invalid_svg": "有効なSVGではないようです。",
+  "apierror.not_image": "画像ファイルではありません。PNGまたはJPGファイルをドロップしてください。",
   "apierror.svg_not_found": "SVGが見つかりません。",
   "apierror.select_one_layer": "レイヤーを1つ以上選択してください。",
   "apierror.job_not_found": "ジョブが見つかりません。",

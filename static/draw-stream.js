@@ -21,56 +21,10 @@
   let lastRunDelta = { dx: 0, dy: 0 };
   let currentStrokeColor = FALLBACK_STROKE_COLOR;
   let currentStrokeWidthMm = null;   // null = use the fallback px width directly, unscaled
-  let initializingJob = false;       // true while handleState awaits deriveLayerStyles/replayTrace for a (re)started job — blocks handlePosition so live points can't jump the queue and draw with the still-default fallback style
 
-  // ---- color/width helpers, ported from static/app.js (colorToHex /
-  // isPaintedColor / resolveLayerColor) — this page has no shared module
-  // with the main SPA, so these are small standalone copies. ----
-
-  function colorToHex(c) {
-    if (!c) return null;
-    c = c.trim().toLowerCase();
-    let m = c.match(/^#([0-9a-f]{3})$/);
-    if (m) return "#" + m[1].split("").map((x) => x + x).join("");
-    if (/^#[0-9a-f]{6}$/.test(c)) return c;
-    if (/^#[0-9a-f]{8}$/.test(c)) return c.slice(0, 7);
-    m = c.match(/^rgba?\(([^)]+)\)/);
-    if (m) {
-      const p = m[1].split(",").map((x) => x.trim());
-      if (p.length >= 3) {
-        return "#" + p.slice(0, 3).map((n) => {
-          const v = Math.max(0, Math.min(255, Math.round(parseFloat(n))));
-          return v.toString(16).padStart(2, "0");
-        }).join("");
-      }
-    }
-    return null;
-  }
-
-  function isPaintedColor(c) {
-    if (!c || c === "none" || c === "transparent") return false;
-    const m = c.match(/^rgba?\(([^)]+)\)/);
-    if (m) {
-      const p = m[1].split(",").map((x) => x.trim());
-      if (p.length === 4 && parseFloat(p[3]) === 0) return false;
-    }
-    return true;
-  }
-
-  const SWATCH_DRAW_SELECTOR = "path, line, polyline, polygon, circle, ellipse, rect";
-
-  function resolveLayerColor(layerG) {
-    const els = layerG.querySelectorAll(SWATCH_DRAW_SELECTOR);
-    const limit = Math.min(els.length, 400);
-    const counts = new Map();
-    for (let i = 0; i < limit; i++) {
-      const stroke = getComputedStyle(els[i]).stroke;
-      if (isPaintedColor(stroke)) counts.set(stroke, (counts.get(stroke) || 0) + 1);
-    }
-    let best = null, bestN = 0;
-    for (const [c, n] of counts) if (n > bestN) { best = c; bestN = n; }
-    return best ? colorToHex(best) : null;
-  }
+  // colorToHex / isPaintedColor / SWATCH_DRAW_SELECTOR / resolveLayerColor
+  // come from static/svg-colors.js, shared with static/app.js — see
+  // index.html / draw-stream.html for the script tag.
 
   // The dominant stroke-width among a layer's drawable elements, in mm.
   // getComputedStyle resolves an SVG's own (possibly inherited-from-<g>)
@@ -99,17 +53,64 @@
   svgHost.style.cssText = "position:absolute; width:0; height:0; overflow:hidden; visibility:hidden;";
   document.body.appendChild(svgHost);
 
-  async function deriveLayerStyles(jobId, paperWmm) {
+  // The document served by /jobs/{id}/svg is the source artwork at its own
+  // size (see app/main.py get_job_svg) — placement (margins, fit_content,
+  // transform_scale) hasn't been applied to it yet. So the ratio between its
+  // rendered CSS px and *paper* mm is not just rect.width / paperWmm: that
+  // only holds when the artwork happens to fill the page edge-to-edge.
+  // app/placement.py is the single source of truth for how document mm map
+  // onto page mm (CLAUDE.md); ask it via the same /placement endpoint the
+  // main SPA uses instead of assuming the two are the same size.
+  async function fetchJobPlacement(job) {
+    try {
+      const res = await fetch(`/jobs/${job.job_id}/placement`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          paper_width_mm: job.paper_width_mm,
+          paper_height_mm: job.paper_height_mm,
+          margin_top_mm: job.margin_top_mm,
+          margin_right_mm: job.margin_right_mm,
+          margin_bottom_mm: job.margin_bottom_mm,
+          margin_left_mm: job.margin_left_mm,
+          fit_content: !!job.fit_content,
+          transform_scale: job.transform_scale ?? 1,
+          transform_rotation_deg: job.transform_rotation_deg ?? 0,
+          transform_offset_x_mm: job.transform_offset_x_mm ?? 0,
+          transform_offset_y_mm: job.transform_offset_y_mm ?? 0,
+          layer_indices: (job.layer_selections || [])
+            .filter((s) => s.selected !== false)
+            .map((s) => s.index),
+        }),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function deriveLayerStyles(jobId, job) {
     layerColors = {};
     layerWidthsMm = {};
     try {
-      const res = await fetch(`/jobs/${jobId}/svg`);
+      const [res, placement] = await Promise.all([
+        fetch(`/jobs/${jobId}/svg`),
+        fetchJobPlacement(job),
+      ]);
       if (!res.ok) return;
       svgHost.innerHTML = await res.text();
       const svgRoot = svgHost.querySelector("svg");
       if (!svgRoot) return;
       const rect = svgRoot.getBoundingClientRect();
-      const pxPerMm = paperWmm > 0 ? rect.width / paperWmm : 0;
+      // docWmm/mmScale come straight from the placement engine's own answer:
+      // the document's real-world width, and document-mm -> page-mm (see
+      // Placement.mm_scale in app/placement.py — fit_scale * transform_scale).
+      // Falls back to the paper width when the document declares no size of
+      // its own, mirroring the same fallback the /placement endpoint uses.
+      const docWmm = placement && placement.doc_width_mm > 0 ? placement.doc_width_mm : job.paper_width_mm;
+      const mmScale = placement ? placement.fit_scale * (job.transform_scale ?? 1) : 1;
+      const pxPerMm = docWmm > 0 && mmScale > 0 ? rect.width / (docWmm * mmScale) : 0;
       let index = 0;
       for (const g of svgRoot.children) {
         if (g.tagName && g.tagName.toLowerCase() === "g" &&
@@ -228,19 +229,45 @@
   }
 
   // Replays every recorded sample for this job (see app/state.py
-  // emit_position / draw_trace_snapshot) so a browser refresh mid-plot shows
-  // everything drawn so far instead of starting blank.
+  // emit_position / draw_trace_snapshot_lines) so a browser refresh mid-plot
+  // shows everything drawn so far instead of starting blank. The endpoint
+  // streams newline-delimited JSON rather than one big JSON array — a
+  // multi-hour job's trace can be hundreds of thousands of points, and
+  // reading the whole response into memory before drawing any of it defeats
+  // the point of having moved the trace to disk in the first place. Read and
+  // drawn incrementally instead, chunk by chunk, off the response's own byte
+  // stream.
   async function replayTrace(jobId, job) {
     try {
       const res = await fetch("/draw-stream/trace");
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.job_id !== jobId) return;
-      for (const pt of data.points) {
-        resolveStrokeStyle(job, pt.stage_index);
-        const p = mmToCanvas(pt.x_mm, pt.y_mm);
-        if (pt.pen_down && lastPt) strokeSegment(lastPt, p);
-        lastPt = p;
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let sawHeader = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          if (!sawHeader) {
+            sawHeader = true;
+            let header;
+            try { header = JSON.parse(line); } catch (e) { return; }
+            if (header.job_id !== jobId) return;
+            continue;
+          }
+          let pt;
+          try { pt = JSON.parse(line); } catch (e) { continue; }
+          resolveStrokeStyle(job, pt.stage_index);
+          const p = mmToCanvas(pt.x_mm, pt.y_mm);
+          if (pt.pen_down && lastPt) strokeSegment(lastPt, p);
+          lastPt = p;
+        }
+        if (done) break;
       }
     } catch (e) {}
   }
@@ -260,14 +287,13 @@
     prevActiveId = msg.active_id;
 
     if (targetId !== currentJobId || isNewPlotStart) {
-      initializingJob = true;
       currentJobId = targetId;
       if (job && job.paper_width_mm > 0 && job.paper_height_mm > 0) {
         sizeCanvasForPaper(job.paper_width_mm, job.paper_height_mm);
       } else {
         paperScale = 0;
       }
-      if (job) await deriveLayerStyles(job.job_id, job.paper_width_mm);
+      if (job) await deriveLayerStyles(job.job_id, job);
       else { layerColors = {}; layerWidthsMm = {}; }
       resetCanvas();
       if (job) {
@@ -280,23 +306,34 @@
       lastRunDelta = activeRunDelta(msg, job);
       resolveStrokeStyle(job, job.current_stage_index);
     }
-    initializingJob = false;
   }
 
   function handlePosition(msg) {
-    if (paperScale <= 0 || initializingJob) return;
+    if (paperScale <= 0) return;
     const p = mmToCanvas(msg.x_mm, msg.y_mm);
     if (msg.pen_down && lastPt) strokeSegment(lastPt, p);
     lastPt = p;
   }
+
+  // Messages are handled strictly in arrival order, one at a time: handleState
+  // is async (it awaits deriveLayerStyles/replayTrace, which can take seconds
+  // on a Pi), and without this a second "state" message arriving mid-await
+  // could interleave with the first, or a "position" message could jump ahead
+  // and draw before resetCanvas()/replayTrace() for the job it belongs to have
+  // even run. Chaining onto one promise makes every message wait for every
+  // earlier one to fully finish instead — a position that arrives during a
+  // slow init is drawn right after init completes rather than dropped.
+  let msgChain = Promise.resolve();
 
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}/ws/state`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "state") handleState(msg);
-      else if (msg.type === "position") handlePosition(msg);
+      msgChain = msgChain.then(() => {
+        if (msg.type === "state") return handleState(msg);
+        if (msg.type === "position") handlePosition(msg);
+      }).catch(() => {});
     };
     ws.onclose = () => setTimeout(connectWs, 2000);
   }
@@ -330,11 +367,18 @@
     }
   }
 
+  // Idle placeholder page, used until a job's real paper size is known: A3
+  // portrait, the plotter's own paper size — so a stream that's up and
+  // waiting already frames like a page instead of a 16:9 rectangle nothing
+  // will ever be drawn on.
+  const IDLE_PAPER_W_MM = 297;
+  const IDLE_PAPER_H_MM = 420;
+
   (async function init() {
     await loadSettings();
     await loadBackgroundImage();
-    canvas.width = settings.max_resolution_px;
-    canvas.height = Math.round(settings.max_resolution_px * 9 / 16);  // placeholder until a job's real paper size is known
+    sizeCanvasForPaper(IDLE_PAPER_W_MM, IDLE_PAPER_H_MM);
+    paperScale = 0;  // placeholder paper, not a real one — stray position samples must not draw on it
     resetCanvas();
     connectWs();
   })();

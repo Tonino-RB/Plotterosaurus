@@ -23,18 +23,32 @@ log = logging.getLogger(__name__)
 # (as this used to) skips segment endpoints once the plot moves fast enough
 # for segments to complete between polls, which flattens curves into
 # straight-edged "triangles" on the live stream.
-_orig_feed_sm = dripfeed.feed_sm
+#
+# Suppressed while _jog_carriage is moving: that helper seeds pen.phys to a
+# fake bed-corner position before every move (see its own docstring), which
+# is not a real pen position and must never reach emit_position — the
+# on-card pen cursor and the draw-stream overlay would otherwise jump to it.
+_suppress_position_emit = threading.local()
 
+if hasattr(dripfeed, "feed_sm"):
+    _orig_feed_sm = dripfeed.feed_sm
 
-def _feed_sm_and_emit_position(ad_ref, move, drip_logger):
-    _orig_feed_sm(ad_ref, move, drip_logger)
-    x_in = ad_ref.pen.phys.xpos
-    y_in = ad_ref.pen.phys.ypos
-    if x_in is not None and y_in is not None:
-        state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
+    def _feed_sm_and_emit_position(ad_ref, move, drip_logger):
+        _orig_feed_sm(ad_ref, move, drip_logger)
+        if getattr(_suppress_position_emit, "active", False):
+            return
+        x_in = ad_ref.pen.phys.xpos
+        y_in = ad_ref.pen.phys.ypos
+        if x_in is not None and y_in is not None:
+            state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
 
-
-dripfeed.feed_sm = _feed_sm_and_emit_position
+    dripfeed.feed_sm = _feed_sm_and_emit_position
+else:
+    # A vendored axidrawinternal release that renamed/removed feed_sm must not
+    # take the whole service down at import — this only costs live position
+    # updates (the pen cursor, the draw-stream overlay), not plotting itself.
+    log.error("plot_worker: axidrawinternal.dripfeed.feed_sm not found — "
+             "live pen-position updates (pen cursor, draw stream) are disabled")
 
 STOPPED_COMPLETED = 0
 STOPPED_PROGRAMMATIC_PAUSE = 1
@@ -878,6 +892,7 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
     _apply_bed_size(ad)
     if not ad.connect():
         raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    _suppress_position_emit.active = True
     try:
         ad.pen.turtle.xpos = ad.pen.phys.xpos = (
             ad.bounds[0][0] if dx_mm >= 0 else ad.bounds[1][0])
@@ -885,7 +900,16 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
             ad.bounds[0][1] if dy_mm >= 0 else ad.bounds[1][1])
         ad.move(dx_mm, dy_mm)
     finally:
-        ad.disconnect()
+        _suppress_position_emit.active = False
+        # A disconnect() failure here does not mean the move above failed —
+        # it already happened. Swallowed the same way _run_stage's teardown
+        # does, so callers (nudge_origin/_undo_origin_nudge/manual_jog) only
+        # ever see an exception from this function when the carriage really
+        # didn't move, and don't mistake a clean teardown failure for one.
+        try:
+            ad.disconnect()
+        except Exception:
+            pass
 
 
 def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:

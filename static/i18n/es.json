@@ -188,6 +188,7 @@
   "swatch.pen_color": "Color de pluma {hex}",
   "apierror.not_svg": "No es un archivo SVG. Suelta un .svg.",
   "apierror.invalid_svg": "Esto no parece un SVG válido.",
+  "apierror.not_image": "No es un archivo de imagen. Suelta un PNG o JPG.",
   "apierror.svg_not_found": "SVG no encontrado.",
   "apierror.select_one_layer": "Selecciona al menos una capa.",
   "apierror.job_not_found": "Trabajo no encontrado.",

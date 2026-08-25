@@ -188,6 +188,7 @@
   "swatch.pen_color": "Cor da caneta {hex}",
   "apierror.not_svg": "Não é um ficheiro SVG. Larga aqui um .svg.",
   "apierror.invalid_svg": "Isto não parece ser um SVG válido.",
+  "apierror.not_image": "Não é um ficheiro de imagem. Larga aqui um PNG ou JPG.",
   "apierror.svg_not_found": "SVG não encontrado.",
   "apierror.select_one_layer": "Seleciona pelo menos uma layer.",
   "apierror.job_not_found": "Job não encontrado.",

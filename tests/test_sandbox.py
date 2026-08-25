@@ -27,6 +27,11 @@ def test_state_is_not_the_live_state_file():
     assert REPO not in state.STATE_PATH.parents or "tmp" in str(state.STATE_PATH)
 
 
+def test_draw_trace_is_not_the_live_trace_file():
+    assert state.DRAW_TRACE_PATH != REPO / "draw_trace.jsonl"
+    assert REPO not in state.DRAW_TRACE_PATH.parents or "tmp" in str(state.DRAW_TRACE_PATH)
+
+
 def test_uploads_are_not_the_live_upload_dir():
     live = REPO / "uploads"
     assert main.UPLOAD_DIR != live

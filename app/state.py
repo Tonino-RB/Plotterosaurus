@@ -7,6 +7,7 @@ import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
+from typing import Iterator
 
 from . import config
 
@@ -15,7 +16,7 @@ log = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATE_PATH = BASE_DIR / "state.json"
 UPLOAD_DIR = BASE_DIR / "uploads"
-# See emit_position / draw_trace_snapshot below.
+# See emit_position / draw_trace_snapshot_lines below.
 DRAW_TRACE_PATH = BASE_DIR / "draw_trace.jsonl"
 
 # Jobs that were mid-run when the service died need normalization on load.
@@ -117,8 +118,15 @@ _active_id: str | None = None
 _last_active_id: str | None = None
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
+_last_position_broadcast_t: float = 0.0
+# Matches the old ~10Hz sampling rate (see plot_worker._POSITION_POLL_INTERVAL_S,
+# what the per-segment dripfeed hook below replaced) — used to cap the
+# "position" WS broadcast rate on installs that never enabled the draw
+# stream, since the on-card pen cursor never needed more than that. See
+# emit_position.
+_POSITION_BROADCAST_MIN_INTERVAL_S = 0.1
 # Writer for the active job's draw-stream trace (see emit_position /
-# draw_trace_snapshot). Backed by a file rather than an in-memory list: a
+# draw_trace_snapshot_lines). Backed by a file rather than an in-memory list: a
 # multi-hour job emits one point per motion segment (see
 # plot_worker._feed_sm_and_emit_position), and an unbounded in-process list of
 # that many points was OOM-killing long multi-layer jobs. Only opened when
@@ -462,12 +470,20 @@ def set_active(job_id: str | None) -> None:
             _draw_trace_fp = None
         if config.DRAW_STREAM_ENABLED:
             try:
-                # Line-buffered so a concurrent reader (draw_trace_snapshot)
+                # Line-buffered so a concurrent reader (draw_trace_snapshot_lines)
                 # never sees a partial line. Never allowed to fail the run —
                 # trace recording is a bonus, not a plotting dependency.
                 _draw_trace_fp = open(DRAW_TRACE_PATH, "w", buffering=1)
             except OSError:
                 log.exception("state: could not open %s", DRAW_TRACE_PATH)
+    elif _draw_trace_fp is not None:
+        # Run ended. Close the write handle (the file itself is left alone —
+        # see emit_position — so it's still readable for a post-run replay);
+        # otherwise the descriptor leaks until the next run's set_active(id)
+        # happens to close it, which can be the whole rest of the service's
+        # uptime if no other job ever plots.
+        _draw_trace_fp.close()
+        _draw_trace_fp = None
     _broadcast()
 
 
@@ -612,7 +628,7 @@ def _broadcast() -> None:
 
 
 def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
-    global _last_pen_position
+    global _last_pen_position, _last_position_broadcast_t
     _last_pen_position = {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
     # Append every sample for the active job to disk (see DRAW_TRACE_PATH
     # above) so the /draw-stream OBS overlay can replay what's already been
@@ -625,17 +641,45 @@ def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
     if _draw_trace_fp is not None and _active_id is not None:
         job = _get(_active_id)
         stage_index = (job or {}).get("current_stage_index", 0)
-        _draw_trace_fp.write(json.dumps(
-            {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down,
-             "stage_index": stage_index}) + "\n")
+        try:
+            _draw_trace_fp.write(json.dumps(
+                {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down,
+                 "stage_index": stage_index}) + "\n")
+        except (OSError, ValueError):
+            # Never allowed to fail the run — trace recording is a bonus, not
+            # a plotting dependency (see _draw_trace_fp above). A full disk
+            # (OSError) or set_active() closing this fp from another thread
+            # mid-write (ValueError: I/O operation on closed file) both land
+            # here instead of propagating into the plot driver's own loop.
+            log.warning("state: draw-trace write failed", exc_info=True)
     if _loop is None or _event_queue is None:
         return
+    # This fires once per real AxiDraw motion segment (see
+    # plot_worker._feed_sm_and_emit_position) — hundreds a second on a dense
+    # curve. That rate is the point when the draw stream is actually being
+    # watched, but every install pays for it otherwise: throttle back down to
+    # the old poll's cadence, which is all the on-card pen cursor ever needed.
+    now = time.time()
+    if (not config.DRAW_STREAM_ENABLED
+            and now - _last_position_broadcast_t < _POSITION_BROADCAST_MIN_INTERVAL_S):
+        return
+    _last_position_broadcast_t = now
     payload = {"type": "position", "x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
     _loop.call_soon_threadsafe(_event_queue.put_nowait, payload)
 
 
-def draw_trace_snapshot() -> dict:
-    points: list[dict] = []
+def draw_trace_snapshot_lines() -> Iterator[str]:
+    """The active job's draw-stream trace, as newline-delimited JSON: a
+    header line with the job_id, then one line per recorded point.
+
+    Streamed straight off disk rather than collected into a list — a
+    multi-hour job can log hundreds of thousands of points (tens of MB), and
+    materializing that list (then having FastAPI re-serialize it as one JSON
+    blob) reintroduces on this read path the exact unbounded-memory problem
+    DRAW_TRACE_PATH was moved to disk to avoid in the first place — see the
+    comment there.
+    """
+    yield json.dumps({"job_id": _draw_trace_job_id}) + "\n"
     try:
         with open(DRAW_TRACE_PATH) as f:
             for line in f:
@@ -643,14 +687,14 @@ def draw_trace_snapshot() -> dict:
                 if not line:
                     continue
                 try:
-                    points.append(json.loads(line))
+                    json.loads(line)
                 except ValueError:
                     # Last line of a file still being written to can be cut
-                    # mid-write; skip rather than fail the whole snapshot.
+                    # mid-write; skip rather than forward a broken one.
                     continue
+                yield line + "\n"
     except OSError:
         pass
-    return {"job_id": _draw_trace_job_id, "points": points}
 
 
 async def drain_events() -> None:

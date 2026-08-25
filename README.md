@@ -168,6 +168,10 @@ PLOTTER_MODEL=1 ./install.sh
 # Enable plot recording via a Pi Camera Module 3 + MediaMTX (off by default):
 ENABLE_CAMERA=1 ./install.sh
 
+# Enable the /draw-stream live "draw progress" page, for an OBS Browser
+# Source (off by default — pure app code, no extra packages/services):
+ENABLE_DRAW_STREAM=1 ./install.sh
+
 # Enable the in-app "Update now" self-update path (off by default — see Updating below):
 ENABLE_SELF_UPDATE=1 ./install.sh
 

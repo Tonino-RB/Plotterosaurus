@@ -500,7 +500,11 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "camera_recording_mode_default": "realtime",  // "realtime" | "timelapse" | "sped_up"
   "camera_timelapse_interval_s_default": 5.0,
   "camera_speed_multiplier_default": 4.0,
-  "record_plot_default": false
+  "record_plot_default": false,
+  "draw_stream_enabled": false,                 // true only if the server was installed with ENABLE_DRAW_STREAM=1
+  "draw_stream_stroke_width_px": 4,             // fallback line width (px) for content with no resolvable SVG stroke-width
+  "draw_stream_background": "black",            // "black" | "white"
+  "draw_stream_max_resolution_px": 2560         // cap on the live-page canvas's longer edge, in px
 }
 ```
 
@@ -533,6 +537,10 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `camera_timelapse_interval_s_default` | number > 0 |
 | `camera_speed_multiplier_default` | number > 1.0 |
 | `record_plot_default` | bool |
+| `draw_stream_enabled` | bool. Set at install time via `ENABLE_DRAW_STREAM=1`; can be toggled here too — see the `/draw-stream` live page in README.md. |
+| `draw_stream_stroke_width_px` | int 1–40 |
+| `draw_stream_background` | `"black"` \| `"white"` |
+| `draw_stream_max_resolution_px` | int 480–4096 |
 | `pause_between_layers_default` | bool |
 | `delete_on_complete_default` | bool |
 | `speed_pendown_default` | int 1–110 |

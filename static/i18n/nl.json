@@ -188,6 +188,7 @@
   "swatch.pen_color": "Penkleur {hex}",
   "apierror.not_svg": "Geen SVG-bestand. Sleep een .svg hierheen.",
   "apierror.invalid_svg": "Dit lijkt geen geldige SVG.",
+  "apierror.not_image": "Geen afbeeldingsbestand. Sleep een PNG of JPG hierheen.",
   "apierror.svg_not_found": "SVG niet gevonden.",
   "apierror.select_one_layer": "Selecteer minstens één laag.",
   "apierror.job_not_found": "Taak niet gevonden.",

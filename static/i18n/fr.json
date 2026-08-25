@@ -188,6 +188,7 @@
   "swatch.pen_color": "Couleur du stylo {hex}",
   "apierror.not_svg": "Ce n'est pas un fichier SVG. Dépose un .svg.",
   "apierror.invalid_svg": "Ça ne ressemble pas à un SVG valide.",
+  "apierror.not_image": "Ce n'est pas un fichier image. Dépose un PNG ou un JPG.",
   "apierror.svg_not_found": "SVG introuvable.",
   "apierror.select_one_layer": "Sélectionne au moins un calque.",
   "apierror.job_not_found": "Job introuvable.",

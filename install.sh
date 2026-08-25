@@ -58,6 +58,36 @@ as_user() {
 
 fail() { echo "!!! $*" >&2; exit 1; }
 
+# Flip a boolean flag on in an existing config.json. app/config.py only
+# applies an opt-in feature's ENABLE_* env var as the setting's default the
+# very first time config.json is created; once that file exists (e.g. from an
+# earlier install run without the feature), its persisted value permanently
+# wins over the env var on every later boot, and there's no UI toggle to flip
+# it back on (the feature's settings are themselves hidden while its flag is
+# false) — so a re-run against an already-configured install needs a direct
+# patch. No-ops if config.json doesn't exist yet (a fresh install already
+# picks up the env var's default).
+enable_config_flag() {
+    local key="$1"
+    [ -f "$PROJECT_DIR/config.json" ] || return 0
+    echo "    enabling $key in existing config.json"
+    local py; py="$(mktemp --suffix=.py)"
+    cat > "$py" <<PYEOF
+import json, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+data["$key"] = True
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+    chmod 644 "$py"
+    as_user python3 "$py" "$PROJECT_DIR/config.json"
+    rm -f "$py"
+}
+
 echo ">>> Checking prerequisites"
 
 # Python version
@@ -257,32 +287,7 @@ PYEOF
 
     echo ">>> Enabling camera recording in plotterosaurus.service"
     run_sudo sed -i "s/^Environment=ENABLE_CAMERA=.*/Environment=ENABLE_CAMERA=1/" "$UNIT_DST"
-
-    # app/config.py only applies the ENABLE_CAMERA env var as camera_enabled's
-    # default the very first time config.json is created; once that file
-    # exists (e.g. from an earlier install run without the camera), its
-    # persisted value permanently wins over the env var on every later boot.
-    # There's no UI toggle to flip it back on (the camera settings button is
-    # itself hidden while camera_enabled is false), so patch it here directly
-    # whenever the user explicitly asks for the camera via ENABLE_CAMERA=1.
-    if [ -f "$PROJECT_DIR/config.json" ]; then
-        echo "    enabling camera_enabled in existing config.json"
-        ENABLE_CAMERA_PY="$(mktemp --suffix=.py)"
-        cat > "$ENABLE_CAMERA_PY" <<'PYEOF'
-import json, sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    data = json.load(f)
-data["camera_enabled"] = True
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PYEOF
-        chmod 644 "$ENABLE_CAMERA_PY"
-        as_user python3 "$ENABLE_CAMERA_PY" "$PROJECT_DIR/config.json"
-        rm -f "$ENABLE_CAMERA_PY"
-    fi
+    enable_config_flag camera_enabled
 fi
 
 # Draw-stream OBS overlay (opt-in) ------------------------------------------
@@ -292,28 +297,7 @@ fi
 if [ "${ENABLE_DRAW_STREAM:-}" = "1" ]; then
     echo ">>> Enabling draw-stream in plotterosaurus.service"
     run_sudo sed -i "s/^Environment=ENABLE_DRAW_STREAM=.*/Environment=ENABLE_DRAW_STREAM=1/" "$UNIT_DST"
-
-    # Same reasoning as the camera_enabled patch above: the env var only seeds
-    # the default the first time config.json is created, so a re-run against
-    # an already-configured install needs a direct patch to flip it on.
-    if [ -f "$PROJECT_DIR/config.json" ]; then
-        echo "    enabling draw_stream_enabled in existing config.json"
-        ENABLE_DRAW_STREAM_PY="$(mktemp --suffix=.py)"
-        cat > "$ENABLE_DRAW_STREAM_PY" <<'PYEOF'
-import json, sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    data = json.load(f)
-data["draw_stream_enabled"] = True
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PYEOF
-        chmod 644 "$ENABLE_DRAW_STREAM_PY"
-        as_user python3 "$ENABLE_DRAW_STREAM_PY" "$PROJECT_DIR/config.json"
-        rm -f "$ENABLE_DRAW_STREAM_PY"
-    fi
+    enable_config_flag draw_stream_enabled
 fi
 
 echo ">>> Installing sudoers rule for shutdown button"

@@ -16,7 +16,7 @@ from fastapi import (
     Depends, FastAPI, File, Form, Header, HTTPException,
     Request, UploadFile, WebSocket, WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -259,7 +259,12 @@ def draw_stream_page():
 
 @app.get("/draw-stream/trace")
 def draw_stream_trace():
-    return state.draw_trace_snapshot()
+    # Streamed (see state.draw_trace_snapshot_lines) rather than built into one
+    # JSON response: a multi-hour job's trace can be hundreds of thousands of
+    # points, and materializing that in memory here defeats the point of
+    # having moved it to disk in the first place.
+    return StreamingResponse(state.draw_trace_snapshot_lines(),
+                             media_type="application/x-ndjson")
 
 
 # SVG storage -------------------------------------------------------------

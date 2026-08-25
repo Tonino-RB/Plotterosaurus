@@ -188,6 +188,7 @@
   "swatch.pen_color": "笔色 {hex}",
   "apierror.not_svg": "不是 SVG 文件。请拖入一个 .svg 文件。",
   "apierror.invalid_svg": "这看起来不是有效的 SVG。",
+  "apierror.not_image": "不是图片文件。请拖入一个 PNG 或 JPG 文件。",
   "apierror.svg_not_found": "找不到 SVG。",
   "apierror.select_one_layer": "请至少选择一个图层。",
   "apierror.job_not_found": "找不到任务。",

@@ -188,6 +188,7 @@
   "swatch.pen_color": "펜 색상 {hex}",
   "apierror.not_svg": "SVG 파일이 아니에요. .svg 파일을 올려주세요.",
   "apierror.invalid_svg": "올바른 SVG가 아닌 것 같아요.",
+  "apierror.not_image": "이미지 파일이 아니에요. PNG 또는 JPG 파일을 올려주세요.",
   "apierror.svg_not_found": "SVG를 찾을 수 없어요.",
   "apierror.select_one_layer": "레이어를 하나 이상 선택해 주세요.",
   "apierror.job_not_found": "작업을 찾을 수 없어요.",

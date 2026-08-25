@@ -206,6 +206,7 @@
   "swatch.pen_color": "Pen color {hex}",
   "apierror.not_svg": "Not an SVG file. Please drop a .svg.",
   "apierror.invalid_svg": "That doesn't look like a valid SVG.",
+  "apierror.not_image": "Not an image file. Please drop a PNG or JPG.",
   "apierror.svg_not_found": "SVG not found.",
   "apierror.select_one_layer": "Select at least one layer.",
   "apierror.job_not_found": "Job not found.",

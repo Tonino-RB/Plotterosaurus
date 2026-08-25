@@ -58,6 +58,7 @@ def _sandbox_server_state(tmp_path_factory):
 
     state.STATE_PATH = sandbox / "state.json"
     state.UPLOAD_DIR = uploads
+    state.DRAW_TRACE_PATH = sandbox / "draw_trace.jsonl"
     main.UPLOAD_DIR = uploads
     # Both queues cache the constant on first use; seed the cache instead so
     # they never resolve the real one.
