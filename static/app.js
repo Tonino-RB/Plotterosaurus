@@ -3274,6 +3274,12 @@ const settingsMachineName = $("settings-machine-name");
 const settingsMachineWidth = $("settings-machine-width");
 const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
+const settingsMachineSkew = $("settings-machine-skew");
+const settingsSkewSide = $("settings-skew-side");
+const settingsSkewD1 = $("settings-skew-d1");
+const settingsSkewD2 = $("settings-skew-d2");
+const settingsSkewApply = $("settings-skew-apply");
+const settingsSkewResult = $("settings-skew-result");
 const settingsWebhookUrl = $("settings-webhook-url");
 const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
 const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
@@ -3556,6 +3562,8 @@ settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
 // Save — which is also why deleting a machine asks for no confirmation.
 let machineDraft = [];
 let machineDraftActiveId = "";
+// Mirrors config.MACHINE_SKEW_DEG_MAX; the server clamps to the same bound.
+const SKEW_DEG_MAX = 5;
 
 function machineDraftEntry(id) {
   return machineDraft.find((m) => m.id === id) || null;
@@ -3582,6 +3590,7 @@ function loadMachineFields() {
   settingsMachineWidth.value = machine.width_mm;
   settingsMachineHeight.value = machine.height_mm;
   setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
+  settingsMachineSkew.value = machine.skew_deg ?? 0;
 }
 
 // Fold whatever is in the fields back into the draft. Runs before anything
@@ -3594,6 +3603,13 @@ function captureMachineFields() {
   machine.width_mm = parseFloat(settingsMachineWidth.value) || machine.width_mm;
   machine.height_mm = parseFloat(settingsMachineHeight.value) || machine.height_mm;
   machine.auto_rotate = getSegmentedValue(settingsMachineAutoRotate, "off");
+  // Not the `|| fallback` the dimensions use: 0 is both falsy and the value
+  // this field holds on every machine that isn't skewed, so that pattern
+  // would make "back to no correction" the one edit you can't save.
+  const skew = parseFloat(settingsMachineSkew.value);
+  machine.skew_deg = Number.isFinite(skew)
+    ? Math.max(-SKEW_DEG_MAX, Math.min(SKEW_DEG_MAX, skew))
+    : 0;
 }
 
 function loadMachineDraft(data) {
@@ -3633,6 +3649,11 @@ settingsMachineAdd.addEventListener("click", () => {
     width_mm: base ? base.width_mm : 430,
     height_mm: base ? base.height_mm : 297,
     auto_rotate: "off",
+    // Skew belongs to the physical machine, not to the profile it was copied
+    // from, so a new one starts unmeasured even when cloned from a
+    // calibrated entry — inheriting it would silently misdescribe a
+    // different plotter.
+    skew_deg: 0,
   };
   machineDraft.push(machine);
   machineDraftActiveId = machine.id;
@@ -3640,6 +3661,36 @@ settingsMachineAdd.addEventListener("click", () => {
   loadMachineFields();
   settingsMachineName.focus();
   settingsMachineName.select();
+});
+
+// Turn two measured diagonals into the skew angle. A square commanded with
+// side L comes off a skewed machine as a parallelogram whose diagonals differ
+// by exactly d1² - d2² = 4L²·tan(skew), so the angle falls straight out of
+// what a ruler can tell you. d1 is the top-left/bottom-right diagonal: when it
+// is the longer one the machine drifts +x as it travels down the page, which
+// is the positive direction here.
+function skewAngleDeg(sideMm, d1Mm, d2Mm) {
+  return Math.atan((d1Mm * d1Mm - d2Mm * d2Mm) / (4 * sideMm * sideMm)) * 180 / Math.PI;
+}
+
+settingsSkewApply.addEventListener("click", () => {
+  const side = parseFloat(settingsSkewSide.value);
+  const d1 = parseFloat(settingsSkewD1.value);
+  const d2 = parseFloat(settingsSkewD2.value);
+  if (!(side > 0) || !(d1 > 0) || !(d2 > 0)) {
+    settingsSkewResult.textContent = t("settings.machine.skew_calc_incomplete");
+    settingsSkewResult.className = "error";
+    return;
+  }
+  const deg = skewAngleDeg(side, d1, d2);
+  if (Math.abs(deg) > SKEW_DEG_MAX) {
+    settingsSkewResult.textContent = t("settings.machine.skew_calc_too_large");
+    settingsSkewResult.className = "error";
+    return;
+  }
+  settingsMachineSkew.value = deg.toFixed(3);
+  settingsSkewResult.textContent = t("settings.machine.skew_calc_result", { deg: deg.toFixed(3) });
+  settingsSkewResult.className = "muted";
 });
 
 settingsMachineDelete.addEventListener("click", () => {

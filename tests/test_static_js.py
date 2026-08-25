@@ -8,6 +8,7 @@ possible guard against that: compile the file and see if the engine objects.
 It is a *syntax* check, not a test of behaviour — quickjs has no DOM, so the
 source is wrapped in a function that is compiled and never called.
 """
+import math
 from pathlib import Path
 
 import pytest
@@ -142,3 +143,42 @@ def test_fit_to_page_waits_for_the_server():
                    'transform_offset_y_mm:0}')
     assert out["rotation_deg"] == 20            # unchanged: the cached answer
     assert out["footprint_width_mm"] == 40
+
+
+# skewAngleDeg -------------------------------------------------------------
+#
+# The Settings-panel calculator: two measured diagonals of a plotted square
+# in, the machine's axis-skew angle out. Checked against diagonals computed
+# independently in Python from a chosen shear, rather than hand-worked
+# numbers, so the expected values aren't just the implementation copied back.
+
+def _skew_angle(side: float, d1: float, d2: float) -> float:
+    source = (STATIC / "app.js").read_text()
+    ctx = quickjs.Context()
+    ctx.eval(_extract_function(source, "skewAngleDeg"))
+    return ctx.eval(f"skewAngleDeg({side}, {d1}, {d2})")
+
+
+def _diagonals_for_skew(side: float, skew_deg: float) -> tuple[float, float]:
+    """The diagonals a side-`side` square would measure after a shear of
+    `skew_deg`, per the same (x, y) -> (x + y*tan(skew), y) model the
+    calculator inverts."""
+    t = math.tan(math.radians(skew_deg))
+    d1 = math.hypot(side + side * t, side)  # top-left to bottom-right
+    d2 = math.hypot(side - side * t, side)  # top-right to bottom-left
+    return d1, d2
+
+
+def test_equal_diagonals_mean_no_skew():
+    assert _skew_angle(100, 141.421356, 141.421356) == pytest.approx(0, abs=1e-6)
+
+
+@pytest.mark.parametrize("skew_deg", [2.0, -3.5, 0.2])
+def test_skew_angle_recovers_the_shear_it_was_built_from(skew_deg):
+    d1, d2 = _diagonals_for_skew(100, skew_deg)
+    assert _skew_angle(100, d1, d2) == pytest.approx(skew_deg, abs=1e-6)
+
+
+def test_a_longer_top_left_diagonal_is_a_positive_skew():
+    assert _skew_angle(100, 145, 138) > 0
+    assert _skew_angle(100, 138, 145) < 0

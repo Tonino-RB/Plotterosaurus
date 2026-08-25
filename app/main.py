@@ -963,6 +963,10 @@ class MachineProfile(BaseModel):
     width_mm: float = Field(..., gt=0)
     height_mm: float = Field(..., gt=0)
     auto_rotate: Literal["off", "portrait", "landscape"] = "off"
+    # Measured axis-skew angle. Persisted per machine, but not applied to
+    # anything yet — see config.MACHINE_SKEW_DEG.
+    skew_deg: float = Field(0.0, ge=-config.MACHINE_SKEW_DEG_MAX,
+                            le=config.MACHINE_SKEW_DEG_MAX)
 
 
 class SettingsUpdate(BaseModel):
@@ -2145,6 +2149,7 @@ def _settings_payload() -> dict:
     snap["machine_auto_rotate"] = config.MACHINE_AUTO_ROTATE
     snap["machine_width_mm"] = config.MACHINE_WIDTH_MM
     snap["machine_height_mm"] = config.MACHINE_HEIGHT_MM
+    snap["machine_skew_deg"] = config.MACHINE_SKEW_DEG
     return snap
 
 
