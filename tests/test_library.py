@@ -170,7 +170,7 @@ def test_delete_removes_the_source_and_its_derivatives(client, uploaded):
 
 
 def test_delete_is_refused_while_a_job_uses_it(client, uploaded):
-    """Tidying the folder must not be able to destroy a queued job as a side
+    """Tidying the folder must not be able to destroy a ready job as a side
     effect."""
     svg_id = uploaded()
     job = state.add_job({
@@ -245,12 +245,12 @@ def test_scratch_files_are_not_library_rows(client, uploaded):
         scratch.unlink(missing_ok=True)
 
 
-# Draft status -------------------------------------------------------------
+# Ready status -------------------------------------------------------------
 #
-# A dropped SVG used to become a plottable job the instant it uploaded, so the
-# queue recorded what had been dropped rather than what the user had decided to
-# plot. Uploads now land as `draft`: same card, same controls, invisible to the
-# plot worker until Queue is pressed.
+# There is no queue to join and nothing to commit: a job is either `ready` —
+# uploaded, fully editable, and plottable the moment it reaches the top of the
+# list — or it is running, or it is finished. Plot takes the topmost ready job
+# and the run ends there, so the list is an ordering, not a batch.
 
 def _job_payload(svg_id, **over):
     return {"svg_id": svg_id, "filename": "drawing.svg",
@@ -258,90 +258,80 @@ def _job_payload(svg_id, **over):
             "paper_width_mm": 210.0, "paper_height_mm": 297.0, **over}
 
 
-def test_web_upload_creates_a_draft(client, uploaded):
+def test_a_new_job_is_ready(client, uploaded):
     svg_id = uploaded()
     job = client.post("/jobs", json=_job_payload(svg_id)).json()
     try:
-        assert job["status"] == "draft"
+        assert job["status"] == "ready"
+        assert state.next_ready_job()["job_id"] == job["job_id"]
     finally:
         state.remove_job(job["job_id"])
 
 
-def test_a_draft_is_invisible_to_the_plot_worker(client, uploaded):
-    """The guarantee that makes the feature safe: next_queued_job matches on
-    "queued" alone, so a draft is skipped by construction rather than by a
-    check somewhere that could be forgotten."""
-    svg_id = uploaded()
-    job = client.post("/jobs", json=_job_payload(svg_id)).json()
-    try:
-        assert state.next_queued_job() is None
-    finally:
-        state.remove_job(job["job_id"])
-
-
-def test_editing_a_draft_leaves_it_a_draft(client, uploaded):
-    """The regression that would gut the feature. PATCH re-queues a finished
-    job as a convenience; applying that to a draft would promote it on the
-    first slider drag."""
+def test_editing_a_job_leaves_it_ready(client, uploaded):
+    """Editing is what a ready job is for, so it must not knock the job out of
+    the status that makes it plottable."""
     svg_id = uploaded()
     job = client.post("/jobs", json=_job_payload(svg_id)).json()
     try:
         res = client.patch(f"/jobs/{job['job_id']}", json={"margin_top_mm": 12.0})
         assert res.status_code == 200, res.text
-        assert res.json()["status"] == "draft"
+        assert res.json()["status"] == "ready"
         assert res.json()["margin_top_mm"] == 12.0
-        assert state.next_queued_job() is None
     finally:
         state.remove_job(job["job_id"])
 
 
-def test_queue_promotes_a_draft_and_is_idempotent(client, uploaded):
+def test_editing_a_finished_job_makes_it_ready_again(client, uploaded):
+    """The convenience that survives from the old re-queue-on-edit rule: a
+    completed job picked back up is runnable again with no extra step."""
     svg_id = uploaded()
     job = client.post("/jobs", json=_job_payload(svg_id)).json()
     try:
-        res = client.post(f"/jobs/{job['job_id']}/queue")
-        assert res.status_code == 200, res.text
-        assert res.json()["status"] == "queued"
-        assert state.next_queued_job()["job_id"] == job["job_id"]
-
-        again = client.post(f"/jobs/{job['job_id']}/queue")
-        assert again.status_code == 200
-        assert again.json()["status"] == "queued"
-    finally:
-        state.remove_job(job["job_id"])
-
-
-def test_queue_refuses_a_job_that_is_not_a_draft(client, uploaded):
-    svg_id = uploaded()
-    job = client.post("/jobs", json=_job_payload(svg_id)).json()
-    try:
-        state.update_job(job["job_id"], status="queued")
         state.update_job(job["job_id"], status="plotting")
-        res = client.post(f"/jobs/{job['job_id']}/queue")
-        assert res.status_code == 409
-        assert res.json()["detail"]["code"] == "not_a_draft"
+        state.update_job(job["job_id"], status="completed")
+        res = client.patch(f"/jobs/{job['job_id']}", json={"margin_top_mm": 4.0})
+        assert res.status_code == 200, res.text
+        assert res.json()["status"] == "ready"
     finally:
         state.remove_job(job["job_id"])
 
 
-def test_requeue_does_not_reset_a_draft(client, uploaded):
-    """A draft has never run, so requeue has nothing to undo — and resetting
-    would throw away the estimate the plan queue computed while it sat."""
+def test_the_top_ready_job_is_the_one_that_would_plot(client, uploaded):
+    """The whole selection rule: list order, nothing else."""
+    first = client.post("/jobs", json=_job_payload(uploaded("a.svg"))).json()
+    second = client.post("/jobs", json=_job_payload(uploaded("b.svg"))).json()
+    try:
+        assert state.next_ready_job()["job_id"] == first["job_id"]
+        # Moving the second one to the top makes it the candidate instead.
+        client.post(f"/jobs/{second['job_id']}/move", json={"new_index": 0})
+        assert state.next_ready_job()["job_id"] == second["job_id"]
+        # A job that is not ready is passed over wherever it sits.
+        state.update_job(second["job_id"], status="plotting")
+        state.update_job(second["job_id"], status="completed")
+        assert state.next_ready_job()["job_id"] == first["job_id"]
+    finally:
+        state.remove_job(first["job_id"])
+        state.remove_job(second["job_id"])
+
+
+def test_requeue_leaves_a_ready_job_alone(client, uploaded):
+    """A ready job has nothing to reset — and resetting would throw away the
+    estimate the plan queue computed while it sat."""
     svg_id = uploaded()
     job = client.post("/jobs", json=_job_payload(svg_id)).json()
     try:
         state.update_job(job["job_id"], estimated_total_seconds=123.0)
         res = client.post(f"/jobs/{job['job_id']}/requeue")
         assert res.status_code == 200, res.text
-        assert res.json()["status"] == "draft"
+        assert res.json()["status"] == "ready"
         assert res.json()["estimated_total_seconds"] == 123.0
     finally:
         state.remove_job(job["job_id"])
 
 
-def test_the_api_still_creates_runnable_jobs(client, uploaded):
-    """An external client posting a job means it to run — especially one
-    passing auto_plot. Only the web upload parks."""
+def test_the_api_creates_ready_jobs_too(client, uploaded):
+    """The web upload and an external client now produce the same thing."""
     from app import config
     res = client.post("/api/v1/jobs",
                       files={"file": ("api.svg", SVG, "image/svg+xml")},
@@ -349,13 +339,13 @@ def test_the_api_still_creates_runnable_jobs(client, uploaded):
     assert res.status_code == 200, res.text
     job = res.json()
     try:
-        assert job["status"] == "queued"
+        assert job["status"] == "ready"
     finally:
         state.remove_job(job["job_id"])
 
 
 def test_upload_to_plot_ready_end_to_end(client, uploaded):
-    """The whole path a drawing takes: dropped, parked, listed, committed.
+    """The whole path a drawing takes: dropped, listed, built into a job.
 
     Written as one test because the value is in the seam between the steps —
     each half passed on its own while the upload was still auto-queueing.
@@ -364,27 +354,23 @@ def test_upload_to_plot_ready_end_to_end(client, uploaded):
     assert res.status_code == 200, res.text
     svg = res.json()
 
-    # 1. Uploading alone queues nothing.
-    assert state.next_queued_job() is None
+    # 1. Uploading a drawing on its own creates no job.
+    assert state.next_ready_job() is None
 
     # 2. It is in the library, under the name the user knows it by.
     entry = _entry(client, svg["id"])
     assert entry is not None and entry["filename"] == "Study.svg"
     assert entry["in_use"] is False
 
-    # 3. Building a job from it parks a draft, and claims the file.
+    # 3. Building a job from it makes it plottable, and claims the file.
     job = client.post("/jobs", json=_job_payload(svg["id"], filename="Study.svg")).json()
     try:
-        assert job["status"] == "draft"
-        assert state.next_queued_job() is None
+        assert job["status"] == "ready"
+        assert state.next_ready_job()["job_id"] == job["job_id"]
         assert _entry(client, svg["id"])["in_use"] is True
         # ...which is what protects it from being tidied away.
         assert client.request("DELETE", f"/library/{svg['id']}").status_code == 409
         assert client.post("/library/clean").json()["removed"] == 0
-
-        # 4. Only Queue makes it runnable.
-        assert client.post(f"/jobs/{job['job_id']}/queue").status_code == 200
-        assert state.next_queued_job()["job_id"] == job["job_id"]
     finally:
         state.remove_job(job["job_id"])
 

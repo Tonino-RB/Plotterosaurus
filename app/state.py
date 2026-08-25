@@ -31,23 +31,22 @@ _IN_FLIGHT_STATUSES = {"planning", "plotting", "homing", "awaiting_pen_change"}
 # as is the startup rehydrate code in _load_from_disk — that path normalises
 # orphaned in-flight statuses by direct mutation, not as a real transition.
 _VALID_TRANSITIONS: dict[str, set[str]] = {
-    # `plotting` is allowed straight from queued/awaiting_optimize/optimizing
+    # `ready` is where every job that isn't running lives: uploaded, fully
+    # editable, and plottable the moment it reaches the top of the list. There
+    # is no separate "committed to the queue" state — Plot takes the topmost
+    # ready job (see next_ready_job) and the run ends with that job, so the
+    # list is an ordering, not a batch that gets worked through.
+    #
+    # `plotting` is allowed straight from ready/awaiting_optimize/optimizing
     # so the plot worker can skip the `planning` status when the preview is
     # already cached (the plan queue ran ahead of the user's Plot click).
-    # "failed" straight from "queued" covers _run_job's pre-flight bounds
+    # "failed" straight from "ready" covers _run_job's pre-flight bounds
     # check, which can reject a job before optimize/plan ever starts.
-    # "cancelled" straight from "queued" covers a cancel that lands during the
+    # "cancelled" straight from "ready" covers a cancel that lands during the
     # optimize/plan phases: the plan-cache fast path never flips the job to
-    # `planning`, so it is still reading as queued when the worker picks the
+    # `planning`, so it is still reading as ready when the worker picks the
     # flag up (see _run_job / cancel_active).
-    # A job the user has uploaded but not committed to plotting. It sits in the
-    # queue list, fully editable, and the plot worker cannot see it —
-    # next_queued_job matches on "queued" alone, so a draft is skipped by
-    # construction rather than by a check that could be forgotten. The only way
-    # out is the user pressing Queue (see main.queue_job); a draft that is no
-    # longer wanted is deleted, never cancelled, so there is nothing else here.
-    "draft":                {"queued"},
-    "queued":               {"awaiting_optimize", "optimizing", "planning", "plotting",
+    "ready":                {"awaiting_optimize", "optimizing", "planning", "plotting",
                              "cancelled", "failed"},
     "awaiting_optimize":    {"optimizing", "planning", "plotting", "cancelled", "failed"},
     "optimizing":           {"planning", "plotting", "cancelled", "failed"},
@@ -65,9 +64,9 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
                              "failed"},
     "plotting_calibration": {"awaiting_pen_change", "cancelled", "failed"},
     "homing":               {"cancelled"},
-    "completed":            {"queued"},
-    "failed":               {"queued"},
-    "cancelled":            {"queued"},
+    "completed":            {"ready"},
+    "failed":               {"ready"},
+    "cancelled":            {"ready"},
 }
 
 
@@ -116,7 +115,6 @@ _active_id: str | None = None
 # across a page reload, when active_id has already gone back to None and
 # there's no client-side memory of what it used to be.
 _last_active_id: str | None = None
-_awaiting_next_job: bool = False
 _pause_at_pen_up_pending: bool = False
 _last_pen_position: dict | None = None
 # Writer for the active job's draw-stream trace (see emit_position /
@@ -196,13 +194,23 @@ def _load_from_disk() -> None:
             log.info("state: dropping job %s — source SVG missing", job.get("job_id"))
             continue
         status = job.get("status")
+        # A state.json written before the two not-running statuses became one:
+        # a draft was a job not yet committed to the queue, and queued was one
+        # that had been. Neither distinction exists now — both are `ready`.
+        if status in ("draft", "queued"):
+            status = job["status"] = "ready"
+        # A run ends with its own job, so there is no between-jobs pause left
+        # for this to ask for. Dropped rather than ignored: the record is
+        # re-persisted and served over the API, and a field nothing reads is
+        # worse than no field at all.
+        job.pop("pause_after_job", None)
         resume_path = job.get("resume_path")
         resume_ok = bool(resume_path) and Path(resume_path).exists()
         if status in ("awaiting_optimize", "optimizing"):
             # Crashed before plotting started — no pen state to recover. Send
-            # the job back to queued so the user can plot it again with one
+            # the job back to ready so the user can plot it again with one
             # click. The optimize phase will re-run on its own.
-            job["status"] = "queued"
+            job["status"] = "ready"
             job["error"] = None
             job["resume_path"] = None
             job["stages"] = []
@@ -310,7 +318,6 @@ def snapshot() -> dict:
         "svgs": {k: dict(v) for k, v in _svgs.items()},
         "active_id": _active_id,
         "last_active_id": _last_active_id,
-        "awaiting_next_job": _awaiting_next_job,
         "pause_at_pen_up_pending": _pause_at_pen_up_pending,
         "last_pen_position": dict(_last_pen_position) if _last_pen_position else None,
         "origin_nudge_x_mm": _origin_nudge["x_mm"],
@@ -325,10 +332,9 @@ def snapshot() -> dict:
 
 
 def _derive_top_status() -> str:
-    if _awaiting_next_job:
-        return "awaiting_next_job"
     if _active_id is None:
-        # Any errored/completed jobs don't count; idle unless queue is non-empty queued
+        # Nothing is running. Jobs sitting at `ready` don't make the machine
+        # busy — Plot is what starts one.
         return "idle"
     job = _get(_active_id)
     return job["status"] if job else "idle"
@@ -361,7 +367,7 @@ def add_job(job: dict) -> dict:
 def _make_record(data: dict) -> dict:
     return {
         "job_id": uuid.uuid4().hex[:8],
-        "status": "queued",
+        "status": "ready",
         "created_at": time.time(),
         "stages": [],
         "current_stage_index": 0,
@@ -462,12 +468,6 @@ def set_active(job_id: str | None) -> None:
                 _draw_trace_fp = open(DRAW_TRACE_PATH, "w", buffering=1)
             except OSError:
                 log.exception("state: could not open %s", DRAW_TRACE_PATH)
-    _broadcast()
-
-
-def set_awaiting_next_job(flag: bool) -> None:
-    global _awaiting_next_job
-    _awaiting_next_job = flag
     _broadcast()
 
 
@@ -584,9 +584,11 @@ def drop_upload_meta(svg_id: str) -> None:
         _persist()
 
 
-def next_queued_job() -> dict | None:
+def next_ready_job() -> dict | None:
+    """The job Plot runs: the topmost one still waiting to be plotted. The
+    list order is the only thing that picks it."""
     for j in _queue:
-        if j["status"] == "queued":
+        if j["status"] == "ready":
             return j
     return None
 

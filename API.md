@@ -72,11 +72,10 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
 
   // Job options — omit any field to inherit the corresponding server default.
   "pause_between_layers": true,       // Pause for pen change between selected layers (multi-layer only).
-  "pause_after_job":      true,       // Pause after this job finishes (paper / pen swap before next).
   "delete_on_complete":   false,      // Auto-remove the job and its uploaded SVG once complete.
 
   // Request-only directive (not stored on the job record). When `true` AND
-  // no other job is in a runnable or in-progress state (queued / paused /
+  // no other job is in a runnable or in-progress state (ready / paused /
   // plotting / planning / optimizing / homing / awaiting_pen_change), the
   // worker is started so this job plots immediately. Terminal-state leftovers
   // (`completed` / `failed` / `cancelled`) are inert and do *not* block
@@ -187,7 +186,7 @@ Layer types are decorative — the icon is shown in the layer list:
 ```jsonc
 {
   "job_id": "abc12345",               // Job ID — use this for future per-job actions.
-  "status": "queued",
+  "status": "ready",
   "created_at": 1777212168.88,
   "svg_id": "1ebd8a27",
   "filename": "APITest.svg",
@@ -202,7 +201,6 @@ Layer types are decorative — the icon is shown in the layer list:
   "paper_width_mm": 420.0,             // Always millimetres, regardless of input unit.
   "paper_height_mm": 297.0,
   "pause_between_layers": true,       // From server-side defaults (Settings).
-  "pause_after_job": true,
   "delete_on_complete": false,
   "speed_pendown": 25,
   "speed_penup": 75,
@@ -239,14 +237,17 @@ All endpoints take no body, return `{"ok": true}` on success, and respond `409 C
 
 | Method | Path | What it does | 409 conditions |
 |---|---|---|---|
-| `POST` | `/api/v1/queue/plot` | Start the queue. Picks up the first queued job. | No queued job; queue already running. |
+| `POST` | `/api/v1/queue/plot` | Plot the topmost `ready` job. The run ends with that job — nothing advances to the next one on its own. | No `ready` job; a job is already plotting. |
 | `POST` | `/api/v1/queue/pause` | Pause the active plot. Pen is raised; resumable. | No actively-plotting job. |
 | `POST` | `/api/v1/queue/pause-at-pen-up` | Soft pause: defer until the next pen lift, so the pen doesn't stop mid-stroke (useful for pump-action pens). Pauses immediately if the pen is already up. While pending, the snapshot field `pause_at_pen_up_pending` is `true`. | No actively-plotting job. |
 | `POST` | `/api/v1/queue/resume` | Resume a paused plot. | No paused job; missing resume data. |
-| `POST` | `/api/v1/queue/continue` | Advance past a pen-change pause, or accept the next job after `awaiting_next_job`. | Nothing waiting on a continue. |
+| `POST` | `/api/v1/queue/continue` | Advance past a pen-change pause, on to the job's next stage. | Nothing waiting on a continue. |
 | `POST` | `/api/v1/queue/calibrate` | At a pen-change pause, plot every layer with `type: "calibration"` (regardless of `selected`) as a one-shot side plot, then return to `awaiting_pen_change`. Lets the user verify pen alignment between layers without advancing the main plot. | Active job is not in `awaiting_pen_change`; job has no calibration-typed layers. |
 | `POST` | `/api/v1/queue/nudge-origin` | At a pen-change pause, shift the origin of the remaining (not-yet-plotted) stages by `{"dx_mm": 0.1, "dy_mm": 0.0}` (either field optional, default `0.0`) — for compensating small paper drift between layers. Session-only: not written back to the job's `transform_offset_*_mm`, and resets when the run ends. | Active job is not in `awaiting_pen_change`. |
-| `POST` | `/api/v1/queue/cancel` | Cancel the active job (or the awaiting-next-job state). The plotter homes if it can. | No active job. |
+| `POST` | `/api/v1/queue/cancel` | Cancel the active job. The plotter homes if it can. | No active job. |
+| `POST` | `/api/v1/queue/calibrate-file` | At a pen-change pause, plot a standalone SVG from the server's `calibration/` library as a side plot, transformed onto the job's current paper/margins. Body: `{"filename": "grid.svg"}`. | Active job is not in `awaiting_pen_change`; unknown or invalid filename. |
+| `POST` | `/api/v1/queue/pen-height` | Live-adjust pen height at a pen-change pause and move the pen so the change is visible. Body: `{"pen_pos_up": 60, "pen_pos_down": 30, "test": "up" \| "down"}` (heights optional, 29–85; `test` required). Persisted onto the active job. | Active job is not in `awaiting_pen_change`. |
+| `POST` | `/api/v1/queue/live-settings` | Change speed / acceleration / pen height of the plot in progress, applied at the next segment checkpoint. Body: any of `{"speed_pendown", "speed_penup", "acceleration", "pen_pos_up", "pen_pos_down"}`. | No active job. |
 
 Note: a pen-change pause (`awaiting_pen_change`) only resumes via `/api/v1/queue/continue` — the plotter's physical pause button does **not** auto-continue it (unlike a plain `paused` state, which the button does resume). This is intentional, so there's always a chance to calibrate / jog the pen / nudge the origin first.
 
@@ -256,6 +257,26 @@ Note: a pen-change pause (`awaiting_pen_change`) only resumes via `/api/v1/queue
 |---|---|---|---|
 | `POST` | `/api/v1/pen/up` | Raise the pen outside of a plot (no SVG involved), using the active job's pen height if one is loaded, otherwise the system default. | The plotter is actively driving a real plot (`plotting` / `homing` / `plotting_calibration`); connection failure. |
 | `POST` | `/api/v1/pen/down` | Lower the pen outside of a plot, same height rules as above. | Same as above. |
+| `POST` | `/api/v1/motors/enable` | Energize the stepper motors (holds position). | Same as above. |
+| `POST` | `/api/v1/motors/disable` | Release the steppers so the carriage can be pushed by hand. Note that moving it by hand shifts the physical origin, which the server cannot see. | Same as above. |
+
+### Carriage position
+
+Idle-only. Three separate values describe where the carriage is relative to the paper, and each endpoint owns exactly one of them: the *declared origin* (where the page's top-left corner is), the *manual offset* accumulated by jogging away from it, and — during a run only — the origin nudge (see `/api/v1/queue/nudge-origin`). The carriage sits at the sum of all three, and an AxiDraw has no home switches, so wherever it stands when a plot starts becomes that plot's zero.
+
+Both offsets are reported in the state snapshot as `manual_origin_offset_x_mm` / `_y_mm` and `origin_nudge_x_mm` / `_y_mm`.
+
+| Method | Path | What it does | 409 conditions |
+|---|---|---|---|
+| `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. | Not idle; a move past the bed's far edge, or longer than the bed itself; connection failure. |
+| `POST` | `/api/v1/pen/jog-home` | Walk the carriage back to the declared origin, clearing the manual offset. No-op when the offset is already zero. | Not idle; connection failure. |
+| `POST` | `/api/v1/pen/set-origin` | Declare wherever the carriage currently sits to be the page's top-left corner: the manual offset folds into the origin and resets to zero. Touches no hardware. | Not idle. |
+
+### Calibration library
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/v1/calibration/files` | List the standalone calibration SVGs available to `/api/v1/queue/calibrate-file`. |
 
 ### Camera / plot recording
 
@@ -289,9 +310,9 @@ already be installed and authenticated on the Pi; Plotterosaurus never stores cl
 #### Lifecycle cheat sheet
 
 ```
-queued ──plot──► [optimizing] ──► planning ──► plotting ──pause──► paused ──resume──► plotting
+ready ──plot──► [optimizing] ──► planning ──► plotting ──pause──► paused ──resume──► plotting
                                                   │                                       │
-                                                  └──► awaiting_pen_change ──continue──► (next stage / next job)
+                                                  └──► awaiting_pen_change ──continue──► (next stage)
                                                               │  ▲                       │
                                                               │  └── calibrate ◄──┐      │
                                                               ▼                   │      │
@@ -324,9 +345,8 @@ Returns the full queue snapshot, mirroring what the WebSocket broadcasts:
 
 ```jsonc
 {
-  "queue":   [ /* array of job records, in queue order */ ],
+  "queue":   [ /* array of job records, in list order */ ],
   "active_id": "abc12345",          // null if no active job
-  "awaiting_next_job": false,       // true between jobs when pause_after_job=true
   "status": "plotting"              // top-level worker status
 }
 ```
@@ -361,7 +381,7 @@ Editable fields:
 | `record_mode` | `"realtime"` \| `"timelapse"` \| `"sped_up"` | |
 | `record_timelapse_interval_s` | number | 0.5–3600 |
 | `record_speed_multiplier` | number | 1.1–60 |
-| `pause_between_layers`, `pause_after_job`, `delete_on_complete` | bool | `pause_between_layers` pauses only resume via `/queue/continue`, never the physical button — see the note under Queue control. |
+| `pause_between_layers`, `delete_on_complete` | bool | `pause_between_layers` pauses only resume via `/queue/continue`, never the physical button — see the note under Queue control. |
 | `optimize_svg` | bool | Run the vpype optimization pipeline before planning. |
 | `optimize_svg_tolerance_mm` | number | 0.01–10.0 |
 | `optimize_svg_linemerge`, `optimize_svg_linesimplify`, `optimize_svg_linesort`, `optimize_svg_reloop` | bool | Per-step toggles for the vpype pipeline. |
@@ -372,15 +392,19 @@ Editable fields:
 
 Returns the full updated job record. **`409 Conflict`** if the job is currently active (`plotting`, `planning`, `paused`, `awaiting_pen_change`, `homing`).
 
-A side-effect to be aware of: editing a job that's in a terminal state (`completed`, `failed`, `cancelled`) automatically transitions it back to `queued` so a re-plot doesn't need a separate `/requeue` call.
+A side-effect to be aware of: editing a job that's in a terminal state (`completed`, `failed`, `cancelled`) automatically transitions it back to `ready` so a re-plot doesn't need a separate `/requeue` call.
 
 #### `POST /api/v1/jobs/{job_id}/move` — reorder
 
 Body: `{"new_index": <0-based int>}`. Returns `{"ok": true}`. **`409 Conflict`** if the job is active.
 
-#### `POST /api/v1/jobs/{job_id}/requeue` — re-queue
+#### `POST /api/v1/jobs/{job_id}/requeue` — reset to `ready`
 
-No body. Returns the updated job record. Idempotent on jobs that are already `queued` (returns the existing record). **`409 Conflict`** if the job is active.
+No body. Puts a finished or cancelled job back to `ready`, clearing its stages, estimate and error. Returns the updated job record. Idempotent on jobs that are already `ready` (returns the existing record). **`409 Conflict`** if the job is active.
+
+#### `POST /api/v1/jobs/{job_id}/placement` — preview a placement
+
+Body: any of `{"transform_scale", "transform_rotation_deg", "transform_offset_x_mm", "transform_offset_y_mm", "fit_content"}`. Returns where the artwork would land on the page for those values, without storing them — the same answer the plot itself uses (see `app/placement.py`). **`409 Conflict`** if the job is active.
 
 #### `DELETE /api/v1/jobs/{job_id}` — remove
 
@@ -408,9 +432,15 @@ The first message after `accept()` is always a full `state` snapshot:
   "type": "state",
   "queue": [ /* job records */ ],
   "active_id": "abc12345",
-  "awaiting_next_job": false,
   "status": "plotting",
-  "error": null
+  "error": null,
+
+  // Carriage position relative to the declared origin, in mm — see
+  // "Carriage position" above.
+  "manual_origin_offset_x_mm": 0.0,
+  "manual_origin_offset_y_mm": 0.0,
+  "origin_nudge_x_mm": 0.0,
+  "origin_nudge_y_mm": 0.0
 }
 ```
 
@@ -438,7 +468,6 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
 {
   "plotter_model": 2,                           // 1–8 (see install.sh / Settings UI for the table)
   "pause_between_layers_default": true,
-  "pause_after_job_default": true,
   "delete_on_complete_default": false,
   "speed_pendown_default": 25,                  // 1–110
   "speed_penup_default": 75,                    // 1–110
@@ -505,7 +534,6 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `camera_speed_multiplier_default` | number > 1.0 |
 | `record_plot_default` | bool |
 | `pause_between_layers_default` | bool |
-| `pause_after_job_default` | bool |
 | `delete_on_complete_default` | bool |
 | `speed_pendown_default` | int 1–110 |
 | `speed_penup_default` | int 1–110 |

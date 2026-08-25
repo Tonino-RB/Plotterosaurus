@@ -41,15 +41,15 @@ Key module layout (`app/`):
 | Module | Responsibility |
 |---|---|
 | `main.py` | FastAPI routes: `/upload`, `/jobs`, `/queue/*`, `/pen/*`, `/motors/*`, `/camera/*`, `/webhook/*`, `/settings`, `/update/*`, `/ws/state`, plus the auth-gated `/api/v1/*` public API |
-| `plot_worker.py` | The plot/resume/homing worker thread: staged-loop, pen-change-pause, calibration logic, manual jog & pen control, button-poll and position-poll threads, preview cache |
+| `plot_worker.py` | The plot/resume/homing worker thread: staged-loop, pen-change-pause, calibration logic, manual jog & pen control, button-poll and position-poll threads, preview cache. One run plots one job and ends; nothing auto-advances |
 | `placement.py` | **The** placement engine — pure function(s), floats in/floats out, deciding where ink lands on paper. Every other module and the web UI consume its answer rather than deriving their own; see "Placement engine" below |
 | `svg_utils.py` | Inkscape-layer parsing/filtering, and rendering a placement decision into an SVG |
 | `ink_cache.py` | Per-layer ink rectangles, measured once per file on a background thread; a selection's rectangle is the union of its layers'. Requests read from memory or are told "not ready" — they never block on vpype |
 | `optimize_queue.py` / `svg_optimize.py` | Single-worker FIFO queue that runs `vpype` (subprocess, cancel-killable) ahead of time on upload/job-create/edit; cached per job and reused across re-plots |
-| `plan_queue.py` | Single-worker FIFO queue that pre-computes each queued job's time/distance estimate in the background |
+| `plan_queue.py` | Single-worker FIFO queue that pre-computes each ready job's time/distance estimate in the background |
 | `workload.py` | The shared budget: one heavy background job at a time across the three background queues, all scheduled below the plot worker's own priority |
 | `camera.py` | Plot recording via a Pi Camera Module 3 + MediaMTX (opt-in, `ENABLE_CAMERA=1`) |
-| `state.py` | In-memory queue/job state + WebSocket broadcast |
+| `state.py` | In-memory job-list state + WebSocket broadcast. One not-running status, `ready`; `next_ready_job` picks the top one and that is the only thing Plot consults |
 | `config.py` | Plotter/camera/webhook/display settings, persisted to `config.json` |
 | `updates.py` | Self-update: remote version check + guarded apply (opt-in) |
 

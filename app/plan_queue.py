@@ -8,7 +8,7 @@ planning step is an instant cache hit.
 
 Optimization comes first: a plan task that needs an optimized SVG calls
 ``optimize_queue.request_for_job`` (with ``on_running=None`` so the job's
-status isn't side-effected — the job stays ``queued``). FIFO order means
+status isn't side-effected — the job stays ``ready``). FIFO order means
 the job's own optimize task naturally runs before its plan task.
 """
 import logging
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 #
 # Everything past these two belongs to the plot worker, which is already
 # planning the job itself; re-planning underneath it would just duplicate work.
-_PLANNABLE = ("queued", "draft")
+_PLANNABLE = ("ready",)
 
 
 # Plan task --------------------------------------------------------------
@@ -82,7 +82,7 @@ def shutdown(timeout_s: float = 5.0) -> None:
 
 
 def bootstrap_from_state() -> None:
-    """Re-enqueue queued jobs whose plan hasn't completed.
+    """Re-enqueue ready jobs whose plan hasn't completed.
 
     Called once at startup, after state.init. ``plan_status="ready"`` jobs are
     skipped — they already carry a usable estimate from before the restart.
@@ -199,7 +199,7 @@ def _process(task: _Task) -> None:
         return
 
     # Wait for the SVG's optimize task to complete first, if any. on_running=None
-    # so we don't flip the job's status — the user's job stays "queued" and
+    # so we don't flip the job's status — the user's job stays "ready" and
     # plot_status moves through pending → planning → ready. Expert mode's
     # optimize is triggered explicitly (optimize_expert_queue), never here.
     if job.get("optimize_mode", "beginner") == "beginner" and job.get("optimize_svg"):

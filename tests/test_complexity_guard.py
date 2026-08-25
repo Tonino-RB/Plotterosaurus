@@ -114,10 +114,10 @@ def test_bootstrap_skips_a_plan_that_already_failed(monkeypatch):
     from app import plan_queue
 
     jobs = [
-        {"job_id": "fatal", "status": "queued", "plan_status": "too_complex"},
-        {"job_id": "broke", "status": "queued", "plan_status": "failed"},
-        {"job_id": "fine", "status": "queued", "plan_status": "pending"},
-        {"job_id": "done", "status": "queued", "plan_status": "ready",
+        {"job_id": "fatal", "status": "ready", "plan_status": "too_complex"},
+        {"job_id": "broke", "status": "ready", "plan_status": "failed"},
+        {"job_id": "fine", "status": "ready", "plan_status": "pending"},
+        {"job_id": "done", "status": "ready", "plan_status": "ready",
          "estimated_total_seconds": 42.0},
     ]
     monkeypatch.setattr(plan_queue.state, "snapshot", lambda: {"queue": jobs})

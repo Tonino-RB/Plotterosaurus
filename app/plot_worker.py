@@ -671,14 +671,14 @@ def manual_motors(enable: bool) -> None:
 
 # Public control API -------------------------------------------------------
 
-def start_queue() -> None:
-    """Kick off the worker if it isn't already running."""
+def start_plot() -> None:
+    """Kick off the worker on one job if it isn't already running."""
     with _worker_lock:
         if _worker_thread is not None and _worker_thread.is_alive():
             return
         _cancel_flag.clear()
         _continue_event.clear()
-        t = threading.Thread(target=_queue_loop, daemon=True)
+        t = threading.Thread(target=_run_loop, daemon=True)
         globals()["_worker_thread"] = t
         t.start()
 
@@ -721,18 +721,18 @@ def resume_active() -> None:
         state.update_job(job["job_id"], status="plotting", plotting_started_at=time.time())
         return
 
-    # Post-restart scenario: no worker thread exists. Start the queue loop —
-    # its paused-first dispatch picks up this job and routes it to _resume_job,
+    # Post-restart scenario: no worker thread exists. Start a run — its
+    # paused-first dispatch picks up this job and routes it to _resume_job,
     # which skips re-planning and jumps into the staged loop.
-    start_queue()
+    start_plot()
 
 
 def continue_next() -> None:
-    """Continue: either next stage (pen-change pause) or next job (awaiting_next_job)."""
-    if state.snapshot()["awaiting_next_job"]:
-        state.set_awaiting_next_job(False)
-        _continue_event.set()
-        return
+    """Continue past a pen-change pause, on to the job's next stage.
+
+    The only kind of continue there is: a run ends with its own job, so there
+    is no between-jobs pause left to accept.
+    """
     job = state.active_job()
     if job and job["status"] == "awaiting_pen_change":
         _continue_event.set()
@@ -836,10 +836,10 @@ def _claim_idle_machine() -> None:
     """Refuse unless the machine is idle — and, held under _worker_lock, keep
     it that way for the length of the caller's hardware operation.
 
-    Checking state alone left a window: start_queue returns as soon as the
+    Checking state alone left a window: start_plot returns as soon as the
     worker thread is spawned, and the thread only publishes a status once it
     has already picked a job up, so a jog starting in between would have the
-    serial port open when the plot tried to claim it. start_queue takes this
+    serial port open when the plot tried to claim it. start_plot takes this
     same lock before spawning, so holding it across the move closes that.
     """
     t = _worker_thread
@@ -1019,7 +1019,7 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
     happened to sit at startup, not a place the machine knows) — so it's the
     user's call to make, not ours to refuse.
 
-    Deliberately doesn't also check the next queued job's artwork bounds the
+    Deliberately doesn't also check the next ready job's artwork bounds the
     way nudge_origin does: this is a free physical-alignment tool (walking
     the pen to a mark on the actual paper), and most designs are plotted
     edge-to-edge, leaving zero slack for *any* jog — checking content bounds
@@ -1308,12 +1308,6 @@ def trigger_calibration_file(filename: str) -> None:
 
 
 def cancel_active() -> None:
-    snap = state.snapshot()
-    if snap["awaiting_next_job"]:
-        state.set_awaiting_next_job(False)
-        _cancel_flag.set()
-        _continue_event.set()
-        return
     job = state.active_job()
     if job is None:
         raise RuntimeError("No active job")
@@ -1347,9 +1341,9 @@ def cancel_active() -> None:
         # task out of the queue (or kill the inflight subprocess if it's ours)
         # without disturbing unrelated upload-time optimizations.
         _cancel_flag.set()
-    elif st == "queued":
+    elif st == "ready":
         # The plan-cache fast path skips the `planning` status, so a job can be
-        # active and still reading as `queued` for the moment it takes to
+        # active and still reading as `ready` for the moment it takes to
         # optimize/plan. _run_job checks the flag before it touches hardware.
         _cancel_flag.set()
     elif st == "awaiting_pen_change":
@@ -1383,60 +1377,41 @@ def shutdown_gracefully(timeout_s: float = 30.0) -> None:
             log.warning("graceful shutdown: worker thread did not exit within %ss", timeout_s)
 
 
-# Queue loop ---------------------------------------------------------------
+# Plot run -----------------------------------------------------------------
 
-def _queue_loop() -> None:
+def _run_loop() -> None:
+    """Plot one job, then stop.
+
+    A paused job takes priority: one interrupted mid-run by a service restart
+    has a half-drawn sheet still on the bed and has to be finished before
+    anything fresh starts on top of it. Otherwise the topmost `ready` job is
+    the one Plot meant (see state.next_ready_job) — the list is an ordering,
+    not a batch to work through.
+
+    The thread ends with that job. Nothing advances to the next one on its
+    own, so the paper can be changed with the machine genuinely idle — which
+    is also what makes the manual jog and Set origin available again between
+    jobs, rather than locked out by a run that is still nominally in progress.
+    """
     try:
-        while True:
-            if _cancel_flag.is_set():
-                _cancel_flag.clear()
-                return
-            # Paused jobs take priority: they were interrupted mid-run by a
-            # service restart and should be finished before any fresh queued
-            # job starts.
-            paused = state.next_paused_job()
+        if _cancel_flag.is_set():
+            _cancel_flag.clear()
+            return
+        paused = state.next_paused_job()
+        job = paused if paused is not None else state.next_ready_job()
+        if job is None:
+            return
+        state.set_active(job["job_id"])
+        try:
             if paused is not None:
-                state.set_active(paused["job_id"])
-                _resume_job(paused["job_id"])
-                state.set_active(None)
-                if _cancel_flag.is_set():
-                    _cancel_flag.clear()
-                    continue
-                # Fall through to between-jobs pause check below
-                job = paused
+                _resume_job(job["job_id"])
             else:
-                job = state.next_queued_job()
-                if job is None:
-                    return
-                state.set_active(job["job_id"])
                 _run_job(job["job_id"])
-                state.set_active(None)
-
-            if _cancel_flag.is_set():
-                _cancel_flag.clear()
-                continue  # loop; user may still have more queued
-
-            # Between jobs: pause if the just-finished job asked for it and more
-            # queued. Read the flag off the job we were handed rather than
-            # re-fetching it — a job with delete_on_complete has already removed
-            # itself from the queue by now, and looking it up would come back
-            # None and silently skip the pause the user asked for.
-            if state.next_queued_job() is not None:
-                if job.get("pause_after_job", True):
-                    state.set_awaiting_next_job(True)
-                    _continue_event.wait()
-                    _continue_event.clear()
-                    state.set_awaiting_next_job(False)
-                    if _cancel_flag.is_set():
-                        # Cancel from the between-jobs pause means "stop the
-                        # queue", not "skip this job" like the per-job cancels
-                        # above — the pause exists so the user can change the
-                        # paper, so continuing here would plot the next job on
-                        # whatever is still on the bed.
-                        _cancel_flag.clear()
-                        return
+        finally:
+            state.set_active(None)
+            _cancel_flag.clear()
     except Exception:
-        log.exception("queue loop crashed")
+        log.exception("plot run crashed")
     finally:
         _stop_button_poll()
 
@@ -1914,7 +1889,7 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
         else:
             # Rendering happens before any hardware is touched, and a bad
             # document (an unparseable viewBox, a truncated file) raises here.
-            # Unhandled, that exception unwinds all the way to _queue_loop,
+            # Unhandled, that exception unwinds all the way to _run_loop,
             # which logs and returns — leaving the job sitting in its
             # pre-plot status with an empty error field and no worker thread
             # left to move it, so every later Plot click just repeats the

@@ -923,7 +923,6 @@ class JobCreate(_OptimizeCreateFields):
     paper_name: str | None = None
     layer_selections: list[dict]
     pause_between_layers: bool = True
-    pause_after_job: bool = True
     delete_on_complete: bool = False
     paper_width_mm: float
     paper_height_mm: float
@@ -964,7 +963,6 @@ class MachineProfile(BaseModel):
 class SettingsUpdate(BaseModel):
     plotter_model: int | None = Field(None, ge=1, le=8)
     pause_between_layers_default: bool | None = None
-    pause_after_job_default: bool | None = None
     delete_on_complete_default: bool | None = None
     speed_pendown_default: int | None = Field(None, ge=1, le=110)
     speed_penup_default: int | None = Field(None, ge=1, le=110)
@@ -1052,7 +1050,7 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "margin_top_mm", "margin_right_mm", "margin_bottom_mm", "margin_left_mm",
     "transform_scale", "transform_rotation_deg",
     "transform_offset_x_mm", "transform_offset_y_mm",
-    "fit_content", "pause_between_layers", "pause_after_job",
+    "fit_content", "pause_between_layers",
     "delete_on_complete", "record_plot", "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
@@ -1101,7 +1099,6 @@ class JobUpdate(_OptimizeOptionalFields):
     paper_size_name: str | None = None
     paper_name: str | None = None
     pause_between_layers: bool | None = None
-    pause_after_job: bool | None = None
     delete_on_complete: bool | None = None
     paper_width_mm: float | None = None
     paper_height_mm: float | None = None
@@ -1137,15 +1134,6 @@ def create_job(req: JobCreate):
     # queue a double-optimization either.
     if payload.get("pre_optimized"):
         payload["optimize_svg"] = False
-    # Parked, not runnable. A dropped SVG used to become a plottable job the
-    # instant it finished uploading, which made the queue a record of what had
-    # been dropped rather than of what the user had decided to plot. The card is
-    # identical and fully editable — only the status differs, and the plot
-    # worker cannot see it until Queue is pressed (see queue_job).
-    #
-    # /api/v1/jobs deliberately does NOT do this: an external client posting a
-    # job, especially one passing auto_plot, means it to run.
-    payload["status"] = "draft"
     _clamp_job_fields(payload, payload.get("paper_width_mm"),
                       payload.get("paper_height_mm"))
     job = state.add_job(payload)
@@ -1172,7 +1160,7 @@ def update_job(job_id: str, req: JobUpdate):
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
-    if j["status"] not in ("draft", "queued", "completed", "failed", "cancelled"):
+    if j["status"] not in ("ready", "completed", "failed", "cancelled"):
         raise _coded(409, "cannot_edit_active")
     # exclude_unset so the client distinguishes "not sent" from "explicitly null"
     # — needed e.g. for paper_size_name which can be cleared back to None.
@@ -1186,12 +1174,11 @@ def update_job(job_id: str, req: JobUpdate):
     if j.get("pre_optimized"):
         updates["optimize_svg"] = False
     _clamp_job_fields(updates, paper_w, paper_h)
-    # Re-queue on edit so user can re-plot a finished/cancelled job without extra
-    # steps. A draft is exempt: editing one is the whole point of it being parked,
-    # and promoting it on the first slider drag would defeat the feature — it
-    # leaves `draft` only when the user presses Queue (see queue_job).
-    if j["status"] not in ("draft", "queued"):
-        updates["status"] = "queued"
+    # Editing a finished/cancelled job makes it runnable again, so the user can
+    # re-plot without any extra step. One already sitting at `ready` is already
+    # there.
+    if j["status"] != "ready":
+        updates["status"] = "ready"
         updates["error"] = None
     # Any edit can change the preview cache key, so the on-record estimate is
     # potentially stale. Drop it; plan_queue will recompute.
@@ -1248,7 +1235,7 @@ def optimize_expert_execute(job_id: str, req: OptimizeExpertExecute):
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
-    if j["status"] not in ("draft", "queued", "completed", "failed", "cancelled"):
+    if j["status"] not in ("ready", "completed", "failed", "cancelled"):
         raise _coded(409, "cannot_edit_active")
     box_texts = [
         req.optimize_expert_1_cmd if req.optimize_expert_1_enabled else "",
@@ -1399,7 +1386,6 @@ class ApiJobMetadata(_OptimizeOptionalFields):
     paper: ApiPaper | None = None
     layers: list[ApiLayer] = Field(default_factory=list)
     pause_between_layers: bool | None = None
-    pause_after_job: bool | None = None
     delete_on_complete: bool | None = None
     speed_pendown: int | None = None
     speed_penup: int | None = None
@@ -1535,7 +1521,6 @@ async def api_create_job(file: UploadFile = File(...),
         "paper_name": meta.paper.name if meta.paper else None,
         "layer_selections": layer_selections,
         "pause_between_layers": pick(meta.pause_between_layers, config.PAUSE_BETWEEN_LAYERS_DEFAULT),
-        "pause_after_job": pick(meta.pause_after_job, config.PAUSE_AFTER_JOB_DEFAULT),
         "delete_on_complete": pick(meta.delete_on_complete, config.DELETE_ON_COMPLETE_DEFAULT),
         "paper_width_mm": paper_width_mm,
         "paper_height_mm": paper_height_mm,
@@ -1586,7 +1571,7 @@ async def api_create_job(file: UploadFile = File(...),
     optimize_queue.enqueue_for_job(job)
     plan_queue.enqueue(job)
     if meta.auto_plot and not blockers_present:
-        plot_worker.start_queue()
+        plot_worker.start_plot()
     return job
 
 
@@ -1595,14 +1580,14 @@ async def api_create_job(file: UploadFile = File(...),
 
 @app.post("/api/v1/queue/plot", dependencies=[Depends(require_api_key)])
 def api_queue_plot():
-    if not any(j["status"] == "queued" for j in state.snapshot()["queue"]):
-        raise HTTPException(409, "no queued job to plot")
+    if not any(j["status"] == "ready" for j in state.snapshot()["queue"]):
+        raise HTTPException(409, "no ready job to plot")
     active = state.active_job()
     if active is not None and active["status"] in (
         "plotting", "planning", "paused", "awaiting_pen_change", "homing",
     ):
-        raise HTTPException(409, "queue is already running")
-    plot_worker.start_queue()
+        raise HTTPException(409, "a job is already plotting")
+    plot_worker.start_plot()
     return {"ok": True}
 
 
@@ -1613,6 +1598,11 @@ def api_queue_pause():
         raise HTTPException(409, "no active plotting job")
     plot_worker.pause_active()
     return {"ok": True}
+
+
+@app.post("/api/v1/queue/pause-at-pen-up", dependencies=[Depends(require_api_key)])
+def api_queue_pause_at_pen_up():
+    return pause_at_pen_up_queue()
 
 
 @app.post("/api/v1/queue/resume", dependencies=[Depends(require_api_key)])
@@ -1730,48 +1720,16 @@ def move_job(job_id: str, req: MoveRequest):
     return {"ok": True}
 
 
-@app.post("/jobs/{job_id}/queue")
-def queue_job(job_id: str):
-    """Commit a draft to the queue — the one way out of `draft`.
-
-    Idempotent on an already-queued job so a double-click is harmless. Nothing
-    else about the job changes: the estimate the plan queue computed while it
-    sat parked is still valid, which is why this is a status flip and not a
-    requeue (that one deliberately resets the plan, see requeue_job).
-    """
-    j = state.get_job(job_id)
-    if j is None:
-        raise _coded(404, "job_not_found")
-    if j["status"] == "queued":
-        return j
-    if j["status"] != "draft":
-        raise _coded(409, "not_a_draft")
-    state.update_job(job_id, status="queued")
-    fresh = state.get_job(job_id)
-    # The plan may have been skipped or cancelled while it was a draft; asking
-    # again is free when it is already ready (plan_queue dedups on job_id).
-    plan_queue.enqueue(fresh)
-    return fresh
-
-
-@app.post("/api/v1/jobs/{job_id}/queue", dependencies=[Depends(require_api_key)])
-def api_queue_job(job_id: str):
-    return queue_job(job_id)
-
-
 @app.post("/jobs/{job_id}/requeue")
 def requeue_job(job_id: str):
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
-    # A draft has never run, so there is nothing to re-queue and resetting its
-    # stages/estimate would only throw away the plan it already has. Queue is
-    # the action that applies to it.
-    if j["status"] in ("queued", "draft"):
-        return j  # already runnable, or not eligible — nothing to do (idempotent).
+    if j["status"] == "ready":
+        return j  # already runnable — nothing to do (idempotent).
     if j["status"] in ("plotting", "planning", "paused", "awaiting_pen_change", "homing"):
         raise _coded(409, "cannot_requeue_running")
-    state.update_job(job_id, status="queued", error=None, resume_path=None,
+    state.update_job(job_id, status="ready", error=None, resume_path=None,
                      started_at=None, plotting_started_at=None,
                      run_elapsed_seconds=0.0,
                      stages=[], current_stage_index=0,
@@ -1792,7 +1750,7 @@ def requeue_job(job_id: str):
 
 @app.post("/queue/start")
 def start_queue():
-    plot_worker.start_queue()
+    plot_worker.start_plot()
     return {"ok": True}
 
 

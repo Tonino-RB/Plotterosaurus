@@ -57,7 +57,6 @@ _SETTINGS: list[_Setting] = [
     _Setting("plotter_model", int, int(os.environ.get("PLOTTER_MODEL", "2")),
              lambda v: 1 <= v <= 8),
     _Setting("pause_between_layers_default", bool, True),
-    _Setting("pause_after_job_default", bool, True),
     _Setting("delete_on_complete_default", bool, False),
     _Setting("speed_pendown_default", int, 25, lambda v: 1 <= v <= 110),
     _Setting("speed_penup_default", int, 75, lambda v: 1 <= v <= 110),

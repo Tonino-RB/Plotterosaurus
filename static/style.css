@@ -152,7 +152,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 }
 .job-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 /* Briefly flashed when re-selecting a library item that already has an
-   untouched draft card, so jumping to it reads as a deliberate action
+   untouched card, so jumping to it reads as a deliberate action
    rather than a click that silently did nothing. */
 .job-card.card-highlight { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-wash); }
 .job-card-head {
@@ -181,7 +181,6 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 .job-actions { display: flex; gap: 0.15rem; align-items: center; flex: none; }
 .job-actions .icon-btn { color: var(--text-soft); font-size: 1.3rem; min-width: 2rem; height: 2rem; padding: 0 0.4rem; font-weight: 500; }
 .job-actions .icon-btn:hover { color: var(--text); }
-.job-queue-btn { height: 2rem; padding: 0 0.6rem; font-size: 0.85rem; line-height: 2rem; }
 
 #queue-progress { margin-top: 0.5rem; }
 #queue-progress .progress-bar { margin: 0.25rem 0; }

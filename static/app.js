@@ -78,9 +78,10 @@ const jobCardTemplate = $("job-card-template");
 const queueProgress = $("queue-progress");
 
 // Jobs the plot worker is not touching: editable, and planned in the
-// background so the estimate is ready before they are committed. A draft
-// behaves exactly like a queued job in every respect except being runnable.
-const IDLE_JOB_STATUSES = ["draft", "queued"];
+// background so the estimate is ready before they are plotted. There is only
+// one such status — a job is plottable the moment it reaches the top of the
+// list, with no separate "committed to the queue" step.
+const IDLE_JOB_STATUSES = ["ready"];
 
 function statusLabel(key) {
   return t(`status.${key}`);
@@ -89,7 +90,6 @@ function statusLabel(key) {
 let appSettings = {
   plotter_model: 2,
   pause_between_layers_default: true,
-  pause_after_job_default: true,
   delete_on_complete_default: false,
   speed_pendown_default: 25,
   speed_penup_default: 75,
@@ -164,7 +164,7 @@ const PAPER_SIZES = {
 };
 
 // Runtime state mirrored from the server.
-let serverState = { queue: [], active_id: null, awaiting_next_job: false, status: "idle" };
+let serverState = { queue: [], active_id: null, status: "idle" };
 const cardEls = new Map();                 // job_id → card DOM element
 const cardCtx = new Map();                 // job_id → per-card state (svg metadata, manual-fit flag, render timer)
 let sharedElapsedTimer = null;             // single interval for the sticky-bar progress
@@ -275,7 +275,6 @@ function buildJobPayload(svg, fallbackName) {
       pre_optimized: !!svg.pre_optimized,
       layer_selections,
       pause_between_layers: appSettings.pause_between_layers_default,
-      pause_after_job: appSettings.pause_after_job_default,
       delete_on_complete: appSettings.delete_on_complete_default,
       paper_width_mm: w,
       paper_height_mm: h,
@@ -312,8 +311,8 @@ function buildJobPayload(svg, fallbackName) {
   };
 }
 
-// POST the job. The server parks it as a draft (see main.create_job) — the card
-// appears via the WebSocket broadcast, and createCardForJob fetches the document
+// POST the job. It lands as `ready` (see main.create_job) — the card appears
+// via the WebSocket broadcast, and createCardForJob fetches the document
 // itself, so there is nothing to insert here.
 async function createJobFromSvg(svg, fallbackName) {
   const res = await fetch("/jobs", {
@@ -453,10 +452,10 @@ libraryList.addEventListener("click", async (ev) => {
       });
       if (!res.ok) return res;
       const svg = await res.json();
-      // Re-adding a drawing that's already sitting untouched as a draft
-      // shouldn't spawn a second copy of it — jump to the existing one
-      // instead of piling up duplicate cards for the same load.
-      const existing = serverState.queue.find((j) => j.svg_id === svg.id && j.status === "draft");
+      // Re-adding a drawing that's already sitting untouched shouldn't spawn
+      // a second copy of it — jump to the existing one instead of piling up
+      // duplicate cards for the same load.
+      const existing = serverState.queue.find((j) => j.svg_id === svg.id && j.status === "ready");
       if (existing) {
         const card = queueList.querySelector(`[data-id="${existing.job_id}"]`);
         if (card) {
@@ -1026,7 +1025,6 @@ function createCardForJob(job) {
   card.querySelector(".pen-pos-up").value = job.pen_pos_up ?? appSettings.pen_pos_up_default;
   card.querySelector(".pen-pos-down").value = job.pen_pos_down ?? appSettings.pen_pos_down_default;
   card.querySelector(".pause-between-layers").checked = job.pause_between_layers;
-  card.querySelector(".pause-after-job").checked = job.pause_after_job;
   card.querySelector(".delete-on-complete").checked = !!job.delete_on_complete;
   card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
   card.querySelector(".record-plot").checked = !!job.record_plot;
@@ -1055,7 +1053,6 @@ function createCardForJob(job) {
   card.querySelector(".job-move-up").addEventListener("click", () => moveJob(job.job_id, -1));
   card.querySelector(".job-move-down").addEventListener("click", () => moveJob(job.job_id, +1));
   card.querySelector(".job-requeue").addEventListener("click", () => requeueJob(job.job_id));
-  card.querySelector(".job-queue-btn").addEventListener("click", () => queueJob(job.job_id));
   card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
     nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
   );
@@ -1084,7 +1081,6 @@ function createCardForJob(job) {
     queueCardUpdate(card);
   });
   card.querySelector(".pause-between-layers").addEventListener("change", () => queueCardUpdate(card));
-  card.querySelector(".pause-after-job").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".delete-on-complete").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".record-plot").addEventListener("change", () => {
     card.querySelector(".record-plot-options").hidden = !card.querySelector(".record-plot").checked;
@@ -1515,7 +1511,7 @@ function updateCard(card, job) {
 
   // Disable editing when job is active
   const activeBlocks = job.job_id === serverState.active_id &&
-    !["draft", "queued", "completed", "failed", "cancelled"].includes(job.status);
+    !["ready", "completed", "failed", "cancelled"].includes(job.status);
   card.classList.toggle("active", job.job_id === serverState.active_id);
   card.classList.toggle("readonly", activeBlocks);
   card.querySelectorAll(".col-form input, .col-form select, .col-form button, .col-form textarea")
@@ -1555,11 +1551,6 @@ function updateCard(card, job) {
     const isTerminal = ["completed", "failed", "cancelled"].includes(job.status);
     requeueBtn.hidden = !(isTerminal && (job.started_at || job.error));
   }
-
-  // The one way out of `draft`. Shown only on a draft, so a job that is already
-  // queued offers nothing to press.
-  const queueBtn = card.querySelector(".job-queue-btn");
-  if (queueBtn) queueBtn.hidden = job.status !== "draft";
 
   cardCtx.set(job.job_id, ctx);
 
@@ -1636,8 +1627,8 @@ function effectiveDeltaForJob(job) {
   const running = activeRunDelta(job);
   if (running) return running;
   if (serverState.status === "idle") {
-    const firstQueued = serverState.queue.find((j) => j.status === "queued");
-    if (firstQueued && firstQueued.job_id === job.job_id) {
+    const firstReady = serverState.queue.find((j) => j.status === "ready");
+    if (firstReady && firstReady.job_id === job.job_id) {
       return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
     }
     // Nothing else is actually queued, and this is the job that was last
@@ -1646,7 +1637,7 @@ function effectiveDeltaForJob(job) {
     // rather than snapping to zero the instant the job stops being active.
     // Server-tracked (state.last_active_id), not just client memory, so
     // this survives a page reload after the cancel already happened.
-    if (!firstQueued && job.job_id === serverState.last_active_id) {
+    if (!firstReady && job.job_id === serverState.last_active_id) {
       return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
     }
   }
@@ -2482,7 +2473,7 @@ async function sendCardUpdate(card, pending) {
   // button immediately so the user doesn't see a stale "Plot again" ↻ between
   // the PATCH and the broadcast landing.
   const requeueBtn = card.querySelector(".job-requeue");
-  if (requeueBtn && job.status !== "queued") requeueBtn.hidden = true;
+  if (requeueBtn && job.status !== "ready") requeueBtn.hidden = true;
   const updates = {};
   if (pending.form) {
     const { w, h, paper_size_name } = readPaperFromCard(card);
@@ -2501,7 +2492,6 @@ async function sendCardUpdate(card, pending) {
     updates.pen_pos_up = parseInt(card.querySelector(".pen-pos-up").value);
     updates.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
     updates.pause_between_layers = card.querySelector(".pause-between-layers").checked;
-    updates.pause_after_job = card.querySelector(".pause-after-job").checked;
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
     updates.record_plot = card.querySelector(".record-plot").checked;
     updates.record_mode = card.querySelector(".record-mode").value;
@@ -2613,18 +2603,9 @@ async function deleteJob(id) {
   loadLibrary();
 }
 
-// Commit a draft to the queue. The card redraws from the broadcast that
-// follows, which is what hides the button.
-async function queueJob(id) {
-  try {
-    const res = await fetch(`/jobs/${id}/queue`, { method: "POST" });
-    if (!res.ok) throw new Error(await readErr(res));
-  } catch (e) {
-    topMessage.textContent = t("error.requeue_failed", { message: e.message });
-    topMessage.className = "error";
-  }
-}
-
+// Put a finished or cancelled job back to `ready`, with its stages and
+// estimate reset. The card redraws from the broadcast that follows, which is
+// what hides the button.
 async function requeueJob(id) {
   try {
     const res = await fetch(`/jobs/${id}/requeue`, { method: "POST" });
@@ -2993,14 +2974,16 @@ function applyTopControls() {
   const active = s.active_id ? s.queue.find((j) => j.job_id === s.active_id) : null;
   const status = active ? active.status : "idle";
 
-  plotBtn.hidden = !!active || s.awaiting_next_job || !s.queue.some((j) => j.status === "queued");
+  // Plot runs the topmost ready job, so it is offered whenever there is one
+  // and nothing is currently running.
+  plotBtn.hidden = !!active || !s.queue.some((j) => j.status === "ready");
   pauseBtn.hidden = !active || status !== "plotting";
   pausePenUpBtn.hidden = !active || status !== "plotting";
   const penUpPending = !!s.pause_at_pen_up_pending;
   pausePenUpBtn.textContent = penUpPending ? t("controls.pausing_pen_up") : t("controls.pause_pen_up");
   pausePenUpBtn.disabled = penUpPending;
   resumeBtn.hidden = !active || status !== "paused";
-  continueBtn.hidden = !(s.awaiting_next_job || (active && status === "awaiting_pen_change"));
+  continueBtn.hidden = !(active && status === "awaiting_pen_change");
   // Calibration button: visible only at a pen-change pause when this job has
   // at least one type='calibration' layer. Label switches singular/plural.
   const calLayers = active && status === "awaiting_pen_change"
@@ -3010,7 +2993,7 @@ function applyTopControls() {
   calibrateBtn.textContent = calLayers.length > 1
     ? t("controls.calibrate_plural")
     : t("controls.calibrate");
-  cancelBtn.hidden = !active && !s.awaiting_next_job;
+  cancelBtn.hidden = !active;
 
   // Standalone calibration-file library: only relevant at a pen-change
   // pause. Fetched once per pause (tracked by job_id) rather than on every
@@ -3030,8 +3013,8 @@ function applyTopControls() {
   nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
   nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
 
-  // Manual jog: idle-only (s.status, not the locally-shadowed `status`
-  // above, since that reads "idle" during awaiting_next_job too).
+  // Manual jog: idle-only. A run ends with its own job, so between jobs the
+  // machine really is idle and these stay available for re-aiming.
   const jogDisabled = s.status !== "idle";
   jogXInput.disabled = jogDisabled;
   jogYInput.disabled = jogDisabled;
@@ -3051,12 +3034,7 @@ function applyTopControls() {
   motorsDisableBtn.disabled = penBusy;
 
   // Top status pill text
-  if (s.awaiting_next_job) {
-    statusEl.textContent = statusLabel("awaiting_next_job");
-    statusEl.className = "status awaiting_next_job";
-    topMessage.textContent = t("msg.awaiting_next_job");
-    topMessage.className = "muted";
-  } else if (!active) {
+  if (!active) {
     statusEl.textContent = statusLabel("idle");
     statusEl.className = "status idle";
     topMessage.textContent = "";
@@ -3073,9 +3051,8 @@ function applyTopControls() {
   }
 
   // Shutdown button: disabled while the worker is busy so the Pi can't be
-  // powered off mid-plot. Safe to shut down only when idle (no active job and
-  // not waiting between jobs).
-  const busy = !!s.active_id || !!s.awaiting_next_job;
+  // powered off mid-plot. Safe to shut down only when idle.
+  const busy = !!s.active_id;
   shutdownBtn.disabled = busy;
   shutdownBtn.title = busy
     ? t("a11y.shutdown_busy")
@@ -3329,7 +3306,6 @@ const settingsModal = $("settings-modal");
 const settingsApiKey = $("settings-api-key");
 const settingsApiKeyCopy = $("settings-api-key-copy");
 const settingsPauseBetweenLayers = $("settings-pause-between-layers");
-const settingsPauseAfterJob = $("settings-pause-after-job");
 const settingsDeleteOnComplete = $("settings-delete-on-complete");
 const settingsSpeedPendown = $("settings-speed-pendown");
 const settingsSpeedPenup = $("settings-speed-penup");
@@ -3406,7 +3382,6 @@ function applyAppSettings(data) {
   appSettings = {
     plotter_model: data.plotter_model ?? appSettings.plotter_model,
     pause_between_layers_default: data.pause_between_layers_default ?? appSettings.pause_between_layers_default,
-    pause_after_job_default: data.pause_after_job_default ?? appSettings.pause_after_job_default,
     delete_on_complete_default: data.delete_on_complete_default ?? appSettings.delete_on_complete_default,
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
@@ -3468,7 +3443,7 @@ function applyAppSettings(data) {
   // paper_height_mm keeps whatever it was before this settings change, so the
   // UI can show e.g. "Landscape" locked in while the job would actually still
   // plot at its old portrait dimensions. Only do the full resync for jobs
-  // still "queued" (editable) — anything else, PATCHing paper dims would
+  // still "ready" (editable) — anything else, PATCHing paper dims would
   // re-queue a finished job or fight an active plot, so just update the
   // visual lock there.
   cardEls.forEach((card, id) => {
@@ -3510,7 +3485,6 @@ async function openSettings() {
     applyAppSettings(data);
     settingsApiKey.value = data.api_key || "";
     settingsPauseBetweenLayers.checked = data.pause_between_layers_default ?? true;
-    settingsPauseAfterJob.checked = data.pause_after_job_default ?? true;
     settingsDeleteOnComplete.checked = data.delete_on_complete_default ?? false;
     settingsSpeedPendown.value = String(data.speed_pendown_default ?? 25);
     settingsSpeedPenup.value = String(data.speed_penup_default ?? 75);
@@ -3550,7 +3524,6 @@ async function saveSettings() {
       machines: machineDraft,
       active_machine_id: machineDraftActiveId,
       pause_between_layers_default: settingsPauseBetweenLayers.checked,
-      pause_after_job_default: settingsPauseAfterJob.checked,
       delete_on_complete_default: settingsDeleteOnComplete.checked,
       speed_pendown_default: parseInt(settingsSpeedPendown.value),
       speed_penup_default: parseInt(settingsSpeedPenup.value),
@@ -3603,7 +3576,6 @@ for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-
 
 function resetSettingsJobOptions() {
   settingsPauseBetweenLayers.checked = true;
-  settingsPauseAfterJob.checked = true;
   settingsDeleteOnComplete.checked = false;
 }
 

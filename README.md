@@ -21,6 +21,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Drag-and-drop SVG upload; Inkscape layers parsed and selectable, each shown with an icon inferred from its type (pattern, text, svg, calibration, image, map, 3D model)
 - SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
 - Staged plotting: optional pause between layers for pen changes
+- No queue to manage: a job is `ready` from the moment it is created, Plot runs the topmost ready one, and the run ends with that job — so the paper can be changed with the machine genuinely idle
 - Paper presets (A0–A5, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
 - 4-sided margins, fit-content-to-page, and a per-job scale / rotation / X-Y offset transform
 - Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
@@ -242,7 +243,7 @@ app/
   preview_runner.py # subprocess entry point for pyaxidraw preview mode
   optimize_queue.py # single-worker FIFO queue that runs vpype ahead of time
                     # (on upload and on job create/edit), shared with plot_worker
-  plan_queue.py     # single-worker FIFO queue that pre-computes each queued
+  plan_queue.py     # single-worker FIFO queue that pre-computes each ready
                     # job's time/distance estimate in the background
   svg_optimize.py   # vpype subprocess wrapper for optional pre-plot optimization
   placement.py      # THE placement engine: where ink lands on paper. Pure
@@ -293,7 +294,7 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 - Remote update checks are hardcoded off in `app/updates.py` (`_UPDATES_DISABLED = True`) on this checkout, since it's an actively-changing personal fork — the update banner never appears regardless of `ENABLE_SELF_UPDATE`. `git pull && ./install.sh` always works as the manual update path.
 - **Content outside the SVG canvas is only dropped when "Optimize SVG" is on.** The canvas is treated as the composition, so anything outside it is meant to be excluded — but that rule is currently enforced by vpype's page crop, which only runs as part of optimization. With optimization off, out-of-canvas geometry is plotted wherever it lands on the sheet.
 - **A document with nothing plottable is accepted and plots nothing.** Live text and raster images are dropped on the way to the plotter (they aren't strokes), but the upload succeeds and the job runs to "completed" without drawing. Convert text to paths before uploading.
-- The machine profile isn't snapshotted onto a job, so switching the active machine changes how already-queued jobs are placed.
+- The machine profile isn't snapshotted onto a job, so switching the active machine changes how jobs already sitting at `ready` are placed.
 - **Artwork larger than the machine bed is estimated in full, then clipped when plotted.** The driver drops pen-down moves outside its travel bounds, so an oversized drawing used to report `0 m / 0 s` — the clip, not the drawing. The estimate now measures the artwork, and the card's machine-bounds warning is what tells you it will not all fit. Identical to before whenever the artwork does fit.
 - **The origin is not remembered across a restart.** Deliberate: the motors disengage when the plotter is switched off, so the carriage can be moved by hand, and a remembered position would be a confident lie. Re-aim before the first plot of a session.
 

@@ -370,10 +370,6 @@
             <span data-i18n="job.pause_between_layers">Pause between layers for pen changes (resume manually from the app)</span>
           </label>
           <label class="inline-check">
-            <input type="checkbox" id="settings-pause-after-job" />
-            <span data-i18n="job.pause_after_job">Pause after this job (for paper / pen change before the next one)</span>
-          </label>
-          <label class="inline-check">
             <input type="checkbox" id="settings-delete-on-complete" />
             <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
           </label>
@@ -829,9 +825,6 @@
         </div>
         <div class="job-status-pill status"></div>
         <div class="job-actions">
-          <button class="job-queue-btn primary" type="button" hidden
-                  title="Add this job to the plot queue"
-                  data-i18n="card.queue_btn" data-i18n-title="a11y.queue_job">Queue</button>
           <button class="icon-btn job-move-up" title="Move up" data-i18n-title="a11y.move_up">↑</button>
           <button class="icon-btn job-move-down" title="Move down" data-i18n-title="a11y.move_down">↓</button>
           <button class="icon-btn job-requeue" title="Plot again" hidden data-i18n-title="a11y.plot_again">↻</button>
@@ -1133,10 +1126,6 @@
                   </label>
                   <p class="muted" data-i18n="job.pause_between_layers_note">While paused, use the calibration plot, pen up/down, and fine origin adjust (below the queue controls) to line up the next layer.</p>
                 </div>
-                <label class="inline-check">
-                  <input type="checkbox" class="pause-after-job" checked />
-                  <span data-i18n="job.pause_after_job">Pause after this job (for paper / pen change before the next one)</span>
-                </label>
                 <label class="inline-check">
                   <input type="checkbox" class="delete-on-complete" />
                   <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
