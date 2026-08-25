@@ -810,6 +810,45 @@ def _delta_correction_mm(job: dict, svg_path: Path,
     return corr_x, corr_y
 
 
+def _move_fits_bed(dx_mm: float, dy_mm: float) -> bool:
+    """Is this single move short enough for the driver to carry out in full?
+
+    Not a question about where the carriage is. _jog_carriage re-seeds the
+    driver's position tracker at the far end of the travel before every move,
+    so the whole bed length is always available in the direction of travel and
+    absolute position never reaches the driver at all — which is what lets a
+    jog run below the app's own zero even though the driver's bounds start
+    there.
+
+    What does not fit is a move longer than the bed itself. ad.move() clips
+    the motion at the bounds but still records the *unclipped* target as the
+    new position, so the app would go on believing a displacement the carriage
+    never made — leaving the readout, the pre-flight check and Return to
+    Origin all measuring from a place the pen is not. Nothing else bounded
+    this: the far-edge guards below are absolute, and below the origin there
+    was only a confirmation, so any distance at all could be entered there.
+    """
+    bed_w_mm, bed_h_mm = machine_bounds_mm()
+    return abs(dx_mm) <= bed_w_mm and abs(dy_mm) <= bed_h_mm
+
+
+def _claim_idle_machine() -> None:
+    """Refuse unless the machine is idle — and, held under _worker_lock, keep
+    it that way for the length of the caller's hardware operation.
+
+    Checking state alone left a window: start_queue returns as soon as the
+    worker thread is spawned, and the thread only publishes a status once it
+    has already picked a job up, so a jog starting in between would have the
+    serial port open when the plot tried to claim it. start_queue takes this
+    same lock before spawning, so holding it across the move closes that.
+    """
+    t = _worker_thread
+    if (t is not None and t.is_alive()) or state.snapshot()["status"] != "idle":
+        raise RuntimeError("Manual jog only available while idle")
+    if _current_ad is not None:
+        raise RuntimeError("Plotter busy")
+
+
 def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
     """Physically move the carriage by (dx_mm, dy_mm), pen up, relative to
     wherever it currently is.
@@ -892,12 +931,21 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
     # actually stand. (Overshoot of the *page* is comparatively benign —
     # pyaxidraw clips it, same as artwork that runs past the page edge, see
     # _delta_correction_mm — so this only guards the bed's own outer extent,
-    # not the paper size on top of it.)
+    # not the paper size on top of it.) A single nudge longer than the bed is
+    # refused alongside it, for the different reason in _move_fits_bed.
     bed_w_mm, bed_h_mm = machine_bounds_mm()
     if (base_x + manual_x + new_x > bed_w_mm
-            or base_y + manual_y + new_y > bed_h_mm):
+            or base_y + manual_y + new_y > bed_h_mm
+            or not _move_fits_bed(dx_mm, dy_mm)):
         raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
-    if (new_x < 0 or new_y < 0) and not confirm_below_origin:
+    # Measured from the page corner (the declared origin plus the manual jog
+    # still standing on top of it), not from this run's own starting point —
+    # "above or left of the origin" is a statement about the paper, and the
+    # bed guard directly above already reasons in that same absolute frame.
+    # Testing the nudge alone let an outstanding leftward jog swallow the
+    # prompt, confirming nothing while the pen sat off the sheet.
+    if ((manual_x + new_x < 0 or manual_y + new_y < 0)
+            and not confirm_below_origin):
         raise RuntimeError("Nudge would go above or left of the origin")
     x, y = new_x, new_y
 
@@ -909,8 +957,11 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
             f"Nudge rejected: would push the artwork off the page. Nudge back by "
             f"({cx:+.1f}, {cy:+.1f}) mm to bring it back onto the page."
         )
-    state.set_origin_nudge(x, y)
+    # Move first, record second: a nudge the plotter refused (it is off, or
+    # unplugged) must not leave a stored offset behind for the walk-back at
+    # the end of the run to act on. See manual_jog for the same ordering.
     _jog_carriage(dx_mm, dy_mm)
+    state.set_origin_nudge(x, y)
 
 
 def _undo_origin_nudge() -> None:
@@ -959,12 +1010,14 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
     to walk back.
 
     Rejected outright — nothing is moved or stored — if it would run the
-    carriage past the machine bed's far edge. Landing *above/left of* the
-    origin is allowed, but only with confirm_below_origin: it puts the page's
-    top-left corner off the paper the plot was aimed at, and the bed's own
-    near edge is only an assumption anyway (the AxiDraw has no home switches,
-    so "0" is wherever the carriage happened to sit at startup, not a place
-    the machine knows) — so it's the user's call to make, not ours to refuse.
+    carriage past the machine bed's far edge, or that is simply longer than
+    the bed and so could not be carried out in full (see _move_fits_bed).
+    Landing *above/left of* the origin is allowed, but only with
+    confirm_below_origin: it puts the page's top-left corner off the paper the
+    plot was aimed at, and the bed's own near edge is only an assumption
+    anyway (the AxiDraw has no home switches, so "0" is wherever the carriage
+    happened to sit at startup, not a place the machine knows) — so it's the
+    user's call to make, not ours to refuse.
 
     Deliberately doesn't also check the next queued job's artwork bounds the
     way nudge_origin does: this is a free physical-alignment tool (walking
@@ -974,26 +1027,34 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
     for. _run_job's pre-flight check is the real backstop: it catches a
     leftover jog that's actually a problem right before a plot starts,
     with a precise correction and a one-click fix in the UI."""
-    if state.snapshot()["status"] != "idle":
-        raise RuntimeError("Manual jog only available while idle")
-    if _current_ad is not None:
-        raise RuntimeError("Plotter busy")
-    x, y = state.manual_origin_offset()
-    new_x, new_y = x + dx_mm, y + dy_mm
+    with _worker_lock:
+        _claim_idle_machine()
+        x, y = state.manual_origin_offset()
+        new_x, new_y = x + dx_mm, y + dy_mm
 
-    # The offset is measured from the declared origin (see set_origin), which
-    # isn't necessarily the machine's own corner — so the far-edge guard has
-    # to add the two back together to get a real bed coordinate. Past that
-    # edge the carriage hits its own end stops, so it's a hard refusal.
-    base_x, base_y = state.origin_base()
-    bed_w_mm, bed_h_mm = machine_bounds_mm()
-    if base_x + new_x > bed_w_mm or base_y + new_y > bed_h_mm:
-        raise RuntimeError("Jog rejected: would move past the machine bed edge.")
-    if (new_x < 0 or new_y < 0) and not confirm_below_origin:
-        raise RuntimeError("Jog would go above or left of the origin")
+        # The offset is measured from the declared origin (see set_origin),
+        # which isn't necessarily the machine's own corner — so the far-edge
+        # guard has to add the two back together to get a real bed coordinate.
+        # Past that edge the carriage hits its own end stops, so it's a hard
+        # refusal, as is a move too long for the driver to execute in full
+        # (see _move_fits_bed).
+        base_x, base_y = state.origin_base()
+        bed_w_mm, bed_h_mm = machine_bounds_mm()
+        if (base_x + new_x > bed_w_mm or base_y + new_y > bed_h_mm
+                or not _move_fits_bed(dx_mm, dy_mm)):
+            raise RuntimeError("Jog rejected: would move past the machine bed edge.")
+        if (new_x < 0 or new_y < 0) and not confirm_below_origin:
+            raise RuntimeError("Jog would go above or left of the origin")
 
-    state.set_manual_origin_offset(new_x, new_y)
-    _jog_carriage(dx_mm, dy_mm)
+        # Move first, record second. The offset is what the readout shows,
+        # what the pre-flight check measures and what Return to Origin walks
+        # back, so recording a move the plotter refused (powered off, cable
+        # pulled — _jog_carriage raises) would point all three at a place the
+        # carriage never went, and Return to Origin would then drive it that
+        # far away from the real origin. manual_jog_home has always been this
+        # way round; these two were not.
+        _jog_carriage(dx_mm, dy_mm)
+        state.set_manual_origin_offset(new_x, new_y)
 
 
 def set_origin() -> None:
@@ -1010,12 +1071,12 @@ def set_origin() -> None:
     hardware, so unlike manual_jog it has nothing to guard against — the
     carriage is where it already was, and the offset it leaves behind (zero)
     is trivially inside the bed."""
-    if state.snapshot()["status"] != "idle":
-        raise RuntimeError("Manual jog only available while idle")
-    x, y = state.manual_origin_offset()
-    base_x, base_y = state.origin_base()
-    state.set_origin_base(base_x + x, base_y + y)
-    state.set_manual_origin_offset(0.0, 0.0)
+    with _worker_lock:
+        _claim_idle_machine()
+        x, y = state.manual_origin_offset()
+        base_x, base_y = state.origin_base()
+        state.set_origin_base(base_x + x, base_y + y)
+        state.set_manual_origin_offset(0.0, 0.0)
 
 
 def manual_jog_home() -> None:
@@ -1023,15 +1084,13 @@ def manual_jog_home() -> None:
     displacement accumulated by manual_jog, which is measured from wherever
     set_origin last put the origin, not necessarily the machine's own corner.
     Idle-only, same as manual_jog."""
-    if state.snapshot()["status"] != "idle":
-        raise RuntimeError("Manual jog only available while idle")
-    if _current_ad is not None:
-        raise RuntimeError("Plotter busy")
-    x, y = state.manual_origin_offset()
-    if x == 0.0 and y == 0.0:
-        return
-    _jog_carriage(-x, -y)
-    state.set_manual_origin_offset(0.0, 0.0)
+    with _worker_lock:
+        _claim_idle_machine()
+        x, y = state.manual_origin_offset()
+        if x == 0.0 and y == 0.0:
+            return
+        _jog_carriage(-x, -y)
+        state.set_manual_origin_offset(0.0, 0.0)
 
 
 def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
