@@ -574,6 +574,22 @@
           </div>
           <div class="form-row">
             <label class="field">
+              <span class="field-label" data-i18n="camera.picture.exposure_mode_label">Exposure mode</span>
+              <select id="camera-exposure-mode">
+                <option value="normal" data-i18n="camera.picture.exposure_mode_normal">Normal</option>
+                <option value="short" data-i18n="camera.picture.exposure_mode_short">Short</option>
+                <option value="long" data-i18n="camera.picture.exposure_mode_long">Long</option>
+                <option value="custom" data-i18n="camera.picture.exposure_mode_custom">Custom</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.picture.shutter_label">Shutter speed (µs, 0 = auto)</span>
+              <input type="number" id="camera-shutter-us" min="0" step="100" value="0" />
+            </label>
+          </div>
+          <p class="muted" data-i18n="camera.picture.shutter_note">If the live view wobbles while the pen is moving, that's motion blur/rolling-shutter skew, not a bug. "Short" biases auto-exposure toward a faster shutter; for full manual control set a fixed shutter speed (try 2000-8000) — 0 leaves it automatic.</p>
+          <div class="form-row">
+            <label class="field">
               <span class="field-label" data-i18n="camera.picture.awb_label">White balance</span>
               <select id="camera-awb-mode">
                 <option value="auto" data-i18n="camera.picture.awb_auto">Auto</option>

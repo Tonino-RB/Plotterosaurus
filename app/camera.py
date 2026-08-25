@@ -94,6 +94,8 @@ def apply_camera_settings() -> None:
         "rpiCameraSaturation": config.CAMERA_SATURATION,
         "rpiCameraSharpness": config.CAMERA_SHARPNESS,
         "rpiCameraEV": config.CAMERA_EV,
+        "rpiCameraExposure": config.CAMERA_EXPOSURE_MODE,
+        "rpiCameraShutter": config.CAMERA_SHUTTER_US,
         "rpiCameraAWB": config.CAMERA_AWB_MODE,
         "rpiCameraGain": config.CAMERA_GAIN,
         "rpiCameraDenoise": config.CAMERA_DENOISE,

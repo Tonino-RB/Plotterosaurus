@@ -59,6 +59,8 @@ const cameraContrast = $("camera-contrast");
 const cameraSaturation = $("camera-saturation");
 const cameraSharpness = $("camera-sharpness");
 const cameraEv = $("camera-ev");
+const cameraExposureMode = $("camera-exposure-mode");
+const cameraShutterUs = $("camera-shutter-us");
 const cameraGain = $("camera-gain");
 const cameraAwbMode = $("camera-awb-mode");
 const cameraDenoise = $("camera-denoise");
@@ -3373,6 +3375,8 @@ function applyAppSettings(data) {
     camera_saturation: data.camera_saturation ?? appSettings.camera_saturation,
     camera_sharpness: data.camera_sharpness ?? appSettings.camera_sharpness,
     camera_ev: data.camera_ev ?? appSettings.camera_ev,
+    camera_exposure_mode: data.camera_exposure_mode ?? appSettings.camera_exposure_mode,
+    camera_shutter_us: data.camera_shutter_us ?? appSettings.camera_shutter_us,
     camera_awb_mode: data.camera_awb_mode ?? appSettings.camera_awb_mode,
     camera_gain: data.camera_gain ?? appSettings.camera_gain,
     camera_denoise: data.camera_denoise ?? appSettings.camera_denoise,
@@ -3717,6 +3721,8 @@ async function openCameraSettings() {
     setSliderNumber("camera-saturation", appSettings.camera_saturation ?? 1);
     setSliderNumber("camera-sharpness", appSettings.camera_sharpness ?? 1);
     setSliderNumber("camera-ev", appSettings.camera_ev ?? 0);
+    cameraExposureMode.value = appSettings.camera_exposure_mode || "normal";
+    cameraShutterUs.value = appSettings.camera_shutter_us ?? 0;
     setSliderNumber("camera-gain", appSettings.camera_gain ?? 0);
     cameraAwbMode.value = appSettings.camera_awb_mode || "auto";
     cameraDenoise.value = appSettings.camera_denoise || "off";
@@ -3756,6 +3762,8 @@ async function saveCameraSettings() {
       camera_saturation: numOr(cameraSaturation.value, 1),
       camera_sharpness: numOr(cameraSharpness.value, 1),
       camera_ev: numOr(cameraEv.value, 0),
+      camera_exposure_mode: cameraExposureMode.value,
+      camera_shutter_us: parseInt(cameraShutterUs.value) || 0,
       camera_gain: numOr(cameraGain.value, 0),
       camera_awb_mode: cameraAwbMode.value,
       camera_denoise: cameraDenoise.value,
@@ -3850,6 +3858,8 @@ function applyLivePicture() {
           camera_saturation: numOr(cameraSaturation.value, 1),
           camera_sharpness: numOr(cameraSharpness.value, 1),
           camera_ev: numOr(cameraEv.value, 0),
+          camera_exposure_mode: cameraExposureMode.value,
+          camera_shutter_us: parseInt(cameraShutterUs.value) || 0,
           camera_gain: numOr(cameraGain.value, 0),
           camera_awb_mode: cameraAwbMode.value,
           camera_denoise: cameraDenoise.value,
@@ -3880,6 +3890,8 @@ for (const baseId of ["camera-brightness", "camera-contrast", "camera-saturation
     applyLivePicture();
   });
 }
+cameraExposureMode.addEventListener("change", applyLivePicture);
+cameraShutterUs.addEventListener("input", applyLivePicture);
 cameraAwbMode.addEventListener("change", applyLivePicture);
 cameraDenoise.addEventListener("change", applyLivePicture);
 cameraHflip.addEventListener("change", applyLivePicture);

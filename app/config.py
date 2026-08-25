@@ -111,6 +111,14 @@ _SETTINGS: list[_Setting] = [
     _Setting("camera_sharpness", float, 1.0, lambda v: 0.0 <= v <= 16.0),
     # Exposure compensation, in EV stops.
     _Setting("camera_ev", float, 0.0, lambda v: -10.0 <= v <= 10.0),
+    # Which AGC exposure profile to bias toward; "short" favors a faster
+    # shutter (less motion blur) over a longer one, even while auto-exposing.
+    _Setting("camera_exposure_mode", str, "normal",
+             lambda v: v in ("normal", "short", "long", "custom")),
+    # Fixed shutter speed in microseconds; 0 means auto (governed by
+    # camera_exposure_mode above). A short fixed value freezes motion instead
+    # of letting auto-exposure pick a slower shutter that smears/wobbles it.
+    _Setting("camera_shutter_us", int, 0, lambda v: v >= 0),
     _Setting("camera_awb_mode", str, "auto",
              lambda v: v in ("auto", "incandescent", "tungsten", "fluorescent",
                              "indoor", "daylight", "cloudy")),
