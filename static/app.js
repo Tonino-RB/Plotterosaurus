@@ -3744,7 +3744,10 @@ async function openCameraSettings() {
       const status = await statusRes.json();
       cameraRtspUrl.value = status.rtsp_url;
       cameraHlsUrl.value = status.hls_url;
-      cameraPreviewFrame.src = status.webrtc_view_url;
+      // MediaMTX's own WHEP viewer page defaults to native <video controls>,
+      // whose hover-triggered bar darkens the picture right where you're
+      // trying to judge brightness — turn it off.
+      cameraPreviewFrame.src = status.webrtc_view_url + "?controls=false";
     }
   } catch (e) {}
   cameraSettingsModal.hidden = false;
