@@ -3282,6 +3282,7 @@ const settingsSkewD1 = $("settings-skew-d1");
 const settingsSkewD2 = $("settings-skew-d2");
 const settingsSkewApply = $("settings-skew-apply");
 const settingsSkewResult = $("settings-skew-result");
+const settingsSkewClearance = $("settings-skew-clearance");
 const settingsWebhookUrl = $("settings-webhook-url");
 const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
 const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
@@ -3557,11 +3558,17 @@ settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
 });
 
 settingsMachineSkewAxis.querySelectorAll("button").forEach((btn) => {
-  btn.addEventListener("click", () => setSegmentedValue(settingsMachineSkewAxis, btn.dataset.val));
+  btn.addEventListener("click", () => {
+    setSegmentedValue(settingsMachineSkewAxis, btn.dataset.val);
+    renderSkewClearance();
+  });
 });
 
 settingsMachineSkewMode.querySelectorAll("button").forEach((btn) => {
-  btn.addEventListener("click", () => setSegmentedValue(settingsMachineSkewMode, btn.dataset.val));
+  btn.addEventListener("click", () => {
+    setSegmentedValue(settingsMachineSkewMode, btn.dataset.val);
+    renderSkewClearance();
+  });
 });
 
 // ───── Machine profiles ──────────────────────────────────────────────────
@@ -3603,6 +3610,7 @@ function loadMachineFields() {
   settingsMachineSkew.value = machine.skew_deg ?? 0;
   setSegmentedValue(settingsMachineSkewAxis, machine.skew_true_axis || "x");
   setSegmentedValue(settingsMachineSkewMode, machine.skew_mode || "clip");
+  renderSkewClearance();
 }
 
 // Fold whatever is in the fields back into the draft. Runs before anything
@@ -3679,6 +3687,82 @@ settingsMachineAdd.addEventListener("click", () => {
   settingsMachineName.select();
 });
 
+// What correcting `skewDeg` costs, and where.
+//
+// Not accuracy: the correction is anchored at the page's origin corner, so
+// artwork is drawn exactly where it was placed, at exactly its size (see
+// app/axis_skew.py). What it costs is travel — a design `span` mm along the
+// driving axis is commanded `span * tan(skew)` further across than it draws,
+// and the driver clips commands at the page edge. `shrinkPct` mirrors
+// axis_skew.absorb_scale for ink filling the whole bed; keeping the result
+// centred costs twice the shrink that shoving it against one edge would, and
+// buys an equal margin at both edges for it.
+function skewClearanceMm(skewDeg, trueAxis, bedWidthMm, bedHeightMm) {
+  const tan = Math.abs(Math.tan(skewDeg * Math.PI / 180));
+  // The overrun runs along the axis that is *not* the true one, and grows
+  // with travel along the true one — so the span and the dimension absorb
+  // scales against swap together with trueAxis.
+  const acrossY = trueAxis === "x";
+  const span = acrossY ? bedHeightMm : bedWidthMm;
+  const across = acrossY ? bedWidthMm : bedHeightMm;
+  const growth = tan * span;
+  return {
+    growth,
+    span,
+    travelAxis: acrossY ? "Y" : "X",
+    // Positive skew shears toward negative coordinates (skew_matrix's -tan
+    // term), so commands overrun the left/top edge; negative, the other one.
+    side: acrossY
+      ? (skewDeg > 0 ? "left" : "right")
+      : (skewDeg > 0 ? "top" : "bottom"),
+    shrinkPct: across + growth > 0 ? (200 * growth) / (across + growth) : 0,
+    marginEachSide: across + growth > 0 ? (across * growth) / (across + growth) : 0,
+  };
+}
+
+// Restate the angle as what it actually costs: millimetres of travel the
+// artwork needs past one page edge, and (in "shrink to fit") the uniform
+// scale that buys them back.
+function renderSkewClearance() {
+  const deg = parseFloat(settingsMachineSkew.value);
+  if (!Number.isFinite(deg) || deg === 0) {
+    settingsSkewClearance.textContent = t("settings.machine.skew_clearance_none");
+    return;
+  }
+  const c = skewClearanceMm(
+    deg,
+    getSegmentedValue(settingsMachineSkewAxis, "x"),
+    parseFloat(settingsMachineWidth.value) || 0,
+    parseFloat(settingsMachineHeight.value) || 0,
+  );
+  // Four literal lookups rather than one key concatenated from c.side:
+  // tests/test_i18n.py scrapes literal t() keys out of this file to prove
+  // every string exists in every catalog, and a built-up key hides from it.
+  const edges = {
+    left: t("settings.machine.skew_edge_left"),
+    right: t("settings.machine.skew_edge_right"),
+    top: t("settings.machine.skew_edge_top"),
+    bottom: t("settings.machine.skew_edge_bottom"),
+  };
+  let text = t("settings.machine.skew_clearance", {
+    growth: c.growth.toFixed(1),
+    span: c.span.toFixed(0),
+    axis: c.travelAxis,
+    side: edges[c.side],
+  });
+  if (getSegmentedValue(settingsMachineSkewMode, "clip") === "absorb") {
+    text += " " + t("settings.machine.skew_clearance_absorb", {
+      pct: c.shrinkPct.toFixed(2),
+      margin: c.marginEachSide.toFixed(1),
+    });
+  }
+  settingsSkewClearance.textContent = text;
+}
+
+settingsMachineSkew.addEventListener("input", renderSkewClearance);
+settingsMachineWidth.addEventListener("input", renderSkewClearance);
+settingsMachineHeight.addEventListener("input", renderSkewClearance);
+
 // Turn two measured diagonals into the skew angle. A square commanded with
 // side L comes off a skewed machine as a parallelogram whose diagonals differ
 // by exactly d1² - d2² = 4L²·tan(skew), so the angle falls straight out of
@@ -3705,6 +3789,7 @@ settingsSkewApply.addEventListener("click", () => {
     return;
   }
   settingsMachineSkew.value = deg.toFixed(3);
+  renderSkewClearance();
   settingsSkewResult.textContent = t("settings.machine.skew_calc_result", { deg: deg.toFixed(3) });
   settingsSkewResult.className = "muted";
 });
@@ -4303,6 +4388,7 @@ I18N.onLanguageChange(() => {
     if (job) updateCard(card, job);
   });
   if (updateStatus) renderUpdateStatus(updateStatus);
+  renderSkewClearance();
 });
 
 function renderUpdateStatus(status) {

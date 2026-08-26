@@ -29,14 +29,22 @@ log = logging.getLogger(__name__)
 # is not a real pen position and must never reach emit_position — the
 # on-card pen cursor and the draw-stream overlay would otherwise jump to it.
 _suppress_position_emit = threading.local()
-# The (skew_deg, true_axis, skew_mode, paper_width_mm, paper_height_mm) the
+# The (skew_deg, true_axis, paper_width_mm, paper_height_mm, absorb_scale) the
 # currently running stage's geometry was corrected with — set by _run_stage.
 # Read here so the live draw-stream keeps showing the pristine, uncorrected
 # path even though the driver is actually plotting axis_skew-corrected
 # geometry: the position read from the driver is run back through the
-# inverse of the same transform(s) before it reaches the on-screen overlay.
+# inverse of the same transform before it reaches the on-screen overlay.
 # None outside of a real hardware stage.
-_current_skew: tuple[float, str, str, float, float] | None = None
+_current_skew: tuple[float, str, float, float, float] | None = None
+
+# The one uniform scale "absorb" mode applies for the whole of the current
+# run (see _absorb_scale_for_run). 1.0 in "clip" mode, at zero skew, and
+# whenever the correction costs the design nothing — which is most of the
+# time. Held for the run rather than recomputed per stage on purpose: a
+# scale sized to each stage's own ink would size each layer differently and
+# pull a multi-layer drawing apart.
+_run_absorb_scale: float = 1.0
 
 if hasattr(dripfeed, "feed_sm"):
     _orig_feed_sm = dripfeed.feed_sm
@@ -51,12 +59,7 @@ if hasattr(dripfeed, "feed_sm"):
             x_mm, y_mm = x_in * 25.4, y_in * 25.4
             skew = _current_skew
             if skew is not None and skew[0]:
-                skew_deg, true_axis, skew_mode, paper_w_mm, paper_h_mm = skew
-                x_mm, y_mm = axis_skew.inverse_skew_point(
-                    x_mm, y_mm, skew_deg, true_axis, 0.0, 0.0)
-                if skew_mode == "absorb":
-                    x_mm, y_mm = axis_skew.inverse_absorb_point(
-                        x_mm, y_mm, skew_deg, true_axis, paper_w_mm, paper_h_mm)
+                x_mm, y_mm = axis_skew.inverse_skew_point(x_mm, y_mm, *skew)
             state.emit_position(x_mm, y_mm, ad_ref.pen.phys.z_up is False)
 
     dripfeed.feed_sm = _feed_sm_and_emit_position
@@ -482,8 +485,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         _apply_bed_size(ad)
         skew_machine = config.active_machine()
         _current_skew = (skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"),
-                         skew_machine.get("skew_mode", "clip"),
-                         job["paper_width_mm"], job["paper_height_mm"])
+                         job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -776,6 +778,65 @@ def continue_next() -> None:
     raise RuntimeError("Nothing to continue")
 
 
+def _job_ink_bounds(job: dict, svg_path: Path
+                    ) -> tuple[float, float, float, float] | None:
+    """Where the *actual drawn geometry* of the job's selected layers lands on
+    the page, in mm: (left, top, right, bottom), or None when nothing
+    drawable is selected.
+
+    The upload path already primed ink_cache for this file (see main.py), so
+    this is normally a dict lookup rather than a vpype parse — a nudge/jog
+    check that re-measured the whole document itself is the multi-second delay
+    a user feels between clicking "confirm" and the carriage actually moving.
+
+    Deliberately the *un-optimized* source SVG: optimize_svg only simplifies
+    paths, never the extent they cover, so the two agree on everything that
+    matters here and the cache is shared with the placement/jog checks.
+    """
+    layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
+    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
+    return svg_utils.ink_bounds_mm(
+        svg_path, layer_indices,
+        job["paper_width_mm"], job["paper_height_mm"],
+        job["margin_top_mm"], job["margin_right_mm"],
+        job["margin_bottom_mm"], job["margin_left_mm"],
+        job["fit_content"],
+        transform_scale=job.get("transform_scale", 1.0),
+        transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
+        transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+        transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+        rect=cached_rect, rect_known=measured,
+    )
+
+
+def _absorb_scale_for_run(job: dict) -> float:
+    """The uniform scale "absorb" mode applies to everything this run plots.
+
+    Computed once, from every selected layer's ink together, and then reused
+    by each stage and by the calibration side-plots — see _run_absorb_scale
+    for why it must not be recomputed per stage. 1.0 (nothing applied at all)
+    unless the machine is in "absorb" mode with a real skew angle *and* the
+    correction would genuinely push that ink off the page.
+
+    Never raises: a machine that can't be measured falls back to plotting at
+    the declared size, which is what "clip" mode does anyway, rather than
+    failing a job over a fitting nicety.
+    """
+    machine = config.active_machine()
+    if machine.get("skew_mode", "clip") != "absorb" or not machine["skew_deg"]:
+        return 1.0
+    try:
+        ink_bounds = _job_ink_bounds(job, _uploads() / f"{job['svg_id']}.svg")
+    except Exception:
+        log.exception("absorb: could not measure ink for job %s; plotting at declared size",
+                      job["job_id"])
+        return 1.0
+    return axis_skew.absorb_scale(
+        machine["skew_deg"], machine.get("skew_true_axis", "x"), ink_bounds,
+        job["paper_width_mm"], job["paper_height_mm"])
+
+
 def _delta_correction_mm(job: dict, svg_path: Path,
                          dx_mm: float, dy_mm: float) -> tuple[float, float] | None:
     """How far a delta on top of the job's own placement (a manual jog and/or
@@ -805,25 +866,7 @@ def _delta_correction_mm(job: dict, svg_path: Path,
     design that happens to fill its canvas edge-to-edge. Uses the
     *un-optimized* source SVG: optimize_svg only simplifies paths, it never
     changes the actual drawn extent in any way that would matter here."""
-    layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
-    # The upload path already primed ink_cache for this file (see main.py),
-    # so this is a dict lookup, not a vpype parse — a nudge/jog check that
-    # re-measured the whole document itself is the multi-second delay a user
-    # feels between clicking "confirm" and the carriage actually moving.
-    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
-    ink_bounds = svg_utils.ink_bounds_mm(
-        svg_path, layer_indices,
-        job["paper_width_mm"], job["paper_height_mm"],
-        job["margin_top_mm"], job["margin_right_mm"],
-        job["margin_bottom_mm"], job["margin_left_mm"],
-        job["fit_content"],
-        transform_scale=job.get("transform_scale", 1.0),
-        transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-        transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
-        transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
-        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-        rect=cached_rect, rect_known=measured,
-    )
+    ink_bounds = _job_ink_bounds(job, svg_path)
     if ink_bounds is None:
         return None  # nothing drawable selected — nothing to protect
     base_left, base_top, base_right, base_bottom = ink_bounds
@@ -1651,13 +1694,13 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
+        # The run's own absorb scale, not one measured from the calibration
+        # marks: they exist to be read against the artwork they accompany, so
+        # they have to sit in the same frame it does.
         cal_machine = config.active_machine()
-        cal_true_axis = cal_machine.get("skew_true_axis", "x")
-        if cal_machine.get("skew_mode", "clip") == "absorb":
-            axis_skew.apply_skew_absorb(
-                cal_svg, cal_machine["skew_deg"], cal_true_axis,
-                job["paper_width_mm"], job["paper_height_mm"])
-        axis_skew.apply_axis_skew(cal_svg, cal_machine["skew_deg"], cal_true_axis)
+        axis_skew.apply_axis_skew(
+            cal_svg, cal_machine["skew_deg"], cal_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration plot")
@@ -1733,13 +1776,12 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             # happened to already be in-bounds ever plotted.
             machine_auto_rotate="portrait",
         )
+        # Same frame as the artwork — see _run_calibration_phase.
         calfile_machine = config.active_machine()
-        calfile_true_axis = calfile_machine.get("skew_true_axis", "x")
-        if calfile_machine.get("skew_mode", "clip") == "absorb":
-            axis_skew.apply_skew_absorb(
-                scratch, calfile_machine["skew_deg"], calfile_true_axis,
-                job["paper_width_mm"], job["paper_height_mm"])
-        axis_skew.apply_axis_skew(scratch, calfile_machine["skew_deg"], calfile_true_axis)
+        axis_skew.apply_axis_skew(
+            scratch, calfile_machine["skew_deg"],
+            calfile_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration-file plot")
@@ -1960,12 +2002,20 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
         except RuntimeError:
             log.warning("camera: could not start recording for job %s", job_id, exc_info=True)
 
+    # Resolve "absorb" mode's shrink once, here, before any stage renders:
+    # every stage of this run and every calibration side-plot inside it has to
+    # be scaled by the same number or the layers stop registering with each
+    # other. Cleared at the end of the run, so nothing outside one leaks it.
+    global _run_absorb_scale
+    _run_absorb_scale = _absorb_scale_for_run(job) if job else 1.0
+
     # Origin nudge is session-only: whatever the pen-change pauses in this run
     # accumulated is undone as soon as the run ends (completed/cancelled/
     # failed) so the next run starts from the job's own saved offset again.
     try:
         _run_staged_loop_impl(job_id, svg_path, first_mode)
     finally:
+        _run_absorb_scale = 1.0
         _undo_origin_nudge()
         if camera.is_recording_job(job_id):
             camera.stop_recording()
@@ -2024,12 +2074,10 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
                 )
                 stage_machine = config.active_machine()
-                stage_true_axis = stage_machine.get("skew_true_axis", "x")
-                if stage_machine.get("skew_mode", "clip") == "absorb":
-                    axis_skew.apply_skew_absorb(
-                        current_svg, stage_machine["skew_deg"], stage_true_axis,
-                        job["paper_width_mm"], job["paper_height_mm"])
-                axis_skew.apply_axis_skew(current_svg, stage_machine["skew_deg"], stage_true_axis)
+                axis_skew.apply_axis_skew(
+                    current_svg, stage_machine["skew_deg"],
+                    stage_machine.get("skew_true_axis", "x"),
+                    job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)
                 state.update_job(

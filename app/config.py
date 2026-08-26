@@ -216,8 +216,8 @@ MACHINE_SKEW_DEG: float = 0.0
 MACHINE_SKEW_TRUE_AXIS: str = "x"
 # How the plot worker reacts when correcting skew_deg would push ink past
 # the page edge: "clip" leaves geometry at its declared size and accepts
-# the natural clip; "absorb" reserves room and shrinks to avoid it. See
-# app.axis_skew.apply_skew_absorb.
+# the natural clip; "absorb" scales it down uniformly, just enough and only
+# when the measured ink really would overflow. See app.axis_skew.absorb_scale.
 MACHINE_SKEW_MODE: str = "clip"
 
 

@@ -8,6 +8,7 @@ possible guard against that: compile the file and see if the engine objects.
 It is a *syntax* check, not a test of behaviour — quickjs has no DOM, so the
 source is wrapped in a function that is compiled and never called.
 """
+import json
 import math
 from pathlib import Path
 
@@ -17,6 +18,8 @@ quickjs = pytest.importorskip(
     "quickjs",
     reason="quickjs not installed — pip install -r requirements-dev.txt",
 )
+
+from app import axis_skew
 
 STATIC = Path(__file__).parent.parent / "static"
 
@@ -182,3 +185,70 @@ def test_skew_angle_recovers_the_shear_it_was_built_from(skew_deg):
 def test_a_longer_top_left_diagonal_is_a_positive_skew():
     assert _skew_angle(100, 145, 138) > 0
     assert _skew_angle(100, 138, 145) < 0
+
+
+# skewClearanceMm ----------------------------------------------------------
+#
+# The Settings-panel readout under the skew angle: how much room the
+# correction needs, and what "shrink to fit" would cost at worst. It is a
+# claim about what app/axis_skew.py will physically do, so it is checked
+# against that module rather than against hand-worked numbers — a drift
+# between the two would make the UI quietly lie about millimetres of paper.
+
+def _skew_clearance(skew_deg: float, true_axis: str, bed_w: float, bed_h: float) -> dict:
+    source = (STATIC / "app.js").read_text()
+    ctx = quickjs.Context()
+    ctx.eval(_extract_function(source, "skewClearanceMm"))
+    out = ctx.eval(
+        f'JSON.stringify(skewClearanceMm({skew_deg}, "{true_axis}", {bed_w}, {bed_h}))')
+    return json.loads(out)
+
+
+BED = (430.0, 296.9)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.3, 1.0, 5.0, -0.3, -1.0, -5.0])
+def test_clearance_matches_the_travel_the_correction_really_needs(true_axis, skew_deg):
+    """`growth` is the extra travel the user is told to leave, and `side` the
+    edge it is needed past — both read straight off skew_matrix, by shearing
+    the bed's four corners exactly as apply_axis_skew would."""
+    bed_w, bed_h = BED
+    out = _skew_clearance(skew_deg, true_axis, bed_w, bed_h)
+    matrix = axis_skew.skew_matrix(skew_deg, true_axis, bed_w, bed_h)
+    a, b, c, d, e, f = (float(n) for n in matrix[len("matrix("):-1].split(","))
+    corners = [(0.0, 0.0), (bed_w, 0.0), (0.0, bed_h), (bed_w, bed_h)]
+    moved = [(a * x + c * y + e, b * x + d * y + f) for x, y in corners]
+    if true_axis == "x":
+        vals, limit, edges = [x for x, _ in moved], bed_w, ("left", "right")
+    else:
+        vals, limit, edges = [y for _, y in moved], bed_h, ("top", "bottom")
+    under, over = -min(vals), max(vals) - limit
+    assert out["growth"] == pytest.approx(max(under, over), abs=1e-9)
+    assert out["side"] == (edges[0] if under > over else edges[1])
+    # One edge only: anchored at the origin, the overrun is entirely on the
+    # side the shear pushes toward.
+    assert min(under, over) == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.3, 1.0, 5.0, -0.3, -1.0, -5.0])
+def test_clearance_shrink_matches_what_absorb_would_actually_do(true_axis, skew_deg):
+    """`shrinkPct` and `marginEachSide` are absorb's worst case, so they have
+    to be exactly what axis_skew.absorb_scale does to ink filling the bed —
+    including the equal margin it leaves at each of the two edges."""
+    bed_w, bed_h = BED
+    out = _skew_clearance(skew_deg, true_axis, bed_w, bed_h)
+    scale = axis_skew.absorb_scale(
+        skew_deg, true_axis, (0.0, 0.0, bed_w, bed_h), bed_w, bed_h)
+    assert out["shrinkPct"] == pytest.approx((1.0 - scale) * 100, abs=1e-9)
+    across = bed_w if true_axis == "x" else bed_h
+    assert out["marginEachSide"] == pytest.approx(across * (1.0 - scale) / 2, abs=1e-9)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+def test_clearance_is_zero_at_zero_skew(true_axis):
+    out = _skew_clearance(0.0, true_axis, *BED)
+    assert out["growth"] == 0.0
+    assert out["shrinkPct"] == 0.0
+    assert out["marginEachSide"] == 0.0
