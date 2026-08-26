@@ -64,6 +64,7 @@ const cameraShutterUs = $("camera-shutter-us");
 const cameraGain = $("camera-gain");
 const cameraAwbMode = $("camera-awb-mode");
 const cameraDenoise = $("camera-denoise");
+const cameraFlickerMode = $("camera-flicker-mode");
 const cameraHflip = $("camera-hflip");
 const cameraVflip = $("camera-vflip");
 const cameraRecordPlotDefault = $("camera-record-plot-default");
@@ -3380,6 +3381,7 @@ function applyAppSettings(data) {
     camera_awb_mode: data.camera_awb_mode ?? appSettings.camera_awb_mode,
     camera_gain: data.camera_gain ?? appSettings.camera_gain,
     camera_denoise: data.camera_denoise ?? appSettings.camera_denoise,
+    camera_flicker_mode: data.camera_flicker_mode ?? appSettings.camera_flicker_mode,
     camera_hflip: data.camera_hflip ?? appSettings.camera_hflip,
     camera_vflip: data.camera_vflip ?? appSettings.camera_vflip,
     camera_output_folder: data.camera_output_folder ?? appSettings.camera_output_folder,
@@ -3726,6 +3728,7 @@ async function openCameraSettings() {
     setSliderNumber("camera-gain", appSettings.camera_gain ?? 0);
     cameraAwbMode.value = appSettings.camera_awb_mode || "auto";
     cameraDenoise.value = appSettings.camera_denoise || "off";
+    cameraFlickerMode.value = appSettings.camera_flicker_mode || "off";
     cameraHflip.checked = !!appSettings.camera_hflip;
     cameraVflip.checked = !!appSettings.camera_vflip;
     cameraRecordPlotDefault.checked = !!appSettings.record_plot_default;
@@ -3767,6 +3770,7 @@ async function saveCameraSettings() {
       camera_gain: numOr(cameraGain.value, 0),
       camera_awb_mode: cameraAwbMode.value,
       camera_denoise: cameraDenoise.value,
+      camera_flicker_mode: cameraFlickerMode.value,
       camera_hflip: cameraHflip.checked,
       camera_vflip: cameraVflip.checked,
       record_plot_default: cameraRecordPlotDefault.checked,
@@ -3841,11 +3845,17 @@ cameraAfSpeed.querySelectorAll("button").forEach((btn) => {
   btn.addEventListener("click", () => setSegmentedValue(cameraAfSpeed, btn.dataset.val));
 });
 
-// Picture-tuning fields: bidirectional slider/number sync, pushed live
-// (debounced) to the running camera the same way the focus slider is, so the
-// preview reflects each change instead of only updating after Save.
+// Picture-tuning fields: bidirectional slider/number sync, pushed live to the
+// running camera the same way the focus slider is, so the preview reflects
+// each change instead of only updating after Save. Each push restarts
+// MediaMTX's camera pipeline (a brief stream dropout/reconnect), so the two
+// delays below matter: sliders only push once per drag release rather than
+// per drag tick, and typed number fields wait out a normal inter-keystroke
+// pause instead of pushing after every digit.
+const PICTURE_COMMIT_DEBOUNCE_MS = 150; // slider release / select / checkbox
+const PICTURE_TYPE_DEBOUNCE_MS = 700;   // free-typed number field
 let pictureDebounceTimer = null;
-function applyLivePicture() {
+function applyLivePicture(delayMs = PICTURE_TYPE_DEBOUNCE_MS) {
   clearTimeout(pictureDebounceTimer);
   pictureDebounceTimer = setTimeout(async () => {
     try {
@@ -3863,6 +3873,7 @@ function applyLivePicture() {
           camera_gain: numOr(cameraGain.value, 0),
           camera_awb_mode: cameraAwbMode.value,
           camera_denoise: cameraDenoise.value,
+          camera_flicker_mode: cameraFlickerMode.value,
           camera_hflip: cameraHflip.checked,
           camera_vflip: cameraVflip.checked,
         }),
@@ -3873,7 +3884,7 @@ function applyLivePicture() {
       cameraSettingsMessage.textContent = t("error.request_failed", { message: e.message });
       cameraSettingsMessage.className = "error";
     }
-  }, 300);
+  }, delayMs);
 }
 for (const baseId of ["camera-brightness", "camera-contrast", "camera-saturation",
                       "camera-sharpness", "camera-ev", "camera-gain"]) {
@@ -3882,20 +3893,21 @@ for (const baseId of ["camera-brightness", "camera-contrast", "camera-saturation
   slider.addEventListener("input", () => {
     number.value = slider.value;
     updateSliderProgress(slider);
-    applyLivePicture();
   });
+  slider.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
   number.addEventListener("input", () => {
     slider.value = number.value;
     updateSliderProgress(slider);
-    applyLivePicture();
+    applyLivePicture(PICTURE_TYPE_DEBOUNCE_MS);
   });
 }
-cameraExposureMode.addEventListener("change", applyLivePicture);
-cameraShutterUs.addEventListener("input", applyLivePicture);
-cameraAwbMode.addEventListener("change", applyLivePicture);
-cameraDenoise.addEventListener("change", applyLivePicture);
-cameraHflip.addEventListener("change", applyLivePicture);
-cameraVflip.addEventListener("change", applyLivePicture);
+cameraExposureMode.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
+cameraShutterUs.addEventListener("input", () => applyLivePicture(PICTURE_TYPE_DEBOUNCE_MS));
+cameraAwbMode.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
+cameraDenoise.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
+cameraFlickerMode.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
+cameraHflip.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
+cameraVflip.addEventListener("change", () => applyLivePicture(PICTURE_COMMIT_DEBOUNCE_MS));
 
 // ───── Draw-stream settings modal ────────────────────────────────────────
 

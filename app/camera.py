@@ -41,6 +41,9 @@ RTSP_PORT = 8554
 HLS_PORT = 8888
 WEBRTC_PORT = 8889
 
+# camera_flicker_mode -> MediaMTX's rpiCameraFlickerPeriod (microseconds).
+_FLICKER_PERIOD_US = {"off": 0, "50hz": 10_000, "60hz": 8_333}
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEGMENTS_DIR = BASE_DIR / "recordings" / "_segments"
 
@@ -86,6 +89,11 @@ def apply_camera_settings() -> None:
         "rpiCameraHeight": config.CAMERA_RESOLUTION_HEIGHT,
         "rpiCameraFPS": config.CAMERA_FPS,
         "rpiCameraBitrate": config.CAMERA_BITRATE,
+        # Half-second keyframe interval instead of MediaMTX's own 60-frame
+        # (2s @ 30fps) default, so a WebRTC viewer reconnecting (e.g. after
+        # this same PATCH restarts the camera pipeline, or just opening the
+        # settings modal) waits less for the first decodable frame.
+        "rpiCameraIDRPeriod": max(1, config.CAMERA_FPS // 2),
         "rpiCameraAfMode": config.CAMERA_AF_MODE,
         "rpiCameraLensPosition": config.CAMERA_LENS_POSITION,
         "rpiCameraAfSpeed": config.CAMERA_AF_SPEED,
@@ -99,6 +107,7 @@ def apply_camera_settings() -> None:
         "rpiCameraAWB": config.CAMERA_AWB_MODE,
         "rpiCameraGain": config.CAMERA_GAIN,
         "rpiCameraDenoise": config.CAMERA_DENOISE,
+        "rpiCameraFlickerPeriod": _FLICKER_PERIOD_US[config.CAMERA_FLICKER_MODE],
         "rpiCameraHFlip": config.CAMERA_HFLIP,
         "rpiCameraVFlip": config.CAMERA_VFLIP,
     })

@@ -119,6 +119,11 @@ _SETTINGS: list[_Setting] = [
     # camera_exposure_mode above). A short fixed value freezes motion instead
     # of letting auto-exposure pick a slower shutter that smears/wobbles it.
     _Setting("camera_shutter_us", int, 0, lambda v: v >= 0),
+    # Mains-flicker mitigation for AC-powered lighting, mapped to a raw
+    # rpiCameraFlickerPeriod microsecond value in app/camera.py. "off"
+    # preserves prior behavior (no correction).
+    _Setting("camera_flicker_mode", str, "off",
+             lambda v: v in ("off", "50hz", "60hz")),
     _Setting("camera_awb_mode", str, "auto",
              lambda v: v in ("auto", "incandescent", "tungsten", "fluorescent",
                              "indoor", "daylight", "cloudy")),

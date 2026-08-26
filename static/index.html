@@ -588,6 +588,17 @@
             </label>
           </div>
           <p class="muted" data-i18n="camera.picture.shutter_note">If the live view wobbles while the pen is moving, that's motion blur/rolling-shutter skew, not a bug. "Short" biases auto-exposure toward a faster shutter; for full manual control set a fixed shutter speed (try 2000-8000) — 0 leaves it automatic.</p>
+          <p class="muted" data-i18n="camera.picture.exposure_interaction_note">Exposure mode and exposure compensation (EV) bias auto-exposure — once a fixed shutter speed above is set, their effect may be reduced or absent. If the picture still looks too dark or bright with a fixed shutter, Gain / ISO is the more reliable manual lever.</p>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.picture.flicker_label">Flicker mitigation (mains lighting)</span>
+              <select id="camera-flicker-mode">
+                <option value="off" data-i18n="camera.picture.flicker_off">Off</option>
+                <option value="50hz" data-i18n="camera.picture.flicker_50hz">50 Hz mains</option>
+                <option value="60hz" data-i18n="camera.picture.flicker_60hz">60 Hz mains</option>
+              </select>
+            </label>
+          </div>
           <div class="form-row">
             <label class="field">
               <span class="field-label" data-i18n="camera.picture.awb_label">White balance</span>

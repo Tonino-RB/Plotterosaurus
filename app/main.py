@@ -1004,6 +1004,7 @@ class SettingsUpdate(BaseModel):
     camera_ev: float | None = Field(None, ge=-10.0, le=10.0)
     camera_exposure_mode: Literal["normal", "short", "long", "custom"] | None = None
     camera_shutter_us: int | None = Field(None, ge=0)
+    camera_flicker_mode: Literal["off", "50hz", "60hz"] | None = None
     camera_awb_mode: Literal["auto", "incandescent", "tungsten", "fluorescent",
                              "indoor", "daylight", "cloudy"] | None = None
     camera_gain: float | None = Field(None, ge=0.0)
