@@ -3276,6 +3276,7 @@ const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
 const settingsMachineSkew = $("settings-machine-skew");
 const settingsMachineSkewAxis = $("settings-machine-skew-axis");
+const settingsMachineSkewMode = $("settings-machine-skew-mode");
 const settingsSkewSide = $("settings-skew-side");
 const settingsSkewD1 = $("settings-skew-d1");
 const settingsSkewD2 = $("settings-skew-d2");
@@ -3559,6 +3560,10 @@ settingsMachineSkewAxis.querySelectorAll("button").forEach((btn) => {
   btn.addEventListener("click", () => setSegmentedValue(settingsMachineSkewAxis, btn.dataset.val));
 });
 
+settingsMachineSkewMode.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => setSegmentedValue(settingsMachineSkewMode, btn.dataset.val));
+});
+
 // ───── Machine profiles ──────────────────────────────────────────────────
 //
 // The modal edits a working copy of the machine list, not the live settings:
@@ -3597,6 +3602,7 @@ function loadMachineFields() {
   setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
   settingsMachineSkew.value = machine.skew_deg ?? 0;
   setSegmentedValue(settingsMachineSkewAxis, machine.skew_true_axis || "x");
+  setSegmentedValue(settingsMachineSkewMode, machine.skew_mode || "clip");
 }
 
 // Fold whatever is in the fields back into the draft. Runs before anything
@@ -3617,6 +3623,7 @@ function captureMachineFields() {
     ? Math.max(-SKEW_DEG_MAX, Math.min(SKEW_DEG_MAX, skew))
     : 0;
   machine.skew_true_axis = getSegmentedValue(settingsMachineSkewAxis, "x");
+  machine.skew_mode = getSegmentedValue(settingsMachineSkewMode, "clip");
 }
 
 function loadMachineDraft(data) {
@@ -3662,6 +3669,7 @@ settingsMachineAdd.addEventListener("click", () => {
     // different plotter.
     skew_deg: 0,
     skew_true_axis: "x",
+    skew_mode: "clip",
   };
   machineDraft.push(machine);
   machineDraftActiveId = machine.id;

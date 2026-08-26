@@ -268,6 +268,14 @@
             </div>
           </div>
           <p class="muted" data-i18n="settings.machine.skew_note">How far this machine's two axes are out of square, measured with the calculator below, and which axis is the straight one the other is corrected against. Applied to plots. Leave the angle at 0 unless you've measured a skew.</p>
+          <div class="field machine-rotate-field">
+            <span class="field-label" data-i18n="settings.machine.skew_mode_label">When correction would clip</span>
+            <div class="segmented" id="settings-machine-skew-mode">
+              <button type="button" data-val="clip" class="active" data-i18n="settings.machine.skew_mode_clip">Clip</button>
+              <button type="button" data-val="absorb" data-i18n="settings.machine.skew_mode_absorb">Shrink to fit</button>
+            </div>
+          </div>
+          <p class="muted" data-i18n="settings.machine.skew_mode_note">Correcting a nonzero skew angle can push ink past the page edge. Clip keeps artwork at its declared size and lets that ink clip. Shrink to fit reserves room and scales artwork down so nothing clips.</p>
           <details class="machine-skew-calc">
             <summary data-i18n="settings.machine.skew_calc_summary">Work it out from a test square</summary>
             <p class="muted" data-i18n="settings.machine.skew_calc_note">Plot a square, then measure it corner to corner. Both diagonals equal means no skew and nothing to correct.</p>

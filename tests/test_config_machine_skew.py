@@ -1,8 +1,8 @@
-"""config._normalize_machine's handling of skew_deg and skew_true_axis: the
-two fields a machine profile carries for the skew-angle setting. Exercises
-the pure normalizer directly rather than config.update(), since
-config.CONFIG_PATH is the repo's real config.json and is never sandboxed for
-tests (unlike state.json — see conftest.py).
+"""config._normalize_machine's handling of skew_deg, skew_true_axis and
+skew_mode: the three fields a machine profile carries for the skew-angle
+setting. Exercises the pure normalizer directly rather than config.update(),
+since config.CONFIG_PATH is the repo's real config.json and is never
+sandboxed for tests (unlike state.json — see conftest.py).
 """
 from app import config
 
@@ -45,3 +45,18 @@ def test_skew_true_axis_falls_back_to_x_for_garbage_rather_than_discarding_the_p
     assert _machine(skew_true_axis="z")["skew_true_axis"] == "x"
     assert _machine(skew_true_axis=None)["skew_true_axis"] == "x"
     assert _machine(skew_true_axis=123)["skew_true_axis"] == "x"
+
+
+def test_skew_mode_defaults_to_clip_when_absent():
+    assert _machine()["skew_mode"] == "clip"
+
+
+def test_skew_mode_passes_through_valid_values():
+    assert _machine(skew_mode="clip")["skew_mode"] == "clip"
+    assert _machine(skew_mode="absorb")["skew_mode"] == "absorb"
+
+
+def test_skew_mode_falls_back_to_clip_for_garbage_rather_than_discarding_the_profile():
+    assert _machine(skew_mode="widen_bed")["skew_mode"] == "clip"
+    assert _machine(skew_mode=None)["skew_mode"] == "clip"
+    assert _machine(skew_mode=123)["skew_mode"] == "clip"

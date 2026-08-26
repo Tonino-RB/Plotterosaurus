@@ -97,6 +97,67 @@ def test_pivot_is_the_transforms_fixed_point(true_axis):
     assert y == pytest.approx(cy, abs=1e-9)
 
 
+# skew_delta ------------------------------------------------------------------
+# The same correction as skew_matrix, but for a relative move (plot_worker's
+# manual jog / origin nudge / Return to Origin) rather than an absolute
+# point — so there's no pivot argument at all.
+
+DELTAS = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (7.0, -3.0), (-25.0, 40.0)]
+
+
+@pytest.mark.parametrize("skew_deg", [0.0, -0.0])
+def test_skew_delta_is_a_true_no_op_at_zero(skew_deg):
+    for dx, dy in DELTAS:
+        assert axis_skew.skew_delta(dx, dy, skew_deg, "x") == (dx, dy)
+        assert axis_skew.skew_delta(dx, dy, skew_deg, "y") == (dx, dy)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.1, 1.5, -2.3, 5.0, -5.0])
+def test_skew_delta_round_trips_through_the_physical_model(true_axis, skew_deg):
+    """The same ground-truth model test_correction_round_trips_through_the_
+    physical_model uses for skew_matrix, but with the pivot at the origin —
+    valid because a relative move's correction never depends on the pivot."""
+    for dx, dy in DELTAS:
+        mdx, mdy = axis_skew.skew_delta(dx, dy, skew_deg, true_axis)
+        phys_x, phys_y = _physical_forward(mdx, mdy, skew_deg, true_axis, 0.0, 0.0)
+        assert phys_x == pytest.approx(dx, abs=1e-9)
+        assert phys_y == pytest.approx(dy, abs=1e-9)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.1, 2.7, -4.9])
+def test_skew_delta_matches_skew_matrixs_linear_part(true_axis, skew_deg):
+    """Applying skew_matrix (pivoted anywhere) to two points and taking the
+    difference of the results must equal skew_delta applied to the
+    difference of the points — confirms skew_delta really is just
+    skew_matrix's linear part, pivot dropped."""
+    cx, cy = 40.0, -12.0
+    matrix = axis_skew.skew_matrix(skew_deg, true_axis, cx, cy)
+    p1, p2 = (12.0, 34.0), (-8.0, 61.0)
+    m1 = _apply_matrix(matrix, *p1)
+    m2 = _apply_matrix(matrix, *p2)
+    expected = (m2[0] - m1[0], m2[1] - m1[1])
+    actual = axis_skew.skew_delta(p2[0] - p1[0], p2[1] - p1[1], skew_deg, true_axis)
+    assert actual[0] == pytest.approx(expected[0], abs=1e-9)
+    assert actual[1] == pytest.approx(expected[1], abs=1e-9)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+def test_skew_delta_is_linear(true_axis):
+    """The cumulative bed-edge guards in plot_worker (nudge_origin,
+    manual_jog) depend on this exactly: the sum of corrected increments must
+    equal the correction of the summed increment."""
+    skew_deg = 3.7
+    a, b = (11.0, -6.0), (4.5, 19.0)
+    sum_then_correct = axis_skew.skew_delta(a[0] + b[0], a[1] + b[1], skew_deg, true_axis)
+    corrected_a = axis_skew.skew_delta(*a, skew_deg, true_axis)
+    corrected_b = axis_skew.skew_delta(*b, skew_deg, true_axis)
+    correct_then_sum = (corrected_a[0] + corrected_b[0], corrected_a[1] + corrected_b[1])
+    assert sum_then_correct[0] == pytest.approx(correct_then_sum[0], abs=1e-9)
+    assert sum_then_correct[1] == pytest.approx(correct_then_sum[1], abs=1e-9)
+
+
 def _rendered_stage_svg(tmp_path):
     """A paper-mm SVG the way plot_worker builds one for a real stage: the
     fixture filtered and run through transform_to_paper, exactly as
@@ -121,7 +182,7 @@ def _rendered_stage_svg(tmp_path):
 def test_apply_axis_skew_is_a_true_no_op_at_zero(tmp_path):
     rendered = _rendered_stage_svg(tmp_path)
     before = rendered.read_bytes()
-    axis_skew.apply_axis_skew(rendered, 0.0, "x", 210.0, 297.0)
+    axis_skew.apply_axis_skew(rendered, 0.0, "x")
     assert rendered.read_bytes() == before
 
 
@@ -131,7 +192,7 @@ def test_apply_axis_skew_wraps_content_without_touching_page_size(tmp_path):
     width, height, viewbox = root_before.get("width"), root_before.get("height"), root_before.get("viewBox")
     placement_transform = root_before.find(f"{{{svg_utils.SVG_NS}}}g").get("transform")
 
-    axis_skew.apply_axis_skew(rendered, 2.5, "x", 210.0, 297.0)
+    axis_skew.apply_axis_skew(rendered, 2.5, "x")
 
     root_after = etree.parse(str(rendered)).getroot()
     assert root_after.get("width") == width
@@ -139,7 +200,7 @@ def test_apply_axis_skew_wraps_content_without_touching_page_size(tmp_path):
     assert root_after.get("viewBox") == viewbox
 
     outer = root_after.find(f"{{{svg_utils.SVG_NS}}}g")
-    assert outer.get("transform") == axis_skew.skew_matrix(2.5, "x", 105.0, 148.5)
+    assert outer.get("transform") == axis_skew.skew_matrix(2.5, "x", 0.0, 0.0)
     inner = outer.find(f"{{{svg_utils.SVG_NS}}}g")
     assert inner.get("transform") == placement_transform
 
@@ -173,11 +234,12 @@ def test_transform_to_paper_never_applies_skew_itself(tmp_path):
 
 # ── Full-bleed (zero-margin) designs ────────────────────────────────────
 #
-# The plan flagged a real residual risk: a corner-pivoted correction can
-# push commanded coordinates below the driver's travel-bounds minimum of 0
-# for content that runs edge-to-edge with no margin — and a center pivot
-# only halves that, it doesn't eliminate it. These tests quantify exactly
-# how large that excursion is, rather than leaving it as an unverified claim.
+# apply_axis_skew pivots at the page's own origin (0, 0) — the plotter's
+# declared physical home — rather than the page center, specifically so
+# that corner never moves. A shear still grows the bounding box on the far
+# side, though: content that runs edge-to-edge with no margin can still be
+# pushed past the *opposite* edge. These tests quantify exactly how large
+# that excursion is, rather than leaving it as an unverified claim.
 
 def _full_bleed_svg(tmp_path: Path, width_mm: float, height_mm: float) -> Path:
     """A design with ink touching all four edges of its own canvas — no
@@ -215,12 +277,13 @@ def test_full_bleed_fixture_really_has_zero_margin(tmp_path):
 @pytest.mark.parametrize("true_axis", ["x", "y"])
 @pytest.mark.parametrize("skew_deg", [0.1, 0.3, 1.0, 5.0, -5.0])
 def test_full_bleed_excursion_beyond_the_page_matches_closed_form(tmp_path, true_axis, skew_deg):
-    """For ink that already touches all four edges, correction pivoted at
-    the page's center pushes the corrected geometry beyond [0, paper] by
-    exactly (perpendicular-dimension / 2) * tan(skew) on the corrected
-    axis, and not at all on the true axis — the shear model leaves it
-    untouched by construction. This is the exact, closed-form size of the
-    residual clipping risk flagged in the plan — not just a claim."""
+    """For ink that already touches all four edges, the (0,0)-pivoted
+    correction leaves the near edge (the one running through the origin)
+    exactly touching the page boundary — zero excursion — while the far
+    edge shifts uniformly by exactly perpendicular-dimension * tan(skew) on
+    the corrected axis, entirely to one side (which side depends on the
+    sign of skew_deg), and not at all on the true axis. This is the exact,
+    closed-form size of the room 'absorb' mode has to reserve."""
     paper_w, paper_h = 100.0, 150.0
     src = _full_bleed_svg(tmp_path, paper_w, paper_h)
     filtered = tmp_path / "filtered.svg"
@@ -232,8 +295,7 @@ def test_full_bleed_excursion_beyond_the_page_matches_closed_form(tmp_path, true
     )
     corners = [(left, top), (right, top), (left, bottom), (right, bottom)]
 
-    cx, cy = paper_w / 2, paper_h / 2
-    matrix = axis_skew.skew_matrix(skew_deg, true_axis, cx, cy)
+    matrix = axis_skew.skew_matrix(skew_deg, true_axis, 0.0, 0.0)
     corrected = [_apply_matrix(matrix, x, y) for x, y in corners]
 
     theta = math.radians(skew_deg)
@@ -242,51 +304,32 @@ def test_full_bleed_excursion_beyond_the_page_matches_closed_form(tmp_path, true
         corrected_lo, corrected_hi = 0.0, paper_w
         true_axis_vals = [y for _, y in corrected]
         true_lo, true_hi = 0.0, paper_h
-        expected_corrected_excursion = (paper_h / 2) * abs(math.tan(theta))
-        expected_true_excursion = 0.0
+        expected_excursion = paper_h * abs(math.tan(theta))
     else:
         corrected_axis_vals = [y for _, y in corrected]
         corrected_lo, corrected_hi = 0.0, paper_h
         true_axis_vals = [x for x, _ in corrected]
         true_lo, true_hi = 0.0, paper_w
-        expected_corrected_excursion = (paper_w / 2) * abs(math.tan(theta))
-        expected_true_excursion = 0.0
+        expected_excursion = paper_w * abs(math.tan(theta))
 
     # abs=1e-3: absorbs the same ~1e-4mm vpype measurement noise as above,
     # still three orders of magnitude tighter than anything a pen can draw.
     below = corrected_lo - min(corrected_axis_vals)
     above = max(corrected_axis_vals) - corrected_hi
-    assert below == pytest.approx(expected_corrected_excursion, abs=1e-3)
-    assert above == pytest.approx(expected_corrected_excursion, abs=1e-3)
+    if skew_deg > 0:
+        assert below == pytest.approx(expected_excursion, abs=1e-3)
+        assert above == pytest.approx(0.0, abs=1e-3)
+    else:
+        assert below == pytest.approx(0.0, abs=1e-3)
+        assert above == pytest.approx(expected_excursion, abs=1e-3)
 
     true_below = true_lo - min(true_axis_vals)
     true_above = max(true_axis_vals) - true_hi
-    assert true_below == pytest.approx(expected_true_excursion, abs=1e-3)
-    assert true_above == pytest.approx(expected_true_excursion, abs=1e-3)
+    assert true_below == pytest.approx(0.0, abs=1e-3)
+    assert true_above == pytest.approx(0.0, abs=1e-3)
 
 
-def test_center_pivot_halves_the_worst_case_excursion_vs_a_corner_pivot():
-    """Direct proof of the plan's "center-pivot halves the worst case"
-    claim: a corner pivot at (0,0) concentrates the same total shear
-    entirely on one edge, while the center pivot splits it evenly across
-    both — so the single worst excursion is exactly half."""
-    paper_w, paper_h = 100.0, 150.0
-    skew_deg = 5.0
-    corners = [(0.0, 0.0), (paper_w, 0.0), (0.0, paper_h), (paper_w, paper_h)]
-
-    center_matrix = axis_skew.skew_matrix(skew_deg, "x", paper_w / 2, paper_h / 2)
-    corner_matrix = axis_skew.skew_matrix(skew_deg, "x", 0.0, 0.0)
-
-    center_xs = [_apply_matrix(center_matrix, x, y)[0] for x, y in corners]
-    corner_xs = [_apply_matrix(corner_matrix, x, y)[0] for x, y in corners]
-
-    center_worst = max(0.0 - min(center_xs), max(center_xs) - paper_w)
-    corner_worst = max(0.0 - min(corner_xs), max(corner_xs) - paper_w)
-
-    assert center_worst == pytest.approx(corner_worst / 2, abs=1e-9)
-
-
-def test_full_bleed_at_realistic_skew_stays_within_a_fraction_of_a_millimetre(tmp_path):
+def test_full_bleed_at_realistic_skew_stays_within_a_couple_millimetres(tmp_path):
     """The ±5° cap is a sanity bound, not a typical measurement — real
     hardware skew on a reasonably assembled machine is usually well under
     1°. At a realistic 0.3° on an A4-sized page, full-bleed content should
@@ -301,10 +344,10 @@ def test_full_bleed_at_realistic_skew_stays_within_a_fraction_of_a_millimetre(tm
         fit_content=True,
     )
     corners = [(left, top), (right, top), (left, bottom), (right, bottom)]
-    matrix = axis_skew.skew_matrix(0.3, "x", paper_w / 2, paper_h / 2)
+    matrix = axis_skew.skew_matrix(0.3, "x", 0.0, 0.0)
     xs = [_apply_matrix(matrix, x, y)[0] for x, y in corners]
     worst = max(0.0 - min(xs), max(xs) - paper_w)
-    assert worst < 0.9
+    assert worst < 1.8
 
 
 def test_apply_axis_skew_on_a_full_bleed_stage_svg_does_not_error(tmp_path):
@@ -324,7 +367,7 @@ def test_apply_axis_skew_on_a_full_bleed_stage_svg_does_not_error(tmp_path):
         margin_top_mm=0.0, margin_right_mm=0.0, margin_bottom_mm=0.0, margin_left_mm=0.0,
         fit_content=True,
     )
-    axis_skew.apply_axis_skew(rendered, 5.0, "x", paper_w, paper_h)
+    axis_skew.apply_axis_skew(rendered, 5.0, "x")
 
     root = etree.parse(str(rendered)).getroot()
     assert root.get("width") == f"{paper_w}mm"
@@ -332,3 +375,118 @@ def test_apply_axis_skew_on_a_full_bleed_stage_svg_does_not_error(tmp_path):
     rect = root.find(f".//{{{svg_utils.SVG_NS}}}rect")
     assert (rect.get("x"), rect.get("y"), rect.get("width"), rect.get("height")) == (
         "0", "0", str(paper_w), str(paper_h))
+
+
+# ── "absorb" mode: skew_absorb_matrix / apply_skew_absorb ──────────────────
+
+
+def test_skew_absorb_matrix_is_none_at_zero_skew():
+    assert axis_skew.skew_absorb_matrix(0.0, "x", 210.0, 297.0) is None
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.1, 2.7, 5.0, -0.1, -2.7, -5.0])
+def test_skew_absorb_matrix_reserves_the_closed_form_room_on_one_edge_only(true_axis, skew_deg):
+    """skew_absorb_matrix must reserve exactly the excursion
+    test_full_bleed_excursion_beyond_the_page_matches_closed_form measures
+    apply_axis_skew actually needing — on the same single edge, and leave
+    the true (unaffected) axis and the near edge alone."""
+    paper_w, paper_h = 100.0, 150.0
+    matrix = axis_skew.skew_absorb_matrix(skew_deg, true_axis, paper_w, paper_h)
+    assert matrix is not None
+
+    theta = math.radians(skew_deg)
+    if true_axis == "x":
+        dim, span = paper_h, paper_w
+    else:
+        dim, span = paper_w, paper_h
+    expected_reserve = abs(math.tan(theta)) * dim
+    expected_scale = (span - expected_reserve) / span
+
+    corners = [(0.0, 0.0), (paper_w, 0.0), (0.0, paper_h), (paper_w, paper_h)]
+    squeezed = [_apply_matrix(matrix, x, y) for x, y in corners]
+
+    if true_axis == "x":
+        squeezed_axis_vals = [x for x, _ in squeezed]
+        true_axis_vals = [y for _, y in squeezed]
+        true_axis_before = [y for _, y in corners]
+    else:
+        squeezed_axis_vals = [y for _, y in squeezed]
+        true_axis_vals = [x for x, _ in squeezed]
+        true_axis_before = [x for x, _ in corners]
+
+    # The true axis is completely untouched.
+    assert true_axis_vals == pytest.approx(true_axis_before, abs=1e-9)
+    # The squeezed axis spans exactly [0, span - reserve] or
+    # [reserve, span], never touching the edge the shear will push toward.
+    span_seen = max(squeezed_axis_vals) - min(squeezed_axis_vals)
+    assert span_seen == pytest.approx(span * expected_scale, abs=1e-6)
+    if skew_deg > 0:
+        assert min(squeezed_axis_vals) == pytest.approx(expected_reserve, abs=1e-6)
+        assert max(squeezed_axis_vals) == pytest.approx(span, abs=1e-6)
+    else:
+        assert min(squeezed_axis_vals) == pytest.approx(0.0, abs=1e-6)
+        assert max(squeezed_axis_vals) == pytest.approx(span - expected_reserve, abs=1e-6)
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.1, 2.7, 5.0, -0.1, -2.7, -5.0])
+def test_absorb_then_shear_keeps_full_bleed_corners_on_the_page(true_axis, skew_deg):
+    """The end-to-end claim 'absorb' mode exists for: composing
+    skew_absorb_matrix (applied first, inner) with skew_matrix's (0,0)-
+    pivoted shear (applied second, outer — matching apply_skew_absorb then
+    apply_axis_skew's wrap order) keeps every corner of even full-bleed
+    content inside [0, paper_w] x [0, paper_h]."""
+    paper_w, paper_h = 100.0, 150.0
+    absorb = axis_skew.skew_absorb_matrix(skew_deg, true_axis, paper_w, paper_h)
+    shear = axis_skew.skew_matrix(skew_deg, true_axis, 0.0, 0.0)
+
+    corners = [(0.0, 0.0), (paper_w, 0.0), (0.0, paper_h), (paper_w, paper_h)]
+    for x, y in corners:
+        sx, sy = _apply_matrix(absorb, x, y)
+        fx, fy = _apply_matrix(shear, sx, sy)
+        assert -1e-6 <= fx <= paper_w + 1e-6
+        assert -1e-6 <= fy <= paper_h + 1e-6
+
+
+@pytest.mark.parametrize("true_axis", ["x", "y"])
+@pytest.mark.parametrize("skew_deg", [0.1, 2.7, -4.9])
+def test_inverse_absorb_point_is_the_exact_algebraic_inverse(true_axis, skew_deg):
+    paper_w, paper_h = 100.0, 150.0
+    matrix = axis_skew.skew_absorb_matrix(skew_deg, true_axis, paper_w, paper_h)
+    for px, py in POINTS:
+        sx, sy = _apply_matrix(matrix, px, py)
+        back_x, back_y = axis_skew.inverse_absorb_point(sx, sy, skew_deg, true_axis, paper_w, paper_h)
+        assert back_x == pytest.approx(px, abs=1e-9)
+        assert back_y == pytest.approx(py, abs=1e-9)
+
+
+def test_inverse_absorb_point_is_a_no_op_at_zero_skew():
+    assert axis_skew.inverse_absorb_point(12.0, 34.0, 0.0, "x", 210.0, 297.0) == (12.0, 34.0)
+
+
+def test_apply_skew_absorb_is_a_true_no_op_at_zero(tmp_path):
+    rendered = _rendered_stage_svg(tmp_path)
+    before = rendered.read_bytes()
+    axis_skew.apply_skew_absorb(rendered, 0.0, "x", 210.0, 297.0)
+    assert rendered.read_bytes() == before
+
+
+def test_apply_skew_absorb_wraps_inner_to_apply_axis_skew(tmp_path):
+    """apply_skew_absorb must run first (its wrap ends up closest to the
+    content) so the composed transform is shear(absorb(content)) — the
+    order the excursion math in skew_absorb_matrix assumes."""
+    rendered = _rendered_stage_svg(tmp_path)
+    placement_transform = etree.parse(str(rendered)).getroot().find(
+        f"{{{svg_utils.SVG_NS}}}g").get("transform")
+
+    axis_skew.apply_skew_absorb(rendered, 2.5, "x", 210.0, 297.0)
+    axis_skew.apply_axis_skew(rendered, 2.5, "x")
+
+    root = etree.parse(str(rendered)).getroot()
+    outer = root.find(f"{{{svg_utils.SVG_NS}}}g")
+    assert outer.get("transform") == axis_skew.skew_matrix(2.5, "x", 0.0, 0.0)
+    middle = outer.find(f"{{{svg_utils.SVG_NS}}}g")
+    assert middle.get("transform") == axis_skew.skew_absorb_matrix(2.5, "x", 210.0, 297.0)
+    inner = middle.find(f"{{{svg_utils.SVG_NS}}}g")
+    assert inner.get("transform") == placement_transform

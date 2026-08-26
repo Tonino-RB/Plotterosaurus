@@ -16,9 +16,11 @@ down, and pin down the two rules that keep the stored numbers honest: nothing
 is recorded unless the hardware actually moved, and nothing is accepted that
 the driver would silently clip.
 """
+import math
+
 import pytest
 
-from app import main, plot_worker, state
+from app import config, main, plot_worker, state
 
 SVG = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape='
        '"http://www.inkscape.org/namespaces/inkscape" width="210mm" '
@@ -299,3 +301,122 @@ def test_set_origin_and_home_are_refused_mid_run(paused):
         plot_worker.set_origin()
     with pytest.raises(RuntimeError, match="only available while idle"):
         plot_worker.manual_jog_home()
+
+
+# Skew correction --------------------------------------------------------------
+#
+# On a machine with a nonzero axis-skew angle, plotted artwork already gets
+# corrected (axis_skew.apply_axis_skew) — these confirm _jog_carriage gives
+# manual_jog/nudge_origin/manual_jog_home the same correction, while the
+# session state that drives the UI readout stays in true/design-space mm,
+# untouched. Unlike the `idle`/`paused` fixtures above, this can't monkeypatch
+# _jog_carriage away — it needs to see what _jog_carriage itself sends the
+# driver — so it stubs the AxiDraw driver class one level deeper instead.
+
+SKEW_DEG = 5.0
+SKEW_TAN = math.tan(math.radians(SKEW_DEG))
+
+
+class _Pos:
+    xpos = 0.0
+    ypos = 0.0
+
+
+@pytest.fixture
+def skewed(monkeypatch):
+    """An idle plotter on a machine skewed SKEW_DEG about true_axis="x", with
+    the AxiDraw driver stubbed to record every move() call in motor-space mm.
+    Yields the move log."""
+    moves = []
+
+    class FakeAd:
+        def __init__(self):
+            self.options = type("o", (), {})()
+            self.params = type("p", (), {})()
+            self.pen = type("pen", (), {})()
+            self.pen.turtle = _Pos()
+            self.pen.phys = _Pos()
+            self.bounds = [[0.0, 0.0], [1000.0, 1000.0]]
+
+        def interactive(self): pass
+        def connect(self): return True
+        def move(self, dx, dy): moves.append((dx, dy))
+        def disconnect(self): pass
+
+    monkeypatch.setattr(plot_worker.axidraw, "AxiDraw", FakeAd)
+    monkeypatch.setattr(config, "MACHINES", [{
+        "id": "skew-test", "name": "Skewed", "width_mm": 1000.0, "height_mm": 1000.0,
+        "auto_rotate": "off", "skew_deg": SKEW_DEG, "skew_true_axis": "x", "skew_mode": "clip",
+    }])
+    monkeypatch.setattr(config, "ACTIVE_MACHINE_ID", "skew-test")
+    state.set_active(None)
+    _reset()
+    yield moves
+    _reset()
+    state.set_active(None)
+
+
+def test_move_sends_the_driver_a_skew_corrected_command(skewed):
+    """The state a caller reads back (and that the UI/preview show) stays the
+    true mm the caller asked for; only the driver command is sheared."""
+    plot_worker.manual_jog(10.0, 4.0)
+    assert skewed == [(10.0 - 4.0 * SKEW_TAN, 4.0)]
+    assert state.manual_origin_offset() == (10.0, 4.0)
+
+
+def test_a_pure_true_axis_move_needs_no_correction(skewed):
+    """A move entirely along true_axis="x" has nothing to correct — the
+    physical defect only shows up when the other axis is involved."""
+    plot_worker.manual_jog(10.0, 0.0)
+    assert skewed == [(10.0, 0.0)]
+
+
+def test_home_walks_back_the_exact_corrected_move(skewed):
+    """manual_jog then manual_jog_home must send the driver two commands that
+    are exact opposites, in motor space, so the carriage returns to the same
+    physical spot it started from — regardless of skew."""
+    plot_worker.manual_jog(7.0, 3.0)
+    plot_worker.manual_jog_home()
+    assert skewed[1] == (-skewed[0][0], -skewed[0][1])
+    assert state.manual_origin_offset() == (0.0, 0.0)
+
+
+def test_a_nudge_sends_a_corrected_command_and_records_the_true_delta(skewed):
+    (main.UPLOAD_DIR / "sk.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" '
+        'viewBox="0 0 210 297"><path d="M20,20 L80,80" fill="none" stroke="#000"/></svg>')
+    job = state.add_job({
+        "svg_id": "sk", "filename": "sk.svg",
+        "layer_selections": [{"index": 0, "label": "a", "selected": True}],
+        "paper_width_mm": 210.0, "paper_height_mm": 297.0,
+        "margin_top_mm": 0.0, "margin_right_mm": 0.0,
+        "margin_bottom_mm": 0.0, "margin_left_mm": 0.0,
+        "fit_content": False, "transform_scale": 1.0, "transform_rotation_deg": 0.0,
+        "transform_offset_x_mm": 0.0, "transform_offset_y_mm": 0.0,
+        "speed_pendown": 25, "speed_penup": 75, "acceleration": 75,
+        "pen_pos_up": 60, "pen_pos_down": 30, "optimize_svg": False,
+    })
+    try:
+        state.update_job(job["job_id"], status="plotting")
+        state.update_job(job["job_id"], status="awaiting_pen_change")
+        state.set_active(job["job_id"])
+        plot_worker.nudge_origin(2.0, 6.0)
+        assert skewed == [(2.0 - 6.0 * SKEW_TAN, 6.0)]
+        assert state.origin_nudge() == (2.0, 6.0)
+    finally:
+        state.set_active(None)
+        state.remove_job(job["job_id"])
+
+
+def test_the_far_edge_guard_catches_true_position_drift_a_raw_sum_would_miss(skewed):
+    """A nominal position that looks safely inside the bed can still command
+    a motor-space position past it, once the axis defect is folded in — this
+    is what stops the carriage drifting out of its bed "bit by bit". base_x +
+    dx = 950, comfortably under the 1000mm bed on its own — a raw-sum guard
+    would allow this. But true_axis="x" means a large move up (-y) also
+    drags the motor-space x command up by -dy*tan(skew), past the real edge."""
+    state.set_origin_base(900.0, 0.0)
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.manual_jog(50.0, -999.0, confirm_below_origin=True)
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert skewed == []

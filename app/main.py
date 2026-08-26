@@ -969,6 +969,9 @@ class MachineProfile(BaseModel):
     skew_deg: float = Field(0.0, ge=-config.MACHINE_SKEW_DEG_MAX,
                             le=config.MACHINE_SKEW_DEG_MAX)
     skew_true_axis: Literal["x", "y"] = "x"
+    # How the plot worker reacts if correcting skew_deg would push ink past
+    # the page edge — see config.MACHINE_SKEW_MODE / app.axis_skew.
+    skew_mode: Literal["clip", "absorb"] = "clip"
 
 
 class SettingsUpdate(BaseModel):
@@ -2153,6 +2156,7 @@ def _settings_payload() -> dict:
     snap["machine_height_mm"] = config.MACHINE_HEIGHT_MM
     snap["machine_skew_deg"] = config.MACHINE_SKEW_DEG
     snap["machine_skew_true_axis"] = config.MACHINE_SKEW_TRUE_AXIS
+    snap["machine_skew_mode"] = config.MACHINE_SKEW_MODE
     return snap
 
 

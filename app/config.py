@@ -214,6 +214,11 @@ MACHINE_AUTO_ROTATE: str = "off"
 # plot_worker/axis_skew once skew_deg is non-zero.
 MACHINE_SKEW_DEG: float = 0.0
 MACHINE_SKEW_TRUE_AXIS: str = "x"
+# How the plot worker reacts when correcting skew_deg would push ink past
+# the page edge: "clip" leaves geometry at its declared size and accepts
+# the natural clip; "absorb" reserves room and shrinks to avoid it. See
+# app.axis_skew.apply_skew_absorb.
+MACHINE_SKEW_MODE: str = "clip"
 
 
 def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
@@ -250,13 +255,20 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     skew_true_axis = raw.get("skew_true_axis")
     if skew_true_axis not in ("x", "y"):
         skew_true_axis = "x"
+    # Which behavior a nonzero skew_deg triggers at plot time. Like
+    # skew_true_axis, a bad value is coerced to the default rather than
+    # discarding the profile over it.
+    skew_mode = raw.get("skew_mode")
+    if skew_mode not in ("clip", "absorb"):
+        skew_mode = "clip"
     machine_id = str(raw.get("id") or "").strip()
     while not machine_id or machine_id in used_ids:
         machine_id = secrets.token_hex(4)
     used_ids.add(machine_id)
     return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
             "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate,
-            "skew_deg": skew_deg, "skew_true_axis": skew_true_axis}
+            "skew_deg": skew_deg, "skew_true_axis": skew_true_axis,
+            "skew_mode": skew_mode}
 
 
 def _seed_machines(data: dict) -> tuple[list[dict], str]:
@@ -266,7 +278,7 @@ def _seed_machines(data: dict) -> tuple[list[dict], str]:
     which preset starts out active, so an install that never touched the
     custom bed keeps exactly the machine it had."""
     machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "skew_deg": 0.0,
-                 "skew_true_axis": "x", **preset}
+                 "skew_true_axis": "x", "skew_mode": "clip", **preset}
                 for i, preset in enumerate(_MACHINE_PRESETS)]
     try:
         index = int(data.get("plotter_model")) - 1
@@ -303,7 +315,7 @@ def active_machine() -> dict:
 
 def _sync_active_machine() -> None:
     global ACTIVE_MACHINE_ID, MACHINE_WIDTH_MM, MACHINE_HEIGHT_MM, MACHINE_AUTO_ROTATE
-    global MACHINE_SKEW_DEG, MACHINE_SKEW_TRUE_AXIS
+    global MACHINE_SKEW_DEG, MACHINE_SKEW_TRUE_AXIS, MACHINE_SKEW_MODE
     machine = active_machine()
     ACTIVE_MACHINE_ID = machine["id"]
     MACHINE_WIDTH_MM = machine["width_mm"]
@@ -311,6 +323,7 @@ def _sync_active_machine() -> None:
     MACHINE_AUTO_ROTATE = machine["auto_rotate"]
     MACHINE_SKEW_DEG = machine["skew_deg"]
     MACHINE_SKEW_TRUE_AXIS = machine.get("skew_true_axis", "x")
+    MACHINE_SKEW_MODE = machine.get("skew_mode", "clip")
 
 
 def _load_machines(data: dict) -> None:
