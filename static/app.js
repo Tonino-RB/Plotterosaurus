@@ -3720,22 +3720,19 @@ function skewClearanceMm(skewDeg, trueAxis, bedWidthMm, bedHeightMm) {
   };
 }
 
-// Restate the angle as what it actually costs: millimetres of travel the
-// artwork needs past one page edge, and (in "shrink to fit") the uniform
-// scale that buys them back.
+// Restate the angle as the one number the user can act on: the margin the
+// artwork has to leave at one page edge. Quoted for the two portrait paper
+// sizes rather than for the bed, since that is the paper in front of them.
 function renderSkewClearance() {
   const deg = parseFloat(settingsMachineSkew.value);
   if (!Number.isFinite(deg) || deg === 0) {
     settingsSkewClearance.textContent = t("settings.machine.skew_clearance_none");
     return;
   }
-  const c = skewClearanceMm(
-    deg,
-    getSegmentedValue(settingsMachineSkewAxis, "x"),
-    parseFloat(settingsMachineWidth.value) || 0,
-    parseFloat(settingsMachineHeight.value) || 0,
-  );
-  // Four literal lookups rather than one key concatenated from c.side:
+  const axis = getSegmentedValue(settingsMachineSkewAxis, "x");
+  const a4 = skewClearanceMm(deg, axis, 210, 297);
+  const a3 = skewClearanceMm(deg, axis, 297, 420);
+  // Four literal lookups rather than one key concatenated from .side:
   // tests/test_i18n.py scrapes literal t() keys out of this file to prove
   // every string exists in every catalog, and a built-up key hides from it.
   const edges = {
@@ -3745,15 +3742,22 @@ function renderSkewClearance() {
     bottom: t("settings.machine.skew_edge_bottom"),
   };
   let text = t("settings.machine.skew_clearance", {
-    growth: c.growth.toFixed(1),
-    span: c.span.toFixed(0),
-    axis: c.travelAxis,
-    side: edges[c.side],
+    a4: a4.growth.toFixed(1),
+    a3: a3.growth.toFixed(1),
+    side: edges[a4.side],
   });
   if (getSegmentedValue(settingsMachineSkewMode, "clip") === "absorb") {
+    // Shrink to fit's worst case is a bed-filling drawing, so that half stays
+    // measured against the machine.
+    const bed = skewClearanceMm(
+      deg,
+      axis,
+      parseFloat(settingsMachineWidth.value) || 0,
+      parseFloat(settingsMachineHeight.value) || 0,
+    );
     text += " " + t("settings.machine.skew_clearance_absorb", {
-      pct: c.shrinkPct.toFixed(2),
-      margin: c.marginEachSide.toFixed(1),
+      pct: bed.shrinkPct.toFixed(2),
+      margin: bed.marginEachSide.toFixed(1),
     });
   }
   settingsSkewClearance.textContent = text;

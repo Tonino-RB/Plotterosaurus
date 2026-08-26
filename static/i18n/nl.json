@@ -253,7 +253,7 @@
   "settings.machine.skew_label": "Scheefstandshoek van de assen (°)",
   "settings.machine.skew_note": "Hoever de twee assen van deze machine van haaks afwijken, gemeten met de rekenhulp hieronder, en welke as de rechte is waartegen de andere wordt gecorrigeerd. Wordt toegepast op plots. Laat de hoek op 0 tenzij je een scheefstand hebt gemeten.",
   "settings.machine.skew_clearance_none": "Bij 0° raakt niets rond scheefstand een plot: tekening, handmatige verplaatsingen, oorsprongcorrecties en Terug naar oorsprong gaan allemaal ongewijzigd door.",
-  "settings.machine.skew_clearance": "Deze hoek corrigeren kost slag, geen nauwkeurigheid: een tekening van {span} mm in {axis} krijgt een opdracht die {growth} mm verder zijwaarts gaat dan ze tekent, voorbij de {side}. De tekening wordt nooit verplaatst of vervormd — met {growth} mm marge daar plot ze precies waar je haar plaatste, op precies haar formaat. Alleen voor werk zonder die marge verschillen Clip en 'Verklein om te passen'. Slechtste geval, voor werk dat het hele bed van deze machine vult.",
+  "settings.machine.skew_clearance": "Een A4 staand (210 × 297 mm) heeft {a4} mm marge nodig aan de {side}; een A3 staand (297 × 420 mm) {a3} mm.",
   "settings.machine.skew_clearance_absorb": "'Verklein om te passen' grijpt alleen in als de gemeten inkt er echt overheen zou gaan, en schaalt dan gelijkmatig rond het midden van de pagina — dezelfde factor op beide assen, dus niets wordt vervormd en niets schuift opzij. Werk dat het bed vult krimpt {pct}% en laat {margin} mm papier vrij aan elk van de twee randen; werk met speling blijft onaangeroerd.",
   "settings.machine.skew_edge_left": "linkerrand",
   "settings.machine.skew_edge_right": "rechterrand",

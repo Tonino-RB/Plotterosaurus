@@ -253,7 +253,7 @@
   "settings.machine.skew_label": "Ángulo de inclinación de ejes (°)",
   "settings.machine.skew_note": "Cuánto se desvían de la escuadra los dos ejes de esta máquina, medido con la calculadora de abajo, y qué eje es el recto contra el que se corrige el otro. Se aplica a los trazados. Deja el ángulo en 0 salvo que hayas medido una inclinación.",
   "settings.machine.skew_clearance_none": "A 0° nada relacionado con la inclinación interviene en un trazado: el dibujo, los desplazamientos manuales, los ajustes de origen y Volver al origen pasan todos sin cambios.",
-  "settings.machine.skew_clearance": "Corregir este ángulo cuesta recorrido, no precisión: un diseño de {span} mm en {axis} recibe una orden desplazada {growth} mm más de lo que traza, más allá del {side}. El dibujo nunca se mueve ni se deforma: con {growth} mm de margen ahí se traza exactamente donde lo colocaste y a su tamaño exacto. Es para el dibujo que no lo tiene que Clip y «Reducir para encajar» se diferencian. Peor caso, para un dibujo que ocupe toda la superficie de esta máquina.",
+  "settings.machine.skew_clearance": "Un A4 vertical (210 × 297 mm) necesita {a4} mm de margen en el {side}; un A3 vertical (297 × 420 mm), {a3} mm.",
   "settings.machine.skew_clearance_absorb": "«Reducir para encajar» solo actúa si la tinta medida se saldría de verdad, y entonces la escala de forma uniforme en torno al centro de la página: el mismo factor en ambos ejes, así que nada se deforma ni se desplaza. Un dibujo que ocupe toda la superficie se reduce un {pct} %, dejando {margin} mm de papel en cada uno de los dos bordes; lo que tenga margen se deja intacto.",
   "settings.machine.skew_edge_left": "borde izquierdo",
   "settings.machine.skew_edge_right": "borde derecho",

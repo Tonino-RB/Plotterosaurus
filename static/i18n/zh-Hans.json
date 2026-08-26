@@ -253,7 +253,7 @@
   "settings.machine.skew_label": "轴倾斜角度（°）",
   "settings.machine.skew_note": "这台机器两根轴偏离垂直的程度，用下面的计算器测量得出，并选择以哪根轴为基准来校正另一根。会应用到绘制中。除非量出了倾斜，否则角度保持 0。",
   "settings.machine.skew_clearance_none": "角度为 0° 时，与偏斜相关的一切都不会介入绘制：图稿、手动移动、原点微调和回到原点都原样通过。",
-  "settings.machine.skew_clearance": "校正该角度消耗的是行程，而不是精度：{axis} 方向上 {span} mm 的图稿，其指令位置会比实际落笔处再偏出 {growth} mm，越过{side}。图稿本身绝不会被移动或变形——只要那一侧有 {growth} mm 余量，它就会精确绘制在你放置的位置、保持原始尺寸。只有余量不足时，“裁切”与“缩小以适应”才会有区别。数值按图稿铺满本机整个幅面的最坏情况计算。",
+  "settings.machine.skew_clearance": "A4 竖向（210 × 297 mm）需要在{side}留出 {a4} mm 余量；A3 竖向（297 × 420 mm）需要 {a3} mm。",
   "settings.machine.skew_clearance_absorb": "“缩小以适应”仅在实测墨迹确实会越界时才介入，并以页面中心为基准均匀缩小——横纵比例相同，因此既不变形也不会横向移动。铺满幅面的图稿会缩小 {pct}%，在两侧边缘各留出 {margin} mm 纸面；留有余量的图稿则完全不动。",
   "settings.machine.skew_edge_left": "左边缘",
   "settings.machine.skew_edge_right": "右边缘",
