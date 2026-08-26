@@ -303,6 +303,105 @@ def test_set_origin_and_home_are_refused_mid_run(paused):
         plot_worker.manual_jog_home()
 
 
+# Move shortcut ----------------------------------------------------------------
+#
+# The one-press button between Move and Return to Origin. Its whole point is
+# that it names a *position*, not a distance: it may be pressed at any time
+# from anywhere, so what it must guarantee is where the carriage ends up.
+
+
+@pytest.fixture
+def shortcut(monkeypatch):
+    """The shortcut set to 6, 6 with the origin left alone on arrival."""
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", False)
+
+
+def test_shortcut_lands_on_the_configured_spot_whatever_it_started_from(idle, shortcut):
+    plot_worker.manual_jog(40.0, 10.0)
+    idle.clear()
+    plot_worker.manual_jog_shortcut()
+    assert idle == [(-34.0, -4.0)], "the move is the difference, not the shortcut itself"
+    assert triple() == ((0.0, 0.0), (6.0, 6.0), (0.0, 0.0))
+
+
+def test_pressing_the_shortcut_twice_leaves_the_carriage_where_it_was(idle, shortcut):
+    """Absolute, so the second press is a no-op — the failure this rules out
+    is a shortcut that walks another 6, 6 every time it is pressed."""
+    plot_worker.manual_jog_shortcut()
+    plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (6.0, 6.0)
+
+
+def test_the_shortcut_can_declare_where_it_lands_to_be_the_page_corner(idle, monkeypatch):
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", True)
+    plot_worker.manual_jog_shortcut()
+    assert idle == [(6.0, 6.0)]
+    assert triple() == ((6.0, 6.0), (0.0, 0.0), (0.0, 0.0))
+    # With the origin moving too, the shortcut is measured from the new corner
+    # each time, so a second press really does walk another 6, 6.
+    plot_worker.manual_jog_shortcut()
+    assert triple() == ((12.0, 12.0), (0.0, 0.0), (0.0, 0.0))
+
+
+def test_a_shortcut_the_plotter_refused_moves_nothing_including_the_origin(monkeypatch):
+    """set_origin only runs once the move has returned: declaring a page
+    corner the carriage never reached would leave every later plot aimed at
+    a spot the pen is not."""
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", True)
+    monkeypatch.setattr(plot_worker, "_jog_carriage", boom)
+    state.set_active(None)
+    _reset()
+    try:
+        with pytest.raises(RuntimeError, match="Could not connect"):
+            plot_worker.manual_jog_shortcut()
+        assert triple() == ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+    finally:
+        _reset()
+
+
+def test_the_shortcut_is_idle_only(idle, shortcut):
+    job = state.add_job(dict(JOB, svg_id="mo3"))
+    state.update_job(job["job_id"], status="plotting")
+    state.set_active(job["job_id"])
+    try:
+        with pytest.raises(RuntimeError, match="only available while idle"):
+            plot_worker.manual_jog_shortcut()
+        assert idle == []
+    finally:
+        state.set_active(None)
+        state.remove_job(job["job_id"])
+
+
+def test_a_shortcut_past_the_far_edge_is_refused(idle, monkeypatch):
+    """It borrows manual_jog's bed guard rather than carrying its own — the
+    shortcut is stored per install, the bed per machine profile, so a profile
+    switch can leave a perfectly good shortcut pointing off the bed."""
+    bed_w, _ = plot_worker.machine_bounds_mm()
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", bed_w + 10.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", False)
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert idle == []
+
+
+def test_the_shortcut_is_never_asked_to_confirm_going_behind_the_origin(idle, shortcut):
+    """config keeps the shortcut non-negative, so the one refusal manual_jog
+    raises that a body-less button could not answer is out of reach — even
+    from a carriage currently sitting behind the origin."""
+    plot_worker.manual_jog(-5.0, -5.0, confirm_below_origin=True)
+    idle.clear()
+    plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (6.0, 6.0)
+
+
 # Skew correction --------------------------------------------------------------
 #
 # On a machine with a nonzero axis-skew angle, plotted artwork already gets

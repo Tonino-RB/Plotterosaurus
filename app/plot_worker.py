@@ -1208,6 +1208,29 @@ def set_origin() -> None:
         state.set_manual_origin_offset(0.0, 0.0)
 
 
+def manual_jog_shortcut() -> None:
+    """Walk the carriage to the configured Move-shortcut spot in one press,
+    and — if move_shortcut_set_origin is on — declare that spot the page's
+    top-left corner once it gets there.
+
+    The shortcut names an absolute position: where the carriage should end up
+    relative to the declared origin, not how far to travel. So the move is the
+    difference between it and the offset already accumulated, which makes a
+    second press a no-op rather than a walk twice as far.
+
+    Composed out of manual_jog and set_origin rather than reimplementing
+    either, which is what keeps the guards (idle-only, bed edge) and the
+    move-first-record-second ordering identical to the buttons either side of
+    it — and is why the origin is only declared after the move returns: a
+    refused move must not move the page corner. The shortcut is non-negative
+    (see config), so manual_jog's below-origin confirmation, which this has no
+    way to ask for, is unreachable from here."""
+    x, y = state.manual_origin_offset()
+    manual_jog(config.MOVE_SHORTCUT_X_MM - x, config.MOVE_SHORTCUT_Y_MM - y)
+    if config.MOVE_SHORTCUT_SET_ORIGIN:
+        set_origin()
+
+
 def manual_jog_home() -> None:
     """Physically walk the pen carriage back to the origin — undoing the net
     displacement accumulated by manual_jog, which is measured from wherever

@@ -407,5 +407,10 @@
   "card.complexity_gap": "Distanza media tra le estremità: {mean} mm (mediana {median} mm).",
   "card.complexity_recommendation": "Prova <strong>linemerge</strong> con una tolleranza di <code>{tolerance} mm</code>: può unire il {percent}% delle estremità. Impostalo nel pannello di ottimizzazione; non è stato modificato nulla per te.",
   "card.complexity_analyzing": "Sto calcolando quale impostazione aiuterebbe…",
-  "job.plan_too_complex": "troppo complesso da stimare"
+  "job.plan_too_complex": "troppo complesso da stimare",
+  "a11y.jog_shortcut": "Sposta alla posizione della scorciatoia",
+  "settings.shortcut.title": "Scorciatoie",
+  "settings.shortcut.move_label": "Scorciatoia di spostamento (mm dall'origine)",
+  "settings.shortcut.set_origin": "Imposta lì l'origine appena il carrello arriva",
+  "settings.shortcut.note": "Dove il pulsante ⇱ accanto a Sposta manda il carrello. La posizione è misurata dall'origine, non da dove si trova ora la penna, quindi premerlo due volte non cambia nulla — a meno che la casella qui sopra non sia selezionata, nel qual caso ogni arrivo diventa il nuovo angolo del foglio."
 }

@@ -407,5 +407,10 @@
   "card.complexity_gap": "Durchschnittlicher Abstand zwischen Strichenden: {mean} mm (Median {median} mm).",
   "card.complexity_recommendation": "Versuche <strong>linemerge</strong> mit einer Toleranz von <code>{tolerance} mm</code> — damit lassen sich {percent} % der Strichenden verbinden. Im Optimierungsbereich einstellen; es wurde nichts für dich geändert.",
   "card.complexity_analyzing": "Ermittle, welche Einstellung helfen würde…",
-  "job.plan_too_complex": "zu komplex zum Schätzen"
+  "job.plan_too_complex": "zu komplex zum Schätzen",
+  "a11y.jog_shortcut": "Zur Kurzbefehl-Position fahren",
+  "settings.shortcut.title": "Kurzbefehle",
+  "settings.shortcut.move_label": "Kurzbefehl „Bewegen“ (mm ab Ursprung)",
+  "settings.shortcut.set_origin": "Den Ursprung dort festlegen, sobald der Schlitten ankommt",
+  "settings.shortcut.note": "Wohin die Schaltfläche ⇱ neben „Bewegen“ den Schlitten schickt. Die Position wird ab dem Ursprung gemessen, nicht ab der aktuellen Stiftposition — zweimal Drücken ändert also nichts. Es sei denn, das Kästchen oben ist angehakt: dann wird jede Ankunft zur neuen Blattecke."
 }

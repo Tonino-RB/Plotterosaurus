@@ -407,5 +407,10 @@
   "card.complexity_gap": "Écart moyen entre les extrémités : {mean} mm (médiane {median} mm).",
   "card.complexity_recommendation": "Essaie <strong>linemerge</strong> avec une tolérance de <code>{tolerance} mm</code> — cela peut relier {percent} % des extrémités. À régler dans le panneau d'optimisation ; rien n'a été modifié pour toi.",
   "card.complexity_analyzing": "Recherche du réglage qui conviendrait…",
-  "job.plan_too_complex": "trop complexe à estimer"
+  "job.plan_too_complex": "trop complexe à estimer",
+  "a11y.jog_shortcut": "Aller à la position du raccourci",
+  "settings.shortcut.title": "Raccourcis",
+  "settings.shortcut.move_label": "Raccourci de déplacement (mm depuis l'origine)",
+  "settings.shortcut.set_origin": "Définir l'origine à cet endroit une fois le chariot arrivé",
+  "settings.shortcut.note": "L'endroit où le bouton ⇱ situé à côté de Déplacer envoie le chariot. La position est mesurée depuis l'origine, et non depuis là où se trouve le stylo, donc appuyer deux fois ne change rien — sauf si la case ci-dessus est cochée, auquel cas chaque arrivée devient le nouveau coin de la page."
 }

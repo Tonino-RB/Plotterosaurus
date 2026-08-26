@@ -407,5 +407,10 @@
   "card.complexity_gap": "Distância média entre extremidades: {mean} mm (mediana {median} mm).",
   "card.complexity_recommendation": "Experimenta <strong>linemerge</strong> com uma tolerância de <code>{tolerance} mm</code> — pode unir {percent}% das extremidades. Define-o no painel de otimização; nada foi alterado por ti.",
   "card.complexity_analyzing": "A determinar que definição ajudaria…",
-  "job.plan_too_complex": "demasiado complexo para estimar"
+  "job.plan_too_complex": "demasiado complexo para estimar",
+  "a11y.jog_shortcut": "Mover para a posição do atalho",
+  "settings.shortcut.title": "Atalhos",
+  "settings.shortcut.move_label": "Atalho de movimento (mm a partir da origem)",
+  "settings.shortcut.set_origin": "Definir aí a origem assim que o carro chegar",
+  "settings.shortcut.note": "Para onde o botão ⇱ ao lado de Mover envia o carro. A posição é medida a partir da origem, não de onde a caneta está agora, por isso carregar duas vezes não muda nada — a menos que a caixa acima esteja marcada, caso em que cada chegada passa a ser o novo canto da página."
 }

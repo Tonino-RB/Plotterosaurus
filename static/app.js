@@ -28,6 +28,7 @@ const jogYReadout = $("jog-y-readout");
 const jogXInput = $("jog-x-input");
 const jogYInput = $("jog-y-input");
 const jogMoveBtn = $("jog-move-btn");
+const jogShortcutBtn = $("jog-shortcut-btn");
 const jogHomeBtn = $("jog-home-btn");
 const jogOriginBtn = $("jog-origin-btn");
 const calibrationFileRow = $("calibration-file-row");
@@ -2866,6 +2867,20 @@ jogMoveBtn.addEventListener("click", () => {
   postJog(parseFloat(jogXInput.value) || 0, parseFloat(jogYInput.value) || 0, false);
 });
 
+// One press to the Move shortcut configured in Settings — an absolute spot
+// measured from the origin, so a second press moves nothing (see
+// plot_worker.manual_jog_shortcut). Whether arriving also declares that spot
+// the new origin is part of that same setting, not decided here.
+jogShortcutBtn.addEventListener("click", async () => {
+  try {
+    const res = await fetch("/pen/jog-shortcut", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    flashJogResult(jogShortcutBtn, true);
+  } catch (e) {
+    flashJogResult(jogShortcutBtn, false);
+  }
+});
+
 jogHomeBtn.addEventListener("click", async () => {
   try {
     const res = await fetch("/pen/jog-home", { method: "POST" });
@@ -3021,6 +3036,7 @@ function applyTopControls() {
   jogXInput.disabled = jogDisabled;
   jogYInput.disabled = jogDisabled;
   jogMoveBtn.disabled = jogDisabled;
+  jogShortcutBtn.disabled = jogDisabled;
   jogHomeBtn.disabled = jogDisabled;
   jogOriginBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
@@ -3267,6 +3283,9 @@ const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
 const settingsPenPosUp = $("settings-pen-pos-up");
 const settingsPenPosDown = $("settings-pen-pos-down");
+const settingsShortcutX = $("settings-shortcut-x");
+const settingsShortcutY = $("settings-shortcut-y");
+const settingsShortcutSetOrigin = $("settings-shortcut-set-origin");
 const settingsMachineSelect = $("settings-machine-select");
 const settingsMachineAdd = $("settings-machine-add");
 const settingsMachineDelete = $("settings-machine-delete");
@@ -3464,6 +3483,9 @@ async function openSettings() {
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
+    settingsShortcutX.value = String(data.move_shortcut_x_mm ?? 6);
+    settingsShortcutY.value = String(data.move_shortcut_y_mm ?? 6);
+    settingsShortcutSetOrigin.checked = !!data.move_shortcut_set_origin;
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
     loadMachineDraft(data);
@@ -3503,6 +3525,9 @@ async function saveSettings() {
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
       display_unit: settingsDisplayUnit.value,
+      move_shortcut_x_mm: parseFloat(settingsShortcutX.value) || 0,
+      move_shortcut_y_mm: parseFloat(settingsShortcutY.value) || 0,
+      move_shortcut_set_origin: settingsShortcutSetOrigin.checked,
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
       webhook_on_job_complete: settingsWebhookOnJobComplete.checked,

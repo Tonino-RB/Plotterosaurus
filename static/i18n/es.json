@@ -407,5 +407,10 @@
   "card.complexity_gap": "Separación media entre extremos: {mean} mm (mediana {median} mm).",
   "card.complexity_recommendation": "Prueba <strong>linemerge</strong> con una tolerancia de <code>{tolerance} mm</code>: puede unir el {percent} % de los extremos. Configúralo en el panel de optimización; no se ha cambiado nada por ti.",
   "card.complexity_analyzing": "Calculando qué ajuste ayudaría…",
-  "job.plan_too_complex": "demasiado complejo para estimar"
+  "job.plan_too_complex": "demasiado complejo para estimar",
+  "a11y.jog_shortcut": "Mover a la posición del atajo",
+  "settings.shortcut.title": "Atajos",
+  "settings.shortcut.move_label": "Atajo de movimiento (mm desde el origen)",
+  "settings.shortcut.set_origin": "Fijar allí el origen en cuanto llegue el carro",
+  "settings.shortcut.note": "Adónde envía el carro el botón ⇱ que hay junto a Mover. La posición se mide desde el origen, no desde donde está la pluma ahora, así que pulsarlo dos veces no cambia nada, salvo que esté marcada la casilla de arriba: entonces cada llegada pasa a ser la nueva esquina de la página."
 }

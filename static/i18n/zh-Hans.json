@@ -407,5 +407,10 @@
   "card.complexity_gap": "笔画端点之间的平均间距：{mean} mm（中位数 {median} mm）。",
   "card.complexity_recommendation": "请尝试使用容差 <code>{tolerance} mm</code> 的 <strong>linemerge</strong>，可连接 {percent}% 的笔画端点。请在优化面板中设置；系统未替您做任何更改。",
   "card.complexity_analyzing": "正在计算哪种设置会有帮助…",
-  "job.plan_too_complex": "过于复杂，无法估算"
+  "job.plan_too_complex": "过于复杂，无法估算",
+  "a11y.jog_shortcut": "移动到快捷位置",
+  "settings.shortcut.title": "快捷位置",
+  "settings.shortcut.move_label": "移动快捷位置（距原点，mm）",
+  "settings.shortcut.set_origin": "笔架到位后将该处设为原点",
+  "settings.shortcut.note": "“移动”旁边的 ⇱ 按钮会把笔架送到这里。位置是从原点量起的，而不是从笔当前所在处，所以按两次不会有任何变化——除非勾选上面的复选框，那样每次到位都会成为新的页面角点。"
 }

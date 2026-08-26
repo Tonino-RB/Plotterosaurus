@@ -75,6 +75,17 @@ _SETTINGS: list[_Setting] = [
     _Setting("optimize_expert_1_cmd_default", str, ""),
     _Setting("optimize_expert_2_cmd_default", str, ""),
     _Setting("optimize_expert_3_cmd_default", str, ""),
+    # Move shortcut: the one-press jog target sitting between Move and Return
+    # to Origin in the toolbar. Absolute — the button walks the carriage *to*
+    # this offset from the declared origin rather than by it, so pressing it
+    # twice lands in the same place — and, with set_origin on, declares that
+    # spot the new page corner once the carriage arrives. Kept non-negative
+    # because the shortcut names a spot on the page, and the page starts at
+    # the origin: a negative target is the one case manual_jog refuses to
+    # carry out without a confirmation the button has no way to ask for.
+    _Setting("move_shortcut_x_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
+    _Setting("move_shortcut_y_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
+    _Setting("move_shortcut_set_origin", bool, False),
     _Setting("display_unit", str, None,
              lambda v: v in ("mm", "cm", "in")),
     # Last update the user chose to skip. The update banner stays hidden while

@@ -990,6 +990,9 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
     display_unit: Literal["mm", "cm", "in"] | None = None
+    move_shortcut_x_mm: float | None = Field(None, ge=0.0, le=2000.0)
+    move_shortcut_y_mm: float | None = Field(None, ge=0.0, le=2000.0)
+    move_shortcut_set_origin: bool | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
     # of a named machine now, not a global override (see config.MACHINES).
@@ -2019,6 +2022,20 @@ def pen_jog_home():
 @app.post("/api/v1/pen/jog-home", dependencies=[Depends(require_api_key)])
 def api_pen_jog_home():
     return pen_jog_home()
+
+
+@app.post("/pen/jog-shortcut")
+def pen_jog_shortcut():
+    try:
+        plot_worker.manual_jog_shortcut()
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/pen/jog-shortcut", dependencies=[Depends(require_api_key)])
+def api_pen_jog_shortcut():
+    return pen_jog_shortcut()
 
 
 @app.post("/pen/set-origin")

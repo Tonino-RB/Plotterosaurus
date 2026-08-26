@@ -270,6 +270,7 @@ Both offsets are reported in the state snapshot as `manual_origin_offset_x_mm` /
 |---|---|---|---|
 | `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. | Not idle; a move past the bed's far edge, or longer than the bed itself; connection failure. |
 | `POST` | `/api/v1/pen/jog-home` | Walk the carriage back to the declared origin, clearing the manual offset. No-op when the offset is already zero. | Not idle; connection failure. |
+| `POST` | `/api/v1/pen/jog-shortcut` | Walk the carriage to the Move-shortcut position — `move_shortcut_x_mm` / `_y_mm` in settings, measured from the declared origin, so a second call moves nothing. With `move_shortcut_set_origin` on, the arrival point is then declared the page's top-left corner (as if `/pen/set-origin` followed), which makes each call walk the shortcut afresh. No body. | Not idle; the shortcut lies past the bed's far edge (e.g. after switching to a smaller machine profile); connection failure. |
 | `POST` | `/api/v1/pen/set-origin` | Declare wherever the carriage currently sits to be the page's top-left corner: the manual offset folds into the origin and resets to zero. Touches no hardware. | Not idle. |
 
 ### Calibration library
@@ -481,6 +482,9 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "optimize_svg_linesort_default": true,
   "optimize_svg_reloop_default": true,
   "display_unit": null,                         // null | "mm" | "cm" | "in" — UI labels only
+  "move_shortcut_x_mm": 6.0,                    // 0–2000, the one-press jog target — see /api/v1/pen/jog-shortcut
+  "move_shortcut_y_mm": 6.0,                    // 0–2000
+  "move_shortcut_set_origin": false,            // Declare the arrival point the page corner too
   "machine_custom_enabled": false,              // Custom bed-size profile layered on plotter_model (UI/bounds only)
   "machine_width_mm": 297.0,
   "machine_height_mm": 420.0,
@@ -550,6 +554,8 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `optimize_svg_tolerance_default_mm` | float 0.01–10.0 |
 | `optimize_svg_linemerge_default`, `optimize_svg_linesimplify_default`, `optimize_svg_linesort_default`, `optimize_svg_reloop_default` | bool |
 | `display_unit` | `"mm"` \| `"cm"` \| `"in"` — UI display only. PATCH cannot clear it back to `null`; that state only exists before any value has been saved. |
+| `move_shortcut_x_mm`, `move_shortcut_y_mm` | number 0–2000 (mm from the declared origin). Non-negative so the shortcut can never need the `confirm_below_origin` that `/pen/jog-shortcut` has no body to send. |
+| `move_shortcut_set_origin` | bool |
 
 Out-of-range values return `400`. The API key cannot be set through this endpoint — to rotate it, edit `config.json` on the Pi and restart the service.
 

@@ -407,5 +407,10 @@
   "card.complexity_gap": "획 끝 사이의 평균 간격: {mean} mm (중앙값 {median} mm).",
   "card.complexity_recommendation": "허용 오차 <code>{tolerance} mm</code>로 <strong>linemerge</strong>를 시도해 보세요. 획 끝의 {percent}%를 연결할 수 있습니다. 최적화 패널에서 설정하세요. 아무것도 변경하지 않았습니다.",
   "card.complexity_analyzing": "어떤 설정이 도움이 될지 계산하는 중…",
-  "job.plan_too_complex": "너무 복잡하여 예상할 수 없음"
+  "job.plan_too_complex": "너무 복잡하여 예상할 수 없음",
+  "a11y.jog_shortcut": "단축 위치로 이동",
+  "settings.shortcut.title": "단축 이동",
+  "settings.shortcut.move_label": "이동 단축 위치 (원점 기준 mm)",
+  "settings.shortcut.set_origin": "캐리지가 도착하면 그 자리를 원점으로 설정",
+  "settings.shortcut.note": "이동 버튼 옆의 ⇱ 버튼이 캐리지를 보내는 위치입니다. 현재 펜 위치가 아니라 원점을 기준으로 재기 때문에 두 번 눌러도 달라지지 않습니다. 위 상자를 체크하면 도착할 때마다 그 자리가 새 용지 모서리가 됩니다."
 }

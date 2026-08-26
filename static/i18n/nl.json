@@ -407,5 +407,10 @@
   "card.complexity_gap": "Gemiddelde afstand tussen lijnuiteinden: {mean} mm (mediaan {median} mm).",
   "card.complexity_recommendation": "Probeer <strong>linemerge</strong> met een tolerantie van <code>{tolerance} mm</code> — daarmee kan {percent}% van de uiteinden worden verbonden. Stel dit in het optimalisatiepaneel in; er is niets voor je gewijzigd.",
   "card.complexity_analyzing": "Bezig te bepalen welke instelling zou helpen…",
-  "job.plan_too_complex": "te complex om te schatten"
+  "job.plan_too_complex": "te complex om te schatten",
+  "a11y.jog_shortcut": "Naar de snelkoppelingspositie bewegen",
+  "settings.shortcut.title": "Snelkoppelingen",
+  "settings.shortcut.move_label": "Snelkoppeling verplaatsen (mm vanaf de oorsprong)",
+  "settings.shortcut.set_origin": "De oorsprong daar instellen zodra de slede is aangekomen",
+  "settings.shortcut.note": "Waar de knop ⇱ naast Verplaatsen de slede heen stuurt. De positie wordt gemeten vanaf de oorsprong, niet vanaf waar de pen nu staat, dus twee keer drukken verandert niets — tenzij het vakje hierboven is aangevinkt: dan wordt elke aankomst de nieuwe pagina-hoek."
 }
