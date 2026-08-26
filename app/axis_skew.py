@@ -4,6 +4,14 @@ in the physical world unless corrected. This module maps a physically
 correct point to the motor-space command that lands the pen there once
 that fixed hardware defect is taken into account.
 
+The defect is modeled as a plain shear: a pure move along ``true_axis``
+lands exactly where commanded, while a pure move along the other axis
+drifts, proportional to ``tan(skew_deg)``, along ``true_axis`` too. This is
+the same model ``static/app.js``'s ``skewAngleDeg`` assumes when it turns a
+plotted test square's diagonals into ``skew_deg`` in the first place
+(``d1^2 - d2^2 = 4 * side^2 * tan(skew)``), so a measurement made with that
+calculator and a correction applied here always describe the same machine.
+
 Pure and config-free: callers pass ``skew_deg``/``true_axis`` explicitly,
 the same way ``svg_utils.transform_to_paper`` takes ``machine_auto_rotate``
 as a parameter rather than importing ``config`` itself. Applied strictly
@@ -31,13 +39,11 @@ def skew_matrix(skew_deg: float, true_axis: str,
     ``true_axis`` names the axis assumed to travel in a straight line; the
     other axis is the one being corrected relative to it.
     """
-    theta = math.radians(skew_deg)
-    tan_t = math.tan(theta)
-    sec_t = 1.0 / math.cos(theta)
+    tan_t = math.tan(math.radians(skew_deg))
     if true_axis == "y":
-        a, b, c, d = sec_t, -tan_t, 0.0, 1.0
+        a, b, c, d = 1.0, -tan_t, 0.0, 1.0
     else:
-        a, b, c, d = 1.0, 0.0, -tan_t, sec_t
+        a, b, c, d = 1.0, 0.0, -tan_t, 1.0
     cx, cy = pivot_x_mm, pivot_y_mm
     e = cx - a * cx - c * cy
     f = cy - b * cx - d * cy
@@ -75,14 +81,10 @@ def inverse_skew_point(x_mm: float, y_mm: float, skew_deg: float, true_axis: str
     """The exact algebraic inverse of ``skew_matrix``'s map: a motor-space
     position -> the pristine design position it was commanded from. Used to
     keep the live draw-stream showing the uncorrected path."""
-    theta = math.radians(skew_deg)
-    tan_t = math.tan(theta)
-    cos_t = math.cos(theta)
+    tan_t = math.tan(math.radians(skew_deg))
     mx, my = x_mm - pivot_x_mm, y_mm - pivot_y_mm
     if true_axis == "y":
-        px = mx * cos_t
-        py = my + px * tan_t
+        px, py = mx, my + mx * tan_t
     else:
-        py = my * cos_t
-        px = mx + py * tan_t
+        px, py = mx + my * tan_t, my
     return px + pivot_x_mm, py + pivot_y_mm

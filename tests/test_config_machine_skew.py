@@ -1,8 +1,8 @@
-"""config._normalize_machine's handling of skew_deg: the one new field a
-machine profile carries for the skew-angle setting. Exercises the pure
-normalizer directly rather than config.update(), since config.CONFIG_PATH is
-the repo's real config.json and is never sandboxed for tests (unlike
-state.json — see conftest.py).
+"""config._normalize_machine's handling of skew_deg and skew_true_axis: the
+two fields a machine profile carries for the skew-angle setting. Exercises
+the pure normalizer directly rather than config.update(), since
+config.CONFIG_PATH is the repo's real config.json and is never sandboxed for
+tests (unlike state.json — see conftest.py).
 """
 from app import config
 
@@ -30,3 +30,18 @@ def test_skew_clamps_to_the_max():
 def test_skew_ignores_garbage_rather_than_discarding_the_profile():
     assert _machine(skew_deg="not a number")["skew_deg"] == 0.0
     assert _machine(skew_deg=None)["skew_deg"] == 0.0
+
+
+def test_skew_true_axis_defaults_to_x_when_absent():
+    assert _machine()["skew_true_axis"] == "x"
+
+
+def test_skew_true_axis_passes_through_valid_values():
+    assert _machine(skew_true_axis="x")["skew_true_axis"] == "x"
+    assert _machine(skew_true_axis="y")["skew_true_axis"] == "y"
+
+
+def test_skew_true_axis_falls_back_to_x_for_garbage_rather_than_discarding_the_profile():
+    assert _machine(skew_true_axis="z")["skew_true_axis"] == "x"
+    assert _machine(skew_true_axis=None)["skew_true_axis"] == "x"
+    assert _machine(skew_true_axis=123)["skew_true_axis"] == "x"

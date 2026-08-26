@@ -12,7 +12,7 @@ from axidrawinternal import dripfeed
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
+from . import axis_skew, camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,14 @@ log = logging.getLogger(__name__)
 # is not a real pen position and must never reach emit_position — the
 # on-card pen cursor and the draw-stream overlay would otherwise jump to it.
 _suppress_position_emit = threading.local()
+# The (skew_deg, true_axis, pivot_x_mm, pivot_y_mm) the currently running
+# stage's geometry was corrected with — set by _run_stage. Read here so the
+# live draw-stream keeps showing the pristine, uncorrected path even though
+# the driver is actually plotting axis_skew-corrected geometry: the position
+# read from the driver is run back through the inverse of the same
+# transform before it reaches the on-screen overlay. None outside of a real
+# hardware stage.
+_current_skew: tuple[float, str, float, float] | None = None
 
 if hasattr(dripfeed, "feed_sm"):
     _orig_feed_sm = dripfeed.feed_sm
@@ -40,7 +48,11 @@ if hasattr(dripfeed, "feed_sm"):
         x_in = ad_ref.pen.phys.xpos
         y_in = ad_ref.pen.phys.ypos
         if x_in is not None and y_in is not None:
-            state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
+            x_mm, y_mm = x_in * 25.4, y_in * 25.4
+            skew = _current_skew
+            if skew is not None and skew[0]:
+                x_mm, y_mm = axis_skew.inverse_skew_point(x_mm, y_mm, *skew)
+            state.emit_position(x_mm, y_mm, ad_ref.pen.phys.z_up is False)
 
     dripfeed.feed_sm = _feed_sm_and_emit_position
 else:
@@ -448,7 +460,7 @@ def _apply_pending_live_settings(ad: axidraw.AxiDraw) -> None:
 
 def _run_stage(current_svg: Path, mode: str, job: dict,
                stage: dict | None = None) -> tuple[int, str]:
-    global _current_ad
+    global _current_ad, _current_skew
     ad = _LiveAdjustAxiDraw()
     try:
         ad.plot_setup(str(current_svg))
@@ -463,6 +475,9 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
         _apply_bed_size(ad)
+        skew_machine = config.active_machine()
+        _current_skew = (skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"),
+                         job["paper_width_mm"] / 2, job["paper_height_mm"] / 2)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -483,6 +498,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         except Exception:
             pass
         _current_ad = None
+        _current_skew = None
 
 
 def _run_preview(preview_svg_path: Path, job: dict,
@@ -1589,6 +1605,10 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
+        cal_machine = config.active_machine()
+        axis_skew.apply_axis_skew(
+            cal_svg, cal_machine["skew_deg"], cal_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"])
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration plot")
@@ -1664,6 +1684,10 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             # happened to already be in-bounds ever plotted.
             machine_auto_rotate="portrait",
         )
+        calfile_machine = config.active_machine()
+        axis_skew.apply_axis_skew(
+            scratch, calfile_machine["skew_deg"], calfile_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"])
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration-file plot")
@@ -1947,6 +1971,10 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
                 )
+                stage_machine = config.active_machine()
+                axis_skew.apply_axis_skew(
+                    current_svg, stage_machine["skew_deg"], stage_machine.get("skew_true_axis", "x"),
+                    job["paper_width_mm"], job["paper_height_mm"])
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)
                 state.update_job(

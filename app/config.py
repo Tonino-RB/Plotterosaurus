@@ -209,10 +209,11 @@ MACHINE_WIDTH_MM: float = _MACHINE_PRESETS[1]["width_mm"]
 MACHINE_HEIGHT_MM: float = _MACHINE_PRESETS[1]["height_mm"]
 MACHINE_AUTO_ROTATE: str = "off"
 # How far this machine's two axes are out of square, measured with the
-# calculator in Settings. Stored per machine but not yet consumed anywhere —
-# a future soft-correction step will read it to compensate the artwork before
-# it's plotted, once it's non-zero.
+# calculator in Settings, and which of the two axes is the trustworthy one
+# the other is corrected relative to. Applied to plot geometry in
+# plot_worker/axis_skew once skew_deg is non-zero.
 MACHINE_SKEW_DEG: float = 0.0
+MACHINE_SKEW_TRUE_AXIS: str = "x"
 
 
 def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
@@ -243,13 +244,19 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     except (TypeError, ValueError):
         skew_deg = 0.0
     skew_deg = max(-MACHINE_SKEW_DEG_MAX, min(MACHINE_SKEW_DEG_MAX, skew_deg))
+    # Which axis the skew angle above is measured relative to. Like skew_deg,
+    # a bad value is coerced to the default rather than discarding the
+    # profile over it.
+    skew_true_axis = raw.get("skew_true_axis")
+    if skew_true_axis not in ("x", "y"):
+        skew_true_axis = "x"
     machine_id = str(raw.get("id") or "").strip()
     while not machine_id or machine_id in used_ids:
         machine_id = secrets.token_hex(4)
     used_ids.add(machine_id)
     return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
             "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate,
-            "skew_deg": skew_deg}
+            "skew_deg": skew_deg, "skew_true_axis": skew_true_axis}
 
 
 def _seed_machines(data: dict) -> tuple[list[dict], str]:
@@ -258,7 +265,8 @@ def _seed_machines(data: dict) -> tuple[list[dict], str]:
     they had the custom-bed checkbox on. Their selected plotter_model picks
     which preset starts out active, so an install that never touched the
     custom bed keeps exactly the machine it had."""
-    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "skew_deg": 0.0, **preset}
+    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "skew_deg": 0.0,
+                 "skew_true_axis": "x", **preset}
                 for i, preset in enumerate(_MACHINE_PRESETS)]
     try:
         index = int(data.get("plotter_model")) - 1
@@ -295,13 +303,14 @@ def active_machine() -> dict:
 
 def _sync_active_machine() -> None:
     global ACTIVE_MACHINE_ID, MACHINE_WIDTH_MM, MACHINE_HEIGHT_MM, MACHINE_AUTO_ROTATE
-    global MACHINE_SKEW_DEG
+    global MACHINE_SKEW_DEG, MACHINE_SKEW_TRUE_AXIS
     machine = active_machine()
     ACTIVE_MACHINE_ID = machine["id"]
     MACHINE_WIDTH_MM = machine["width_mm"]
     MACHINE_HEIGHT_MM = machine["height_mm"]
     MACHINE_AUTO_ROTATE = machine["auto_rotate"]
     MACHINE_SKEW_DEG = machine["skew_deg"]
+    MACHINE_SKEW_TRUE_AXIS = machine.get("skew_true_axis", "x")
 
 
 def _load_machines(data: dict) -> None:

@@ -28,13 +28,15 @@ def _physical_forward(mx, my, skew_deg, true_axis, cx, cy):
     """What a machine with this axis defect actually draws in physical
     space when commanded to (mx, my) with no correction applied — the
     ground truth axis_skew.skew_matrix's correction is designed to cancel.
-    Derived independently from the correction formulas themselves."""
-    theta = math.radians(skew_deg)
+    Derived independently from the correction formulas themselves: a pure
+    shear, matching the same model app.js's skewAngleDeg calculator assumes
+    (see tests/test_static_js.py's _diagonals_for_skew)."""
+    tan_t = math.tan(math.radians(skew_deg))
     x, y = mx - cx, my - cy
     if true_axis == "y":
-        phys_x, phys_y = x * math.cos(theta), y + x * math.sin(theta)
+        phys_x, phys_y = x, y + x * tan_t
     else:
-        phys_x, phys_y = x + y * math.sin(theta), y * math.cos(theta)
+        phys_x, phys_y = x + y * tan_t, y
     return phys_x + cx, phys_y + cy
 
 
@@ -216,9 +218,9 @@ def test_full_bleed_excursion_beyond_the_page_matches_closed_form(tmp_path, true
     """For ink that already touches all four edges, correction pivoted at
     the page's center pushes the corrected geometry beyond [0, paper] by
     exactly (perpendicular-dimension / 2) * tan(skew) on the corrected
-    axis, and by the much smaller (dimension / 2) * (sec(skew) - 1) on the
-    true axis (the secant stretch). This is the exact, closed-form size of
-    the residual clipping risk flagged in the plan — not just a claim."""
+    axis, and not at all on the true axis — the shear model leaves it
+    untouched by construction. This is the exact, closed-form size of the
+    residual clipping risk flagged in the plan — not just a claim."""
     paper_w, paper_h = 100.0, 150.0
     src = _full_bleed_svg(tmp_path, paper_w, paper_h)
     filtered = tmp_path / "filtered.svg"
@@ -241,14 +243,14 @@ def test_full_bleed_excursion_beyond_the_page_matches_closed_form(tmp_path, true
         true_axis_vals = [y for _, y in corrected]
         true_lo, true_hi = 0.0, paper_h
         expected_corrected_excursion = (paper_h / 2) * abs(math.tan(theta))
-        expected_true_excursion = (paper_h / 2) * (1 / math.cos(theta) - 1)
+        expected_true_excursion = 0.0
     else:
         corrected_axis_vals = [y for _, y in corrected]
         corrected_lo, corrected_hi = 0.0, paper_h
         true_axis_vals = [x for x, _ in corrected]
         true_lo, true_hi = 0.0, paper_w
         expected_corrected_excursion = (paper_w / 2) * abs(math.tan(theta))
-        expected_true_excursion = (paper_w / 2) * (1 / math.cos(theta) - 1)
+        expected_true_excursion = 0.0
 
     # abs=1e-3: absorbs the same ~1e-4mm vpype measurement noise as above,
     # still three orders of magnitude tighter than anything a pen can draw.

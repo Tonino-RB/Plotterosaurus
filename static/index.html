@@ -260,7 +260,14 @@
             <span class="field-label" data-i18n="settings.machine.skew_label">Skew angle (°)</span>
             <input type="number" id="settings-machine-skew" min="-5" max="5" step="0.001" value="0" />
           </label>
-          <p class="muted" data-i18n="settings.machine.skew_note">How far this machine's two axes are out of square, measured with the calculator below. Stored per machine; not yet applied to plots — a future release will use it to correct the artwork before drawing. Leave at 0 unless you've measured a skew.</p>
+          <div class="field machine-rotate-field">
+            <span class="field-label" data-i18n="settings.machine.skew_true_axis_label">Straight (true) axis</span>
+            <div class="segmented" id="settings-machine-skew-axis">
+              <button type="button" data-val="x" class="active" data-i18n="settings.machine.skew_true_axis_x">X (horizontal)</button>
+              <button type="button" data-val="y" data-i18n="settings.machine.skew_true_axis_y">Y (vertical)</button>
+            </div>
+          </div>
+          <p class="muted" data-i18n="settings.machine.skew_note">How far this machine's two axes are out of square, measured with the calculator below, and which axis is the straight one the other is corrected against. Applied to plots. Leave the angle at 0 unless you've measured a skew.</p>
           <details class="machine-skew-calc">
             <summary data-i18n="settings.machine.skew_calc_summary">Work it out from a test square</summary>
             <p class="muted" data-i18n="settings.machine.skew_calc_note">Plot a square, then measure it corner to corner. Both diagonals equal means no skew and nothing to correct.</p>
