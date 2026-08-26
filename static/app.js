@@ -28,6 +28,7 @@ const jogYReadout = $("jog-y-readout");
 const jogXInput = $("jog-x-input");
 const jogYInput = $("jog-y-input");
 const jogMoveBtn = $("jog-move-btn");
+const jogShortcutBtn = $("jog-shortcut-btn");
 const jogHomeBtn = $("jog-home-btn");
 const jogOriginBtn = $("jog-origin-btn");
 const calibrationFileRow = $("calibration-file-row");
@@ -2867,6 +2868,20 @@ jogMoveBtn.addEventListener("click", () => {
   postJog(parseFloat(jogXInput.value) || 0, parseFloat(jogYInput.value) || 0, false);
 });
 
+// One press to the Move shortcut configured in Settings — an absolute spot
+// measured from the origin, so a second press moves nothing (see
+// plot_worker.manual_jog_shortcut). Whether arriving also declares that spot
+// the new origin is part of that same setting, not decided here.
+jogShortcutBtn.addEventListener("click", async () => {
+  try {
+    const res = await fetch("/pen/jog-shortcut", { method: "POST" });
+    if (!res.ok) throw new Error(await readErr(res));
+    flashJogResult(jogShortcutBtn, true);
+  } catch (e) {
+    flashJogResult(jogShortcutBtn, false);
+  }
+});
+
 jogHomeBtn.addEventListener("click", async () => {
   try {
     const res = await fetch("/pen/jog-home", { method: "POST" });
@@ -3022,6 +3037,7 @@ function applyTopControls() {
   jogXInput.disabled = jogDisabled;
   jogYInput.disabled = jogDisabled;
   jogMoveBtn.disabled = jogDisabled;
+  jogShortcutBtn.disabled = jogDisabled;
   jogHomeBtn.disabled = jogDisabled;
   jogOriginBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
@@ -3268,6 +3284,9 @@ const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
 const settingsPenPosUp = $("settings-pen-pos-up");
 const settingsPenPosDown = $("settings-pen-pos-down");
+const settingsShortcutX = $("settings-shortcut-x");
+const settingsShortcutY = $("settings-shortcut-y");
+const settingsShortcutSetOrigin = $("settings-shortcut-set-origin");
 const settingsMachineSelect = $("settings-machine-select");
 const settingsMachineAdd = $("settings-machine-add");
 const settingsMachineDelete = $("settings-machine-delete");
@@ -3275,6 +3294,15 @@ const settingsMachineName = $("settings-machine-name");
 const settingsMachineWidth = $("settings-machine-width");
 const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
+const settingsMachineSkew = $("settings-machine-skew");
+const settingsMachineSkewAxis = $("settings-machine-skew-axis");
+const settingsMachineSkewMode = $("settings-machine-skew-mode");
+const settingsSkewSide = $("settings-skew-side");
+const settingsSkewD1 = $("settings-skew-d1");
+const settingsSkewD2 = $("settings-skew-d2");
+const settingsSkewApply = $("settings-skew-apply");
+const settingsSkewResult = $("settings-skew-result");
+const settingsSkewClearance = $("settings-skew-clearance");
 const settingsWebhookUrl = $("settings-webhook-url");
 const settingsWebhookOnLayerComplete = $("settings-webhook-on-layer-complete");
 const settingsWebhookOnJobComplete = $("settings-webhook-on-job-complete");
@@ -3457,6 +3485,9 @@ async function openSettings() {
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
     settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
+    settingsShortcutX.value = String(data.move_shortcut_x_mm ?? 6);
+    settingsShortcutY.value = String(data.move_shortcut_y_mm ?? 6);
+    settingsShortcutSetOrigin.checked = !!data.move_shortcut_set_origin;
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
     loadMachineDraft(data);
@@ -3496,6 +3527,9 @@ async function saveSettings() {
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
       display_unit: settingsDisplayUnit.value,
+      move_shortcut_x_mm: parseFloat(settingsShortcutX.value) || 0,
+      move_shortcut_y_mm: parseFloat(settingsShortcutY.value) || 0,
+      move_shortcut_set_origin: settingsShortcutSetOrigin.checked,
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
       webhook_on_job_complete: settingsWebhookOnJobComplete.checked,
@@ -3550,6 +3584,20 @@ settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
   btn.addEventListener("click", () => setSegmentedValue(settingsMachineAutoRotate, btn.dataset.val));
 });
 
+settingsMachineSkewAxis.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    setSegmentedValue(settingsMachineSkewAxis, btn.dataset.val);
+    renderSkewClearance();
+  });
+});
+
+settingsMachineSkewMode.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    setSegmentedValue(settingsMachineSkewMode, btn.dataset.val);
+    renderSkewClearance();
+  });
+});
+
 // ───── Machine profiles ──────────────────────────────────────────────────
 //
 // The modal edits a working copy of the machine list, not the live settings:
@@ -3558,6 +3606,8 @@ settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
 // Save — which is also why deleting a machine asks for no confirmation.
 let machineDraft = [];
 let machineDraftActiveId = "";
+// Mirrors config.MACHINE_SKEW_DEG_MAX; the server clamps to the same bound.
+const SKEW_DEG_MAX = 5;
 
 function machineDraftEntry(id) {
   return machineDraft.find((m) => m.id === id) || null;
@@ -3584,6 +3634,10 @@ function loadMachineFields() {
   settingsMachineWidth.value = machine.width_mm;
   settingsMachineHeight.value = machine.height_mm;
   setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
+  settingsMachineSkew.value = machine.skew_deg ?? 0;
+  setSegmentedValue(settingsMachineSkewAxis, machine.skew_true_axis || "x");
+  setSegmentedValue(settingsMachineSkewMode, machine.skew_mode || "clip");
+  renderSkewClearance();
 }
 
 // Fold whatever is in the fields back into the draft. Runs before anything
@@ -3596,6 +3650,15 @@ function captureMachineFields() {
   machine.width_mm = parseFloat(settingsMachineWidth.value) || machine.width_mm;
   machine.height_mm = parseFloat(settingsMachineHeight.value) || machine.height_mm;
   machine.auto_rotate = getSegmentedValue(settingsMachineAutoRotate, "off");
+  // Not the `|| fallback` the dimensions use: 0 is both falsy and the value
+  // this field holds on every machine that isn't skewed, so that pattern
+  // would make "back to no correction" the one edit you can't save.
+  const skew = parseFloat(settingsMachineSkew.value);
+  machine.skew_deg = Number.isFinite(skew)
+    ? Math.max(-SKEW_DEG_MAX, Math.min(SKEW_DEG_MAX, skew))
+    : 0;
+  machine.skew_true_axis = getSegmentedValue(settingsMachineSkewAxis, "x");
+  machine.skew_mode = getSegmentedValue(settingsMachineSkewMode, "clip");
 }
 
 function loadMachineDraft(data) {
@@ -3635,6 +3698,13 @@ settingsMachineAdd.addEventListener("click", () => {
     width_mm: base ? base.width_mm : 430,
     height_mm: base ? base.height_mm : 297,
     auto_rotate: "off",
+    // Skew belongs to the physical machine, not to the profile it was copied
+    // from, so a new one starts unmeasured even when cloned from a
+    // calibrated entry — inheriting it would silently misdescribe a
+    // different plotter.
+    skew_deg: 0,
+    skew_true_axis: "x",
+    skew_mode: "clip",
   };
   machineDraft.push(machine);
   machineDraftActiveId = machine.id;
@@ -3642,6 +3712,117 @@ settingsMachineAdd.addEventListener("click", () => {
   loadMachineFields();
   settingsMachineName.focus();
   settingsMachineName.select();
+});
+
+// What correcting `skewDeg` costs, and where.
+//
+// Not accuracy: the correction is anchored at the page's origin corner, so
+// artwork is drawn exactly where it was placed, at exactly its size (see
+// app/axis_skew.py). What it costs is travel — a design `span` mm along the
+// driving axis is commanded `span * tan(skew)` further across than it draws,
+// and the driver clips commands at the page edge. `shrinkPct` mirrors
+// axis_skew.absorb_scale for ink filling the whole bed; keeping the result
+// centred costs twice the shrink that shoving it against one edge would, and
+// buys an equal margin at both edges for it.
+function skewClearanceMm(skewDeg, trueAxis, bedWidthMm, bedHeightMm) {
+  const tan = Math.abs(Math.tan(skewDeg * Math.PI / 180));
+  // The overrun runs along the axis that is *not* the true one, and grows
+  // with travel along the true one — so the span and the dimension absorb
+  // scales against swap together with trueAxis.
+  const acrossY = trueAxis === "x";
+  const span = acrossY ? bedHeightMm : bedWidthMm;
+  const across = acrossY ? bedWidthMm : bedHeightMm;
+  const growth = tan * span;
+  return {
+    growth,
+    span,
+    travelAxis: acrossY ? "Y" : "X",
+    // Positive skew shears toward negative coordinates (skew_matrix's -tan
+    // term), so commands overrun the left/top edge; negative, the other one.
+    side: acrossY
+      ? (skewDeg > 0 ? "left" : "right")
+      : (skewDeg > 0 ? "top" : "bottom"),
+    shrinkPct: across + growth > 0 ? (200 * growth) / (across + growth) : 0,
+    marginEachSide: across + growth > 0 ? (across * growth) / (across + growth) : 0,
+  };
+}
+
+// Restate the angle as the one number the user can act on: the margin the
+// artwork has to leave at one page edge. Quoted for the two portrait paper
+// sizes rather than for the bed, since that is the paper in front of them.
+function renderSkewClearance() {
+  const deg = parseFloat(settingsMachineSkew.value);
+  if (!Number.isFinite(deg) || deg === 0) {
+    settingsSkewClearance.textContent = t("settings.machine.skew_clearance_none");
+    return;
+  }
+  const axis = getSegmentedValue(settingsMachineSkewAxis, "x");
+  const a4 = skewClearanceMm(deg, axis, 210, 297);
+  const a3 = skewClearanceMm(deg, axis, 297, 420);
+  // Four literal lookups rather than one key concatenated from .side:
+  // tests/test_i18n.py scrapes literal t() keys out of this file to prove
+  // every string exists in every catalog, and a built-up key hides from it.
+  const edges = {
+    left: t("settings.machine.skew_edge_left"),
+    right: t("settings.machine.skew_edge_right"),
+    top: t("settings.machine.skew_edge_top"),
+    bottom: t("settings.machine.skew_edge_bottom"),
+  };
+  let text = t("settings.machine.skew_clearance", {
+    a4: a4.growth.toFixed(1),
+    a3: a3.growth.toFixed(1),
+    side: edges[a4.side],
+  });
+  if (getSegmentedValue(settingsMachineSkewMode, "clip") === "absorb") {
+    // Shrink to fit's worst case is a bed-filling drawing, so that half stays
+    // measured against the machine.
+    const bed = skewClearanceMm(
+      deg,
+      axis,
+      parseFloat(settingsMachineWidth.value) || 0,
+      parseFloat(settingsMachineHeight.value) || 0,
+    );
+    text += " " + t("settings.machine.skew_clearance_absorb", {
+      pct: bed.shrinkPct.toFixed(2),
+      margin: bed.marginEachSide.toFixed(1),
+    });
+  }
+  settingsSkewClearance.textContent = text;
+}
+
+settingsMachineSkew.addEventListener("input", renderSkewClearance);
+settingsMachineWidth.addEventListener("input", renderSkewClearance);
+settingsMachineHeight.addEventListener("input", renderSkewClearance);
+
+// Turn two measured diagonals into the skew angle. A square commanded with
+// side L comes off a skewed machine as a parallelogram whose diagonals differ
+// by exactly d1² - d2² = 4L²·tan(skew), so the angle falls straight out of
+// what a ruler can tell you. d1 is the top-left/bottom-right diagonal: when it
+// is the longer one the machine drifts +x as it travels down the page, which
+// is the positive direction here.
+function skewAngleDeg(sideMm, d1Mm, d2Mm) {
+  return Math.atan((d1Mm * d1Mm - d2Mm * d2Mm) / (4 * sideMm * sideMm)) * 180 / Math.PI;
+}
+
+settingsSkewApply.addEventListener("click", () => {
+  const side = parseFloat(settingsSkewSide.value);
+  const d1 = parseFloat(settingsSkewD1.value);
+  const d2 = parseFloat(settingsSkewD2.value);
+  if (!(side > 0) || !(d1 > 0) || !(d2 > 0)) {
+    settingsSkewResult.textContent = t("settings.machine.skew_calc_incomplete");
+    settingsSkewResult.className = "error";
+    return;
+  }
+  const deg = skewAngleDeg(side, d1, d2);
+  if (Math.abs(deg) > SKEW_DEG_MAX) {
+    settingsSkewResult.textContent = t("settings.machine.skew_calc_too_large");
+    settingsSkewResult.className = "error";
+    return;
+  }
+  settingsMachineSkew.value = deg.toFixed(3);
+  renderSkewClearance();
+  settingsSkewResult.textContent = t("settings.machine.skew_calc_result", { deg: deg.toFixed(3) });
+  settingsSkewResult.className = "muted";
 });
 
 settingsMachineDelete.addEventListener("click", () => {
@@ -4251,6 +4432,7 @@ I18N.onLanguageChange(() => {
     if (job) updateCard(card, job);
   });
   if (updateStatus) renderUpdateStatus(updateStatus);
+  renderSkewClearance();
 });
 
 function renderUpdateStatus(status) {

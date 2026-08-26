@@ -16,9 +16,11 @@ down, and pin down the two rules that keep the stored numbers honest: nothing
 is recorded unless the hardware actually moved, and nothing is accepted that
 the driver would silently clip.
 """
+import math
+
 import pytest
 
-from app import main, plot_worker, state
+from app import config, main, plot_worker, state
 
 SVG = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape='
        '"http://www.inkscape.org/namespaces/inkscape" width="210mm" '
@@ -299,3 +301,221 @@ def test_set_origin_and_home_are_refused_mid_run(paused):
         plot_worker.set_origin()
     with pytest.raises(RuntimeError, match="only available while idle"):
         plot_worker.manual_jog_home()
+
+
+# Move shortcut ----------------------------------------------------------------
+#
+# The one-press button between Move and Return to Origin. Its whole point is
+# that it names a *position*, not a distance: it may be pressed at any time
+# from anywhere, so what it must guarantee is where the carriage ends up.
+
+
+@pytest.fixture
+def shortcut(monkeypatch):
+    """The shortcut set to 6, 6 with the origin left alone on arrival."""
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", False)
+
+
+def test_shortcut_lands_on_the_configured_spot_whatever_it_started_from(idle, shortcut):
+    plot_worker.manual_jog(40.0, 10.0)
+    idle.clear()
+    plot_worker.manual_jog_shortcut()
+    assert idle == [(-34.0, -4.0)], "the move is the difference, not the shortcut itself"
+    assert triple() == ((0.0, 0.0), (6.0, 6.0), (0.0, 0.0))
+
+
+def test_pressing_the_shortcut_twice_leaves_the_carriage_where_it_was(idle, shortcut):
+    """Absolute, so the second press is a no-op — the failure this rules out
+    is a shortcut that walks another 6, 6 every time it is pressed."""
+    plot_worker.manual_jog_shortcut()
+    plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (6.0, 6.0)
+
+
+def test_the_shortcut_can_declare_where_it_lands_to_be_the_page_corner(idle, monkeypatch):
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", True)
+    plot_worker.manual_jog_shortcut()
+    assert idle == [(6.0, 6.0)]
+    assert triple() == ((6.0, 6.0), (0.0, 0.0), (0.0, 0.0))
+    # With the origin moving too, the shortcut is measured from the new corner
+    # each time, so a second press really does walk another 6, 6.
+    plot_worker.manual_jog_shortcut()
+    assert triple() == ((12.0, 12.0), (0.0, 0.0), (0.0, 0.0))
+
+
+def test_a_shortcut_the_plotter_refused_moves_nothing_including_the_origin(monkeypatch):
+    """set_origin only runs once the move has returned: declaring a page
+    corner the carriage never reached would leave every later plot aimed at
+    a spot the pen is not."""
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", True)
+    monkeypatch.setattr(plot_worker, "_jog_carriage", boom)
+    state.set_active(None)
+    _reset()
+    try:
+        with pytest.raises(RuntimeError, match="Could not connect"):
+            plot_worker.manual_jog_shortcut()
+        assert triple() == ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+    finally:
+        _reset()
+
+
+def test_the_shortcut_is_idle_only(idle, shortcut):
+    job = state.add_job(dict(JOB, svg_id="mo3"))
+    state.update_job(job["job_id"], status="plotting")
+    state.set_active(job["job_id"])
+    try:
+        with pytest.raises(RuntimeError, match="only available while idle"):
+            plot_worker.manual_jog_shortcut()
+        assert idle == []
+    finally:
+        state.set_active(None)
+        state.remove_job(job["job_id"])
+
+
+def test_a_shortcut_past_the_far_edge_is_refused(idle, monkeypatch):
+    """It borrows manual_jog's bed guard rather than carrying its own — the
+    shortcut is stored per install, the bed per machine profile, so a profile
+    switch can leave a perfectly good shortcut pointing off the bed."""
+    bed_w, _ = plot_worker.machine_bounds_mm()
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_X_MM", bed_w + 10.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_Y_MM", 6.0)
+    monkeypatch.setattr(config, "MOVE_SHORTCUT_SET_ORIGIN", False)
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert idle == []
+
+
+def test_the_shortcut_is_never_asked_to_confirm_going_behind_the_origin(idle, shortcut):
+    """config keeps the shortcut non-negative, so the one refusal manual_jog
+    raises that a body-less button could not answer is out of reach — even
+    from a carriage currently sitting behind the origin."""
+    plot_worker.manual_jog(-5.0, -5.0, confirm_below_origin=True)
+    idle.clear()
+    plot_worker.manual_jog_shortcut()
+    assert state.manual_origin_offset() == (6.0, 6.0)
+
+
+# Skew correction --------------------------------------------------------------
+#
+# On a machine with a nonzero axis-skew angle, plotted artwork already gets
+# corrected (axis_skew.apply_axis_skew) — these confirm _jog_carriage gives
+# manual_jog/nudge_origin/manual_jog_home the same correction, while the
+# session state that drives the UI readout stays in true/design-space mm,
+# untouched. Unlike the `idle`/`paused` fixtures above, this can't monkeypatch
+# _jog_carriage away — it needs to see what _jog_carriage itself sends the
+# driver — so it stubs the AxiDraw driver class one level deeper instead.
+
+SKEW_DEG = 5.0
+SKEW_TAN = math.tan(math.radians(SKEW_DEG))
+
+
+class _Pos:
+    xpos = 0.0
+    ypos = 0.0
+
+
+@pytest.fixture
+def skewed(monkeypatch):
+    """An idle plotter on a machine skewed SKEW_DEG about true_axis="x", with
+    the AxiDraw driver stubbed to record every move() call in motor-space mm.
+    Yields the move log."""
+    moves = []
+
+    class FakeAd:
+        def __init__(self):
+            self.options = type("o", (), {})()
+            self.params = type("p", (), {})()
+            self.pen = type("pen", (), {})()
+            self.pen.turtle = _Pos()
+            self.pen.phys = _Pos()
+            self.bounds = [[0.0, 0.0], [1000.0, 1000.0]]
+
+        def interactive(self): pass
+        def connect(self): return True
+        def move(self, dx, dy): moves.append((dx, dy))
+        def disconnect(self): pass
+
+    monkeypatch.setattr(plot_worker.axidraw, "AxiDraw", FakeAd)
+    monkeypatch.setattr(config, "MACHINES", [{
+        "id": "skew-test", "name": "Skewed", "width_mm": 1000.0, "height_mm": 1000.0,
+        "auto_rotate": "off", "skew_deg": SKEW_DEG, "skew_true_axis": "x", "skew_mode": "clip",
+    }])
+    monkeypatch.setattr(config, "ACTIVE_MACHINE_ID", "skew-test")
+    state.set_active(None)
+    _reset()
+    yield moves
+    _reset()
+    state.set_active(None)
+
+
+def test_move_sends_the_driver_a_skew_corrected_command(skewed):
+    """The state a caller reads back (and that the UI/preview show) stays the
+    true mm the caller asked for; only the driver command is sheared."""
+    plot_worker.manual_jog(10.0, 4.0)
+    assert skewed == [(10.0 - 4.0 * SKEW_TAN, 4.0)]
+    assert state.manual_origin_offset() == (10.0, 4.0)
+
+
+def test_a_pure_true_axis_move_needs_no_correction(skewed):
+    """A move entirely along true_axis="x" has nothing to correct — the
+    physical defect only shows up when the other axis is involved."""
+    plot_worker.manual_jog(10.0, 0.0)
+    assert skewed == [(10.0, 0.0)]
+
+
+def test_home_walks_back_the_exact_corrected_move(skewed):
+    """manual_jog then manual_jog_home must send the driver two commands that
+    are exact opposites, in motor space, so the carriage returns to the same
+    physical spot it started from — regardless of skew."""
+    plot_worker.manual_jog(7.0, 3.0)
+    plot_worker.manual_jog_home()
+    assert skewed[1] == (-skewed[0][0], -skewed[0][1])
+    assert state.manual_origin_offset() == (0.0, 0.0)
+
+
+def test_a_nudge_sends_a_corrected_command_and_records_the_true_delta(skewed):
+    (main.UPLOAD_DIR / "sk.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" '
+        'viewBox="0 0 210 297"><path d="M20,20 L80,80" fill="none" stroke="#000"/></svg>')
+    job = state.add_job({
+        "svg_id": "sk", "filename": "sk.svg",
+        "layer_selections": [{"index": 0, "label": "a", "selected": True}],
+        "paper_width_mm": 210.0, "paper_height_mm": 297.0,
+        "margin_top_mm": 0.0, "margin_right_mm": 0.0,
+        "margin_bottom_mm": 0.0, "margin_left_mm": 0.0,
+        "fit_content": False, "transform_scale": 1.0, "transform_rotation_deg": 0.0,
+        "transform_offset_x_mm": 0.0, "transform_offset_y_mm": 0.0,
+        "speed_pendown": 25, "speed_penup": 75, "acceleration": 75,
+        "pen_pos_up": 60, "pen_pos_down": 30, "optimize_svg": False,
+    })
+    try:
+        state.update_job(job["job_id"], status="plotting")
+        state.update_job(job["job_id"], status="awaiting_pen_change")
+        state.set_active(job["job_id"])
+        plot_worker.nudge_origin(2.0, 6.0)
+        assert skewed == [(2.0 - 6.0 * SKEW_TAN, 6.0)]
+        assert state.origin_nudge() == (2.0, 6.0)
+    finally:
+        state.set_active(None)
+        state.remove_job(job["job_id"])
+
+
+def test_the_far_edge_guard_catches_true_position_drift_a_raw_sum_would_miss(skewed):
+    """A nominal position that looks safely inside the bed can still command
+    a motor-space position past it, once the axis defect is folded in — this
+    is what stops the carriage drifting out of its bed "bit by bit". base_x +
+    dx = 950, comfortably under the 1000mm bed on its own — a raw-sum guard
+    would allow this. But true_axis="x" means a large move up (-y) also
+    drags the motor-space x command up by -dy*tan(skew), past the real edge."""
+    state.set_origin_base(900.0, 0.0)
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.manual_jog(50.0, -999.0, confirm_below_origin=True)
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert skewed == []

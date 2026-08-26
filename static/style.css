@@ -944,6 +944,11 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 .machine-picker-actions { display: flex; gap: 0.4rem; }
 .machine-picker-actions button { padding: 0.4rem 0.7rem; }
 
+.machine-skew-calc > summary { cursor: pointer; font-size: 0.85rem; opacity: 0.8; }
+.machine-skew-calc-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+.machine-skew-calc-actions button { padding: 0.4rem 0.7rem; }
+
+.jog-shortcut-btn { padding: 0.3rem 0.5rem; }
 .jog-home-btn { padding: 0.3rem 0.5rem; }
 
 .jog-origin-btn { padding: 0.3rem 0.5rem; display: inline-flex; align-items: center; justify-content: center; }

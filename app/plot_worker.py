@@ -12,7 +12,7 @@ from axidrawinternal import dripfeed
 from plotink import ebb_motion, ebb_serial
 from pyaxidraw import axidraw
 
-from . import camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
+from . import axis_skew, camera, config, ink_cache, notify, optimize_queue, state, svg_complexity, svg_utils, workload
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,22 @@ log = logging.getLogger(__name__)
 # is not a real pen position and must never reach emit_position — the
 # on-card pen cursor and the draw-stream overlay would otherwise jump to it.
 _suppress_position_emit = threading.local()
+# The (skew_deg, true_axis, paper_width_mm, paper_height_mm, absorb_scale) the
+# currently running stage's geometry was corrected with — set by _run_stage.
+# Read here so the live draw-stream keeps showing the pristine, uncorrected
+# path even though the driver is actually plotting axis_skew-corrected
+# geometry: the position read from the driver is run back through the
+# inverse of the same transform before it reaches the on-screen overlay.
+# None outside of a real hardware stage.
+_current_skew: tuple[float, str, float, float, float] | None = None
+
+# The one uniform scale "absorb" mode applies for the whole of the current
+# run (see _absorb_scale_for_run). 1.0 in "clip" mode, at zero skew, and
+# whenever the correction costs the design nothing — which is most of the
+# time. Held for the run rather than recomputed per stage on purpose: a
+# scale sized to each stage's own ink would size each layer differently and
+# pull a multi-layer drawing apart.
+_run_absorb_scale: float = 1.0
 
 if hasattr(dripfeed, "feed_sm"):
     _orig_feed_sm = dripfeed.feed_sm
@@ -40,7 +56,11 @@ if hasattr(dripfeed, "feed_sm"):
         x_in = ad_ref.pen.phys.xpos
         y_in = ad_ref.pen.phys.ypos
         if x_in is not None and y_in is not None:
-            state.emit_position(x_in * 25.4, y_in * 25.4, ad_ref.pen.phys.z_up is False)
+            x_mm, y_mm = x_in * 25.4, y_in * 25.4
+            skew = _current_skew
+            if skew is not None and skew[0]:
+                x_mm, y_mm = axis_skew.inverse_skew_point(x_mm, y_mm, *skew)
+            state.emit_position(x_mm, y_mm, ad_ref.pen.phys.z_up is False)
 
     dripfeed.feed_sm = _feed_sm_and_emit_position
 else:
@@ -448,7 +468,7 @@ def _apply_pending_live_settings(ad: axidraw.AxiDraw) -> None:
 
 def _run_stage(current_svg: Path, mode: str, job: dict,
                stage: dict | None = None) -> tuple[int, str]:
-    global _current_ad
+    global _current_ad, _current_skew
     ad = _LiveAdjustAxiDraw()
     try:
         ad.plot_setup(str(current_svg))
@@ -463,6 +483,9 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
         _apply_bed_size(ad)
+        skew_machine = config.active_machine()
+        _current_skew = (skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"),
+                         job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         # Per-stage speeds (a layer override resolved in _run_job) fall back to
         # the job's document/system speeds — as does a stage-less call such as
         # the calibration side-plot.
@@ -483,6 +506,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         except Exception:
             pass
         _current_ad = None
+        _current_skew = None
 
 
 def _run_preview(preview_svg_path: Path, job: dict,
@@ -754,6 +778,65 @@ def continue_next() -> None:
     raise RuntimeError("Nothing to continue")
 
 
+def _job_ink_bounds(job: dict, svg_path: Path
+                    ) -> tuple[float, float, float, float] | None:
+    """Where the *actual drawn geometry* of the job's selected layers lands on
+    the page, in mm: (left, top, right, bottom), or None when nothing
+    drawable is selected.
+
+    The upload path already primed ink_cache for this file (see main.py), so
+    this is normally a dict lookup rather than a vpype parse — a nudge/jog
+    check that re-measured the whole document itself is the multi-second delay
+    a user feels between clicking "confirm" and the carriage actually moving.
+
+    Deliberately the *un-optimized* source SVG: optimize_svg only simplifies
+    paths, never the extent they cover, so the two agree on everything that
+    matters here and the cache is shared with the placement/jog checks.
+    """
+    layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
+    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
+    return svg_utils.ink_bounds_mm(
+        svg_path, layer_indices,
+        job["paper_width_mm"], job["paper_height_mm"],
+        job["margin_top_mm"], job["margin_right_mm"],
+        job["margin_bottom_mm"], job["margin_left_mm"],
+        job["fit_content"],
+        transform_scale=job.get("transform_scale", 1.0),
+        transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
+        transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
+        transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
+        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
+        rect=cached_rect, rect_known=measured,
+    )
+
+
+def _absorb_scale_for_run(job: dict) -> float:
+    """The uniform scale "absorb" mode applies to everything this run plots.
+
+    Computed once, from every selected layer's ink together, and then reused
+    by each stage and by the calibration side-plots — see _run_absorb_scale
+    for why it must not be recomputed per stage. 1.0 (nothing applied at all)
+    unless the machine is in "absorb" mode with a real skew angle *and* the
+    correction would genuinely push that ink off the page.
+
+    Never raises: a machine that can't be measured falls back to plotting at
+    the declared size, which is what "clip" mode does anyway, rather than
+    failing a job over a fitting nicety.
+    """
+    machine = config.active_machine()
+    if machine.get("skew_mode", "clip") != "absorb" or not machine["skew_deg"]:
+        return 1.0
+    try:
+        ink_bounds = _job_ink_bounds(job, _uploads() / f"{job['svg_id']}.svg")
+    except Exception:
+        log.exception("absorb: could not measure ink for job %s; plotting at declared size",
+                      job["job_id"])
+        return 1.0
+    return axis_skew.absorb_scale(
+        machine["skew_deg"], machine.get("skew_true_axis", "x"), ink_bounds,
+        job["paper_width_mm"], job["paper_height_mm"])
+
+
 def _delta_correction_mm(job: dict, svg_path: Path,
                          dx_mm: float, dy_mm: float) -> tuple[float, float] | None:
     """How far a delta on top of the job's own placement (a manual jog and/or
@@ -783,25 +866,7 @@ def _delta_correction_mm(job: dict, svg_path: Path,
     design that happens to fill its canvas edge-to-edge. Uses the
     *un-optimized* source SVG: optimize_svg only simplifies paths, it never
     changes the actual drawn extent in any way that would matter here."""
-    layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
-    # The upload path already primed ink_cache for this file (see main.py),
-    # so this is a dict lookup, not a vpype parse — a nudge/jog check that
-    # re-measured the whole document itself is the multi-second delay a user
-    # feels between clicking "confirm" and the carriage actually moving.
-    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
-    ink_bounds = svg_utils.ink_bounds_mm(
-        svg_path, layer_indices,
-        job["paper_width_mm"], job["paper_height_mm"],
-        job["margin_top_mm"], job["margin_right_mm"],
-        job["margin_bottom_mm"], job["margin_left_mm"],
-        job["fit_content"],
-        transform_scale=job.get("transform_scale", 1.0),
-        transform_rotation_deg=job.get("transform_rotation_deg", 0.0),
-        transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
-        transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
-        machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-        rect=cached_rect, rect_known=measured,
-    )
+    ink_bounds = _job_ink_bounds(job, svg_path)
     if ink_bounds is None:
         return None  # nothing drawable selected — nothing to protect
     base_left, base_top, base_right, base_bottom = ink_bounds
@@ -841,9 +906,17 @@ def _move_fits_bed(dx_mm: float, dy_mm: float) -> bool:
     Origin all measuring from a place the pen is not. Nothing else bounded
     this: the far-edge guards below are absolute, and below the origin there
     was only a confirmation, so any distance at all could be entered there.
+
+    Measured on the motor-space delta _jog_carriage will actually send (see
+    axis_skew.skew_delta), not the true/physical one this function is called
+    with — on a skewed machine those differ, and it's the motor-space one
+    the driver clips against.
     """
+    machine = config.active_machine()
+    motor_dx, motor_dy = axis_skew.skew_delta(
+        dx_mm, dy_mm, machine["skew_deg"], machine.get("skew_true_axis", "x"))
     bed_w_mm, bed_h_mm = machine_bounds_mm()
-    return abs(dx_mm) <= bed_w_mm and abs(dy_mm) <= bed_h_mm
+    return abs(motor_dx) <= bed_w_mm and abs(motor_dy) <= bed_h_mm
 
 
 def _claim_idle_machine() -> None:
@@ -864,8 +937,19 @@ def _claim_idle_machine() -> None:
 
 
 def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
-    """Physically move the carriage by (dx_mm, dy_mm), pen up, relative to
-    wherever it currently is.
+    """Physically move the carriage by true/physical (dx_mm, dy_mm), pen up,
+    relative to wherever it currently is.
+
+    On a machine with a nonzero axis-skew angle, the raw motor command that
+    lands the pen (dx_mm, dy_mm) away isn't (dx_mm, dy_mm) itself — the two
+    axes aren't perfectly perpendicular, so a move with any component along
+    the "wrong" axis physically drifts along the other one too. Plotted
+    artwork already gets this correction (axis_skew.apply_axis_skew); every
+    caller here (nudge_origin, _undo_origin_nudge, manual_jog,
+    manual_jog_home) needs the same correction, or each jog/nudge silently
+    lands slightly off, drifting the carriage's true position away from what
+    the app's own (uncorrected) bookkeeping believes — bit by bit, until the
+    carriage runs into a real end stop the bookkeeping never saw coming.
 
     connect() resets the driver's position trackers to (0, 0) — which is also
     its software travel-bounds *minimum* — and ad.move() clips any move whose
@@ -876,14 +960,18 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
     goes on reporting the full distance in the jog readout and the preview
     overlay.
 
-    So park each axis at the end of the bounds the move travels *away* from —
-    that leaves the entire bed length available, and since the guards already
-    keep the accumulated offset inside the bed, nothing can be clipped.
-    `pen.turtle` (the target/bounds tracker) and `pen.phys` (what the actual
-    hardware move is computed from) are separate and must be seeded together,
-    or the carriage jumps to the seeded point instead of moving relative to
-    where it really is.
+    So park each axis at the end of the bounds the move travels *away* from
+    — using the corrected motor-space direction, since that's what's actually
+    commanded — that leaves the entire bed length available, and since the
+    guards already keep the accumulated offset inside the bed, nothing can be
+    clipped. `pen.turtle` (the target/bounds tracker) and `pen.phys` (what the
+    actual hardware move is computed from) are separate and must be seeded
+    together, or the carriage jumps to the seeded point instead of moving
+    relative to where it really is.
     """
+    machine = config.active_machine()
+    motor_dx, motor_dy = axis_skew.skew_delta(
+        dx_mm, dy_mm, machine["skew_deg"], machine.get("skew_true_axis", "x"))
     ad = axidraw.AxiDraw()
     ad.interactive()
     ad.options.model = config.PLOTTER_MODEL
@@ -895,10 +983,10 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
     _suppress_position_emit.active = True
     try:
         ad.pen.turtle.xpos = ad.pen.phys.xpos = (
-            ad.bounds[0][0] if dx_mm >= 0 else ad.bounds[1][0])
+            ad.bounds[0][0] if motor_dx >= 0 else ad.bounds[1][0])
         ad.pen.turtle.ypos = ad.pen.phys.ypos = (
-            ad.bounds[0][1] if dy_mm >= 0 else ad.bounds[1][1])
-        ad.move(dx_mm, dy_mm)
+            ad.bounds[0][1] if motor_dy >= 0 else ad.bounds[1][1])
+        ad.move(motor_dx, motor_dy)
     finally:
         _suppress_position_emit.active = False
         # A disconnect() failure here does not mean the move above failed —
@@ -957,9 +1045,19 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
     # _delta_correction_mm — so this only guards the bed's own outer extent,
     # not the paper size on top of it.) A single nudge longer than the bed is
     # refused alongside it, for the different reason in _move_fits_bed.
+    #
+    # base/manual/nudge are all true/physical mm (see _jog_carriage), so on a
+    # skewed machine the real motor-space position they add up to isn't their
+    # raw sum — run that sum through the same correction _jog_carriage would
+    # apply before comparing it to the bed, or a string of individually-fine
+    # nudges could drift the real carriage past an end stop this guard never
+    # sees, because it was checking a position the driver was never asked for.
+    skew_machine = config.active_machine()
+    motor_x, motor_y = axis_skew.skew_delta(
+        base_x + manual_x + new_x, base_y + manual_y + new_y,
+        skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"))
     bed_w_mm, bed_h_mm = machine_bounds_mm()
-    if (base_x + manual_x + new_x > bed_w_mm
-            or base_y + manual_y + new_y > bed_h_mm
+    if (motor_x > bed_w_mm or motor_y > bed_h_mm
             or not _move_fits_bed(dx_mm, dy_mm)):
         raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
     # Measured from the page corner (the declared origin plus the manual jog
@@ -1061,10 +1159,17 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
         # guard has to add the two back together to get a real bed coordinate.
         # Past that edge the carriage hits its own end stops, so it's a hard
         # refusal, as is a move too long for the driver to execute in full
-        # (see _move_fits_bed).
+        # (see _move_fits_bed). base/offset are true/physical mm, so on a
+        # skewed machine the real motor-space position is this sum run
+        # through the same correction _jog_carriage applies — see the same
+        # note in nudge_origin.
         base_x, base_y = state.origin_base()
+        skew_machine = config.active_machine()
+        motor_x, motor_y = axis_skew.skew_delta(
+            base_x + new_x, base_y + new_y,
+            skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"))
         bed_w_mm, bed_h_mm = machine_bounds_mm()
-        if (base_x + new_x > bed_w_mm or base_y + new_y > bed_h_mm
+        if (motor_x > bed_w_mm or motor_y > bed_h_mm
                 or not _move_fits_bed(dx_mm, dy_mm)):
             raise RuntimeError("Jog rejected: would move past the machine bed edge.")
         if (new_x < 0 or new_y < 0) and not confirm_below_origin:
@@ -1101,6 +1206,29 @@ def set_origin() -> None:
         base_x, base_y = state.origin_base()
         state.set_origin_base(base_x + x, base_y + y)
         state.set_manual_origin_offset(0.0, 0.0)
+
+
+def manual_jog_shortcut() -> None:
+    """Walk the carriage to the configured Move-shortcut spot in one press,
+    and — if move_shortcut_set_origin is on — declare that spot the page's
+    top-left corner once it gets there.
+
+    The shortcut names an absolute position: where the carriage should end up
+    relative to the declared origin, not how far to travel. So the move is the
+    difference between it and the offset already accumulated, which makes a
+    second press a no-op rather than a walk twice as far.
+
+    Composed out of manual_jog and set_origin rather than reimplementing
+    either, which is what keeps the guards (idle-only, bed edge) and the
+    move-first-record-second ordering identical to the buttons either side of
+    it — and is why the origin is only declared after the move returns: a
+    refused move must not move the page corner. The shortcut is non-negative
+    (see config), so manual_jog's below-origin confirmation, which this has no
+    way to ask for, is unreachable from here."""
+    x, y = state.manual_origin_offset()
+    manual_jog(config.MOVE_SHORTCUT_X_MM - x, config.MOVE_SHORTCUT_Y_MM - y)
+    if config.MOVE_SHORTCUT_SET_ORIGIN:
+        set_origin()
 
 
 def manual_jog_home() -> None:
@@ -1589,6 +1717,13 @@ def _run_calibration_phase(job_id: str, svg_path: Path) -> None:
             transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
             machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
         )
+        # The run's own absorb scale, not one measured from the calibration
+        # marks: they exist to be read against the artwork they accompany, so
+        # they have to sit in the same frame it does.
+        cal_machine = config.active_machine()
+        axis_skew.apply_axis_skew(
+            cal_svg, cal_machine["skew_deg"], cal_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         stopped, output_svg = _run_stage(cal_svg, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration plot")
@@ -1664,6 +1799,12 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
             # happened to already be in-bounds ever plotted.
             machine_auto_rotate="portrait",
         )
+        # Same frame as the artwork — see _run_calibration_phase.
+        calfile_machine = config.active_machine()
+        axis_skew.apply_axis_skew(
+            scratch, calfile_machine["skew_deg"],
+            calfile_machine.get("skew_true_axis", "x"),
+            job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
         stopped, output_svg = _run_stage(scratch, "plot", job)
     except IndexError:
         log.warning("plotink IndexError during calibration-file plot")
@@ -1884,12 +2025,20 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
         except RuntimeError:
             log.warning("camera: could not start recording for job %s", job_id, exc_info=True)
 
+    # Resolve "absorb" mode's shrink once, here, before any stage renders:
+    # every stage of this run and every calibration side-plot inside it has to
+    # be scaled by the same number or the layers stop registering with each
+    # other. Cleared at the end of the run, so nothing outside one leaks it.
+    global _run_absorb_scale
+    _run_absorb_scale = _absorb_scale_for_run(job) if job else 1.0
+
     # Origin nudge is session-only: whatever the pen-change pauses in this run
     # accumulated is undone as soon as the run ends (completed/cancelled/
     # failed) so the next run starts from the job's own saved offset again.
     try:
         _run_staged_loop_impl(job_id, svg_path, first_mode)
     finally:
+        _run_absorb_scale = 1.0
         _undo_origin_nudge()
         if camera.is_recording_job(job_id):
             camera.stop_recording()
@@ -1947,6 +2096,11 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
                     machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
                 )
+                stage_machine = config.active_machine()
+                axis_skew.apply_axis_skew(
+                    current_svg, stage_machine["skew_deg"],
+                    stage_machine.get("skew_true_axis", "x"),
+                    job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)
                 state.update_job(

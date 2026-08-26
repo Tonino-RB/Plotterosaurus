@@ -75,6 +75,17 @@ _SETTINGS: list[_Setting] = [
     _Setting("optimize_expert_1_cmd_default", str, ""),
     _Setting("optimize_expert_2_cmd_default", str, ""),
     _Setting("optimize_expert_3_cmd_default", str, ""),
+    # Move shortcut: the one-press jog target sitting between Move and Return
+    # to Origin in the toolbar. Absolute — the button walks the carriage *to*
+    # this offset from the declared origin rather than by it, so pressing it
+    # twice lands in the same place — and, with set_origin on, declares that
+    # spot the new page corner once the carriage arrives. Kept non-negative
+    # because the shortcut names a spot on the page, and the page starts at
+    # the origin: a negative target is the one case manual_jog refuses to
+    # carry out without a confirmation the button has no way to ask for.
+    _Setting("move_shortcut_x_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
+    _Setting("move_shortcut_y_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
+    _Setting("move_shortcut_set_origin", bool, False),
     _Setting("display_unit", str, None,
              lambda v: v in ("mm", "cm", "in")),
     # Last update the user chose to skip. The update banner stays hidden while
@@ -195,6 +206,10 @@ _MACHINE_PRESETS: list[dict] = [
 
 _AUTO_ROTATE_VALUES = ("off", "portrait", "landscape")
 _MACHINE_NAME_MAX = 60
+# Axis-skew angle, in degrees, clamped to a range that still describes a
+# machine worth plotting on. A gantry out of square by more than this has a
+# mechanical fault to fix rather than a number to compensate for.
+MACHINE_SKEW_DEG_MAX = 5.0
 
 MACHINES: list[dict] = []
 ACTIVE_MACHINE_ID: str = ""
@@ -209,6 +224,17 @@ MACHINE_CUSTOM_ENABLED: bool = True
 MACHINE_WIDTH_MM: float = _MACHINE_PRESETS[1]["width_mm"]
 MACHINE_HEIGHT_MM: float = _MACHINE_PRESETS[1]["height_mm"]
 MACHINE_AUTO_ROTATE: str = "off"
+# How far this machine's two axes are out of square, measured with the
+# calculator in Settings, and which of the two axes is the trustworthy one
+# the other is corrected relative to. Applied to plot geometry in
+# plot_worker/axis_skew once skew_deg is non-zero.
+MACHINE_SKEW_DEG: float = 0.0
+MACHINE_SKEW_TRUE_AXIS: str = "x"
+# How the plot worker reacts when correcting skew_deg would push ink past
+# the page edge: "clip" leaves geometry at its declared size and accepts
+# the natural clip; "absorb" scales it down uniformly, just enough and only
+# when the measured ink really would overflow. See app.axis_skew.absorb_scale.
+MACHINE_SKEW_MODE: str = "clip"
 
 
 def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
@@ -231,12 +257,34 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     auto_rotate = raw.get("auto_rotate")
     if auto_rotate not in _AUTO_ROTATE_VALUES:
         auto_rotate = "off"
+    # Unlike the bed, a bad skew value is clamped rather than fatal: it's a
+    # measurement on top of an otherwise usable machine, so a nonsense number
+    # is worth ignoring, not worth discarding the whole profile over.
+    try:
+        skew_deg = float(raw.get("skew_deg") or 0.0)
+    except (TypeError, ValueError):
+        skew_deg = 0.0
+    skew_deg = max(-MACHINE_SKEW_DEG_MAX, min(MACHINE_SKEW_DEG_MAX, skew_deg))
+    # Which axis the skew angle above is measured relative to. Like skew_deg,
+    # a bad value is coerced to the default rather than discarding the
+    # profile over it.
+    skew_true_axis = raw.get("skew_true_axis")
+    if skew_true_axis not in ("x", "y"):
+        skew_true_axis = "x"
+    # Which behavior a nonzero skew_deg triggers at plot time. Like
+    # skew_true_axis, a bad value is coerced to the default rather than
+    # discarding the profile over it.
+    skew_mode = raw.get("skew_mode")
+    if skew_mode not in ("clip", "absorb"):
+        skew_mode = "clip"
     machine_id = str(raw.get("id") or "").strip()
     while not machine_id or machine_id in used_ids:
         machine_id = secrets.token_hex(4)
     used_ids.add(machine_id)
     return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
-            "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate}
+            "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate,
+            "skew_deg": skew_deg, "skew_true_axis": skew_true_axis,
+            "skew_mode": skew_mode}
 
 
 def _seed_machines(data: dict) -> tuple[list[dict], str]:
@@ -245,7 +293,8 @@ def _seed_machines(data: dict) -> tuple[list[dict], str]:
     they had the custom-bed checkbox on. Their selected plotter_model picks
     which preset starts out active, so an install that never touched the
     custom bed keeps exactly the machine it had."""
-    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", **preset}
+    machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "skew_deg": 0.0,
+                 "skew_true_axis": "x", "skew_mode": "clip", **preset}
                 for i, preset in enumerate(_MACHINE_PRESETS)]
     try:
         index = int(data.get("plotter_model")) - 1
@@ -282,11 +331,15 @@ def active_machine() -> dict:
 
 def _sync_active_machine() -> None:
     global ACTIVE_MACHINE_ID, MACHINE_WIDTH_MM, MACHINE_HEIGHT_MM, MACHINE_AUTO_ROTATE
+    global MACHINE_SKEW_DEG, MACHINE_SKEW_TRUE_AXIS, MACHINE_SKEW_MODE
     machine = active_machine()
     ACTIVE_MACHINE_ID = machine["id"]
     MACHINE_WIDTH_MM = machine["width_mm"]
     MACHINE_HEIGHT_MM = machine["height_mm"]
     MACHINE_AUTO_ROTATE = machine["auto_rotate"]
+    MACHINE_SKEW_DEG = machine["skew_deg"]
+    MACHINE_SKEW_TRUE_AXIS = machine.get("skew_true_axis", "x")
+    MACHINE_SKEW_MODE = machine.get("skew_mode", "clip")
 
 
 def _load_machines(data: dict) -> None:

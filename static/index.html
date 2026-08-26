@@ -78,6 +78,7 @@
         </div>
         <div class="jog-actions">
           <button id="jog-move-btn" type="button" class="jog-action-btn" data-i18n="controls.move" title="Move" aria-label="Move" data-i18n-title="controls.move" data-i18n-aria-label="controls.move">Move</button>
+          <button id="jog-shortcut-btn" type="button" class="jog-action-btn jog-shortcut-btn" title="Move to shortcut" aria-label="Move to shortcut" data-i18n-title="a11y.jog_shortcut" data-i18n-aria-label="a11y.jog_shortcut">⇱</button>
           <button id="jog-home-btn" type="button" class="jog-action-btn jog-home-btn" title="Return to Origin" aria-label="Return to origin" data-i18n-title="a11y.jog_home" data-i18n-aria-label="a11y.jog_home">⌂</button>
           <button id="jog-origin-btn" type="button" class="jog-action-btn jog-origin-btn" title="Set origin here" aria-label="Set origin here" data-i18n-title="a11y.jog_set_origin" data-i18n-aria-label="a11y.jog_set_origin">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -256,6 +257,74 @@
             </div>
           </div>
           <p class="muted" data-i18n="settings.machine.note">Measure what the pen can actually reach — the bed is the whole machine here, and anything past it is clipped at plot time. The presets are only starting points: rename, resize or delete any of them.</p>
+          <label class="field">
+            <span class="field-label" data-i18n="settings.machine.skew_label">Skew angle (°)</span>
+            <input type="number" id="settings-machine-skew" min="-5" max="5" step="0.001" value="0" />
+          </label>
+          <p class="muted" id="settings-skew-clearance"></p>
+          <div class="field machine-rotate-field">
+            <span class="field-label" data-i18n="settings.machine.skew_true_axis_label">Straight (true) axis</span>
+            <div class="segmented" id="settings-machine-skew-axis">
+              <button type="button" data-val="x" class="active" data-i18n="settings.machine.skew_true_axis_x">X (horizontal)</button>
+              <button type="button" data-val="y" data-i18n="settings.machine.skew_true_axis_y">Y (vertical)</button>
+            </div>
+          </div>
+          <p class="muted" data-i18n="settings.machine.skew_note">How far this machine's two axes are out of square, measured with the calculator below, and which axis is the straight one the other is corrected against. Applied to plots. Leave the angle at 0 unless you've measured a skew.</p>
+          <div class="field machine-rotate-field">
+            <span class="field-label" data-i18n="settings.machine.skew_mode_label">When correction would clip</span>
+            <div class="segmented" id="settings-machine-skew-mode">
+              <button type="button" data-val="clip" class="active" data-i18n="settings.machine.skew_mode_clip">Clip</button>
+              <button type="button" data-val="absorb" data-i18n="settings.machine.skew_mode_absorb">Shrink to fit</button>
+            </div>
+          </div>
+          <p class="muted" data-i18n="settings.machine.skew_mode_note">Correcting a nonzero skew angle can push ink past the page edge. Clip keeps artwork at its declared size and lets that ink clip. Shrink to fit reserves room and scales artwork down so nothing clips.</p>
+          <details class="machine-skew-calc">
+            <summary data-i18n="settings.machine.skew_calc_summary">Work it out from a test square</summary>
+            <p class="muted" data-i18n="settings.machine.skew_calc_note">Plot a square, then measure it corner to corner. Both diagonals equal means no skew and nothing to correct.</p>
+            <div class="form-row">
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.skew_side">Side (mm)</span>
+                <input type="number" id="settings-skew-side" min="1" step="0.1" placeholder="100" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.skew_d1">↘ Top-left to bottom-right (mm)</span>
+                <input type="number" id="settings-skew-d1" min="0" step="0.1" />
+              </label>
+              <label class="field">
+                <span class="field-label" data-i18n="settings.machine.skew_d2">↙ Top-right to bottom-left (mm)</span>
+                <input type="number" id="settings-skew-d2" min="0" step="0.1" />
+              </label>
+            </div>
+            <div class="machine-skew-calc-actions">
+              <button type="button" id="settings-skew-apply" class="neutral" data-i18n="settings.machine.skew_apply">Use this angle</button>
+              <span id="settings-skew-result" class="muted"></span>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="card-section collapsed" data-section="shortcut">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="settings.shortcut.title">Shortcuts</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <span class="field-label" data-i18n="settings.shortcut.move_label">Move shortcut (mm from the origin)</span>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label">X</span>
+              <input type="number" id="settings-shortcut-x" min="0" max="2000" step="0.1" value="6" />
+            </label>
+            <label class="field">
+              <span class="field-label">Y</span>
+              <input type="number" id="settings-shortcut-y" min="0" max="2000" step="0.1" value="6" />
+            </label>
+          </div>
+          <label class="inline-check">
+            <input type="checkbox" id="settings-shortcut-set-origin" />
+            <span data-i18n="settings.shortcut.set_origin">Set the origin there once the carriage arrives</span>
+          </label>
+          <p class="muted" data-i18n="settings.shortcut.note">Where the ⇱ button beside Move sends the carriage. The position is measured from the origin, not from where the pen currently sits, so pressing it twice changes nothing — unless the box above is ticked, which declares each arrival the new page corner.</p>
         </div>
       </section>
 

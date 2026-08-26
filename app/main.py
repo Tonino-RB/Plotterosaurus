@@ -963,6 +963,15 @@ class MachineProfile(BaseModel):
     width_mm: float = Field(..., gt=0)
     height_mm: float = Field(..., gt=0)
     auto_rotate: Literal["off", "portrait", "landscape"] = "off"
+    # Measured axis-skew angle and which axis it's measured relative to.
+    # Persisted per machine and applied to plot geometry — see
+    # config.MACHINE_SKEW_DEG / app.axis_skew.
+    skew_deg: float = Field(0.0, ge=-config.MACHINE_SKEW_DEG_MAX,
+                            le=config.MACHINE_SKEW_DEG_MAX)
+    skew_true_axis: Literal["x", "y"] = "x"
+    # How the plot worker reacts if correcting skew_deg would push ink past
+    # the page edge — see config.MACHINE_SKEW_MODE / app.axis_skew.
+    skew_mode: Literal["clip", "absorb"] = "clip"
 
 
 class SettingsUpdate(BaseModel):
@@ -981,6 +990,9 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
     display_unit: Literal["mm", "cm", "in"] | None = None
+    move_shortcut_x_mm: float | None = Field(None, ge=0.0, le=2000.0)
+    move_shortcut_y_mm: float | None = Field(None, ge=0.0, le=2000.0)
+    move_shortcut_set_origin: bool | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
     # of a named machine now, not a global override (see config.MACHINES).
@@ -2013,6 +2025,20 @@ def api_pen_jog_home():
     return pen_jog_home()
 
 
+@app.post("/pen/jog-shortcut")
+def pen_jog_shortcut():
+    try:
+        plot_worker.manual_jog_shortcut()
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/pen/jog-shortcut", dependencies=[Depends(require_api_key)])
+def api_pen_jog_shortcut():
+    return pen_jog_shortcut()
+
+
 @app.post("/pen/set-origin")
 def pen_set_origin():
     try:
@@ -2146,6 +2172,9 @@ def _settings_payload() -> dict:
     snap["machine_auto_rotate"] = config.MACHINE_AUTO_ROTATE
     snap["machine_width_mm"] = config.MACHINE_WIDTH_MM
     snap["machine_height_mm"] = config.MACHINE_HEIGHT_MM
+    snap["machine_skew_deg"] = config.MACHINE_SKEW_DEG
+    snap["machine_skew_true_axis"] = config.MACHINE_SKEW_TRUE_AXIS
+    snap["machine_skew_mode"] = config.MACHINE_SKEW_MODE
     return snap
 
 
