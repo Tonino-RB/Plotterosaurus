@@ -707,6 +707,19 @@ def manual_motors(enable: bool) -> None:
         ad.disconnect()
 
 
+def _disable_motors_after_completion(job_id: str) -> None:
+    """Cut torque to the XY steppers once a plot has finished and walked itself
+    back to the origin, so they don't sit warm holding position (the job's
+    disable_motors_on_complete option). Best-effort: the plot is already done,
+    so a failure here is logged, never allowed to flip the job to `failed`.
+    Called from _run_staged_loop's finally, after the run and any origin-nudge
+    walk-back have released the serial port (_current_ad is None)."""
+    try:
+        manual_motors(enable=False)
+    except Exception:
+        log.exception("could not disable motors after job %s completed", job_id)
+
+
 # Public control API -------------------------------------------------------
 
 def start_plot() -> None:
@@ -763,6 +776,36 @@ def resume_active() -> None:
     # paused-first dispatch picks up this job and routes it to _resume_job,
     # which skips re-planning and jumps into the staged loop.
     start_plot()
+
+
+REDRAW_MAX_MM = 2000  # fat-finger guard; the real ceiling is the start of the current stage
+
+
+def redraw_recent(distance_mm: float) -> dict:
+    """From a pause, rewind the resume point by ``distance_mm`` of pen-down
+    travel and let the plot carry on — so the last stretch of drawing is traced
+    again (a skipped line, a pen that ran dry) and the plot still finishes.
+
+    Only valid while the job is ``paused`` with a resume SVG on disk (the state
+    a Pause click or the EBB button leaves it in). The resume SVG is rewritten
+    before the plot is un-paused: the worker only re-reads it once status flips
+    back to plotting.
+    """
+    job = state.active_job()
+    if job is None or job["status"] != "paused" or not job.get("resume_path"):
+        raise RuntimeError("No paused job to redraw")
+    removed_mm = svg_utils.rewind_resume_distance(Path(job["resume_path"]), distance_mm)
+    # We're about to re-trace ground the run already banked, so the wall-clock
+    # progress bar would read past 100%. Stretch its denominator by the same
+    # share of the estimate the redraw covers.
+    dp_mm = (job.get("distance_pendown_m") or 0.0) * 1000
+    est = job.get("estimated_total_seconds")
+    if dp_mm > 0 and est:
+        extra = est * removed_mm / dp_mm
+        state.update_job(job["job_id"],
+                         progress_total_seconds=(job.get("progress_total_seconds") or 0.0) + extra)
+    resume_active()
+    return {"requested_mm": distance_mm, "rewound_mm": round(removed_mm, 1)}
 
 
 def continue_next() -> None:
@@ -2031,6 +2074,7 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
     # other. Cleared at the end of the run, so nothing outside one leaks it.
     global _run_absorb_scale
     _run_absorb_scale = _absorb_scale_for_run(job) if job else 1.0
+    want_motor_disable = bool(job and job.get("disable_motors_on_complete"))
 
     # Origin nudge is session-only: whatever the pen-change pauses in this run
     # accumulated is undone as soon as the run ends (completed/cancelled/
@@ -2042,6 +2086,15 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
         _undo_origin_nudge()
         if camera.is_recording_job(job_id):
             camera.stop_recording()
+        # Last thing, after the nudge walk-back above has done any moving of its
+        # own: cut motor torque if the job asked for it and actually finished
+        # (not on cancel/failure). The job record is gone by now when
+        # delete_on_complete also fired — that only happens on the completed
+        # path, so a missing job means completed.
+        if want_motor_disable:
+            done = state.get_job(job_id)
+            if done is None or done.get("status") == "completed":
+                _disable_motors_after_completion(job_id)
 
 
 def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:

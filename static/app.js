@@ -15,6 +15,9 @@ const resumeBtn = $("resume-btn");
 const continueBtn = $("continue-btn");
 const calibrateBtn = $("calibrate-btn");
 const cancelBtn = $("cancel-btn");
+const redrawControls = $("redraw-controls");
+const redrawBtn = $("redraw-btn");
+const redrawMm = $("redraw-mm");
 const penUpBtn = $("pen-up-btn");
 const penDownBtn = $("pen-down-btn");
 const motorsEnableBtn = $("motors-enable-btn");
@@ -95,6 +98,7 @@ let appSettings = {
   plotter_model: 2,
   pause_between_layers_default: true,
   delete_on_complete_default: false,
+  disable_motors_on_complete_default: false,
   speed_pendown_default: 25,
   speed_penup_default: 75,
   acceleration_default: 75,
@@ -278,8 +282,10 @@ function buildJobPayload(svg, fallbackName) {
       // forces optimize_svg off for it; the card locks the panel to match.
       pre_optimized: !!svg.pre_optimized,
       layer_selections,
+      layer_mode: appSettings.layer_mode_default || "layer",
       pause_between_layers: appSettings.pause_between_layers_default,
       delete_on_complete: appSettings.delete_on_complete_default,
+      disable_motors_on_complete: appSettings.disable_motors_on_complete_default,
       paper_width_mm: w,
       paper_height_mm: h,
       margin_top_mm: 0,
@@ -539,6 +545,127 @@ libraryCleanConfirm.addEventListener("click", async () => {
     libraryCleanMessage.className = "error";
   } finally {
     libraryCleanCancel.disabled = false;
+  }
+});
+
+// ───── Calibration library ────────────────────────────────────────────────
+//
+// A second, read-only tab in the same panel: standalone test SVGs kept in
+// the calibration/ folder (managed on disk, not from this UI), for trying
+// paper/pen alignment before committing to a real job. Picking one copies it
+// into the uploads folder under a fresh id (see main._promote_calibration_file)
+// so the rest of the pipeline treats it exactly like any other drawing — the
+// original file in calibration/ is never touched, so it's immune to Clean up
+// the same way any file outside the uploads folder would be.
+
+const libraryTabs = $("library-tabs");
+const calibrationList = $("calibration-list");
+let calibrationFiles = null; // null = not yet fetched
+let calibrationBusy = false;
+
+libraryTabs.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-tab]");
+  if (!btn) return;
+  const isCal = btn.dataset.tab === "calibration";
+  for (const b of libraryTabs.querySelectorAll("button")) {
+    b.classList.toggle("active", b === btn);
+  }
+  libraryList.hidden = isCal;
+  calibrationList.hidden = !isCal;
+  libraryUsage.hidden = isCal;
+  libraryCleanBtn.hidden = isCal;
+  if (isCal && calibrationFiles === null) loadCalibrationLibrary();
+});
+
+async function loadCalibrationLibrary() {
+  try {
+    const res = await fetch("/calibration/files");
+    if (!res.ok) return;
+    const body = await res.json();
+    calibrationFiles = body.files || [];
+    renderCalibrationLibrary();
+  } catch (e) {
+    console.warn("calibration library fetch failed", e);
+  }
+}
+
+function renderCalibrationLibrary() {
+  calibrationList.innerHTML = "";
+  const files = calibrationFiles || [];
+  if (!files.length) {
+    const li = document.createElement("li");
+    li.className = "library-empty";
+    li.textContent = t("library.calibration_empty");
+    calibrationList.appendChild(li);
+    return;
+  }
+  for (const filename of files) {
+    const li = document.createElement("li");
+    li.dataset.filename = filename;
+    li.innerHTML = `
+      <span class="library-name" title="${escapeHtml(filename)}">${escapeHtml(filename)}</span>
+      <span class="library-actions">
+        <button type="button" class="neutral calibration-run" title="${escapeHtml(t("library.calibration_run_title"))}">${escapeHtml(t("library.calibration_run"))}</button>
+        <button type="button" class="icon-btn calibration-add" title="${escapeHtml(t("library.add"))}" data-i18n-title="library.add">+</button>
+      </span>`;
+    calibrationList.appendChild(li);
+  }
+}
+
+async function resolveCalibrationSvg(filename) {
+  const res = await fetch("/calibration/select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+  });
+  if (!res.ok) throw new Error(await readErr(res));
+  return res.json();
+}
+
+// Both actions resolve the file into a job the same way library-add does —
+// reusing an already-queued ready job for it rather than piling up duplicates.
+async function jobForCalibrationFile(filename) {
+  const svg = await resolveCalibrationSvg(filename);
+  const existing = serverState.queue.find((j) => j.svg_id === svg.id && j.status === "ready");
+  return existing || createJobFromSvg(svg);
+}
+
+calibrationList.addEventListener("click", async (ev) => {
+  const li = ev.target.closest("li[data-filename]");
+  if (!li || calibrationBusy) return;
+  const filename = li.dataset.filename;
+  calibrationBusy = true;
+  try {
+    if (ev.target.closest(".calibration-add")) {
+      const job = await jobForCalibrationFile(filename);
+      const card = queueList.querySelector(`[data-id="${job.job_id}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        card.classList.add("card-highlight");
+        setTimeout(() => card.classList.remove("card-highlight"), 1200);
+      }
+    } else if (ev.target.closest(".calibration-run")) {
+      const job = await jobForCalibrationFile(filename);
+      // Jump the queue: this is meant to run right now, ahead of anything
+      // already waiting. A plot already in progress can't be interrupted —
+      // start_plot() below is a no-op then, and this job simply runs next.
+      const moveRes = await fetch(`/jobs/${job.job_id}/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_index: 0 }),
+      });
+      if (!moveRes.ok) throw new Error(await readErr(moveRes));
+      const startRes = await fetch("/queue/start", { method: "POST" });
+      if (!startRes.ok) throw new Error(await readErr(startRes));
+    }
+    uploadError.hidden = true;
+    uploadError.textContent = "";
+  } catch (e) {
+    uploadError.textContent = t("library.action_failed", { message: e.message });
+    uploadError.hidden = false;
+  } finally {
+    calibrationBusy = false;
+    loadLibrary(); // the promoted copy now counts toward library usage
   }
 });
 
@@ -1030,6 +1157,7 @@ function createCardForJob(job) {
   card.querySelector(".pen-pos-down").value = job.pen_pos_down ?? appSettings.pen_pos_down_default;
   card.querySelector(".pause-between-layers").checked = job.pause_between_layers;
   card.querySelector(".delete-on-complete").checked = !!job.delete_on_complete;
+  card.querySelector(".disable-motors-on-complete").checked = !!job.disable_motors_on_complete;
   card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
   card.querySelector(".record-plot").checked = !!job.record_plot;
   card.querySelector(".record-plot-options").hidden = !job.record_plot;
@@ -1050,6 +1178,12 @@ function createCardForJob(job) {
 
   // Clicking the card header toggles expansion; action buttons stop propagation.
   card.querySelector(".job-card-head").addEventListener("click", () => toggleCardExpanded(card));
+  // Double-click the title to rename the job — which also renames the drawing
+  // in the library (see update_job). Only while the job isn't running.
+  card.querySelector(".job-filename").addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    startTitleRename(card);
+  });
   card.querySelectorAll(".job-actions button").forEach((b) =>
     b.addEventListener("click", (e) => e.stopPropagation())
   );
@@ -1086,6 +1220,7 @@ function createCardForJob(job) {
   });
   card.querySelector(".pause-between-layers").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".delete-on-complete").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".disable-motors-on-complete").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".record-plot").addEventListener("change", () => {
     card.querySelector(".record-plot-options").hidden = !card.querySelector(".record-plot").checked;
     queueCardUpdate(card);
@@ -1120,6 +1255,16 @@ function createCardForJob(job) {
       card.querySelector(".optimize-beginner-panel").hidden = btn.dataset.val === "expert";
       card.querySelector(".optimize-expert-panel").hidden = btn.dataset.val !== "expert";
       queueCardUpdate(card);
+    });
+  });
+  // Layer grouping mode: server re-partitions the drawing and rebuilds the
+  // rows; the broadcast re-renders. Sent on its own so the whole form isn't
+  // re-read (a mode switch already invalidates the estimate server-side).
+  card.querySelector(".layer-mode").querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("active")) return;
+      setSegmentedValue(card.querySelector(".layer-mode"), btn.dataset.val);
+      queueCardUpdate(card, { layer_mode: btn.dataset.val });
     });
   });
   for (const n of [1, 2, 3]) {
@@ -1404,6 +1549,42 @@ function toggleCardExpanded(card) {
 
 // ───── Per-card updates ──────────────────────────────────────────────────
 
+// Swap the card title for an input. Commit -> PATCH {name}, which the server
+// also writes through to the linked library row (see update_job).
+function startTitleRename(card) {
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job || !["ready", "completed", "failed", "cancelled"].includes(job.status)) return;
+  const titleEl = card.querySelector(".job-filename");
+  if (!titleEl) return;
+  const was = job.name || job.filename || "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "job-filename job-filename-edit";
+  input.value = was;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) return;
+    done = true;
+    const val = input.value.trim();
+    const span = document.createElement("span");
+    span.className = "job-filename";
+    input.replaceWith(span);
+    const fresh = serverState.queue.find((j) => j.job_id === card.dataset.id) || job;
+    updateCard(card, fresh);
+    if (save && val && val !== was) queueCardUpdate(card, { name: val });
+  };
+  input.addEventListener("blur", () => commit(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    else if (e.key === "Escape") { input.value = was; input.blur(); }
+  });
+}
+
 function updateCard(card, job) {
   const ctx = cardCtx.get(job.job_id) || {};
 
@@ -1419,10 +1600,13 @@ function updateCard(card, job) {
 
   const filename = job.filename || "upload.svg";
   const titleEl = card.querySelector(".job-filename");
-  titleEl.textContent = job.name || filename;
-  // The name is truncated with an ellipsis in CSS so it can never push the
-  // controls out of the card; hover restores it in full.
-  titleEl.title = job.name || filename;
+  // Null while a rename input is in its place — leave it be until the commit.
+  if (titleEl) {
+    titleEl.textContent = job.name || filename;
+    // The name is truncated with an ellipsis in CSS so it can never push the
+    // controls out of the card; hover restores it in full.
+    titleEl.title = job.name || filename;
+  }
 
   const paperLabel = formatPaperLabel(job);
   const stageCount = job.stages?.length || 0;
@@ -1557,6 +1741,8 @@ function updateCard(card, job) {
   }
 
   cardCtx.set(job.job_id, ctx);
+
+  setSegmentedValue(card.querySelector(".layer-mode"), job.layer_mode || "layer");
 
   // Preview + layers + stages + plot-info
   if (ctx.svg) {
@@ -2206,6 +2392,9 @@ function renderLayers(card, job) {
   if (!ctx || !ctx.svg) return;
   ensureSvgColors(card, ctx);
   const ul = card.querySelector(".layers");
+  // A rename is in progress — leave the list alone so a state broadcast
+  // doesn't yank the input out from under the cursor. The commit re-renders.
+  if (ul.querySelector(".layer-label-edit")) return;
   // Layer entries carry their own metadata (label, type) plus an optional
   // `selected` flag; entries with selected===false stay in the list so the
   // metadata is preserved across toggles. The array order IS the plot/
@@ -2235,7 +2424,7 @@ function renderLayers(card, job) {
       <label>
         <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} />
         ${swatch}
-        <span class="layer-label">${escapeHtml(displayLabel)}${
+        <span class="layer-label" title="${t("a11y.rename_layer")}" data-i18n-title="a11y.rename_layer">${escapeHtml(displayLabel)}${
           penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
         }</span>
       </label>
@@ -2289,6 +2478,46 @@ function renderLayers(card, job) {
       if (!btn || btn.disabled) return;
       const delta = btn.classList.contains("layer-move-up") ? -1 : 1;
       moveLayer(card, parseInt(btn.dataset.index), delta);
+    });
+    // Double-click a row's name to rename it. Display-only: label lives on the
+    // layer_selections entry and just re-labels the row / its plot stage.
+    ul.addEventListener("dblclick", (e) => {
+      const span = e.target.closest(".layer-label");
+      if (!span || ul.querySelector(".layer-label-edit")) return;
+      e.preventDefault();
+      const li = span.closest("li");
+      const idx = parseInt(li.querySelector("input[type=checkbox]").dataset.index);
+      const cur = serverState.queue.find((j) => j.job_id === card.dataset.id);
+      if (!cur || !["ready", "completed", "failed", "cancelled"].includes(cur.status)) return;
+      const entry = (cur.layer_selections || []).find((s) => s.index === idx);
+      if (!entry) return;
+      const wasLabel = entry.label || "";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "layer-label-edit";
+      input.value = wasLabel;
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const commit = (save) => {
+        if (done) return;
+        done = true;
+        const val = input.value.trim();
+        input.remove();
+        const next = (cur.layer_selections || []).map((s) =>
+          s.index === idx ? { ...s, label: save && val ? val : wasLabel } : s);
+        cur.layer_selections = next;
+        renderLayers(card, { ...job, layer_selections: next });
+        if (save && val && val !== wasLabel) queueCardUpdate(card, { layer_selections: next });
+      };
+      input.addEventListener("blur", () => commit(true));
+      input.addEventListener("click", (ev) => ev.stopPropagation());
+      input.addEventListener("keydown", (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") { ev.preventDefault(); input.blur(); }
+        else if (ev.key === "Escape") { input.value = wasLabel; input.blur(); }
+      });
     });
     ul.dataset.wired = "1";
   }
@@ -2497,6 +2726,7 @@ async function sendCardUpdate(card, pending) {
     updates.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
     updates.pause_between_layers = card.querySelector(".pause-between-layers").checked;
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
+    updates.disable_motors_on_complete = card.querySelector(".disable-motors-on-complete").checked;
     updates.record_plot = card.querySelector(".record-plot").checked;
     updates.record_mode = card.querySelector(".record-mode").value;
     updates.record_timelapse_interval_s = parseFloat(card.querySelector(".record-timelapse-interval").value) || 5;
@@ -2568,6 +2798,10 @@ async function sendCardUpdate(card, pending) {
       const key = `optimize_expert_${n}_cmd`;
       if (key in updates) appSettings[`${key}_default`] = updates[key];
     }
+    // A rename writes through to the library entry, and a mode switch swaps
+    // the job's linked svg — neither reaches the browser via the state
+    // broadcast (upload metadata isn't broadcast), so re-pull the library.
+    if ("name" in updates || "layer_mode" in updates) loadLibrary();
   } catch (e) {
     cardUpdateUnconfirmed.delete(card.dataset.id);
     if (errEl) {
@@ -2673,6 +2907,30 @@ resumeBtn.addEventListener("click", () => postAction("/queue/resume"));
 continueBtn.addEventListener("click", () => postAction("/queue/continue"));
 calibrateBtn.addEventListener("click", () => postAction("/queue/calibrate"));
 cancelBtn.addEventListener("click", () => postAction("/queue/cancel"));
+
+// Redraw the last N mm of pen-down travel: rewind the paused plot's resume
+// point and let it carry on, re-tracing a skipped line or a stretch a dry pen
+// missed. Only shown while paused (see applyTopControls).
+async function postRedraw(distanceMm) {
+  try {
+    const res = await fetch("/queue/redraw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ distance_mm: distanceMm }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+}
+redrawBtn.addEventListener("click", () => postRedraw(parseFloat(redrawMm.value) || 50));
+redrawControls.querySelectorAll(".redraw-preset").forEach((b) => {
+  b.addEventListener("click", () => {
+    redrawMm.value = b.dataset.mm;
+    postRedraw(parseFloat(b.dataset.mm));
+  });
+});
 
 // Standalone calibration-test library (calibration/ folder): only relevant
 // at a pen-change pause. Re-fetched once per pause so a file dropped in
@@ -3001,6 +3259,7 @@ function applyTopControls() {
   pausePenUpBtn.textContent = penUpPending ? t("controls.pausing_pen_up") : t("controls.pause_pen_up");
   pausePenUpBtn.disabled = penUpPending;
   resumeBtn.hidden = !active || status !== "paused";
+  redrawControls.hidden = !(active && status === "paused");
   continueBtn.hidden = !(active && status === "awaiting_pen_change");
   // Calibration button: visible only at a pen-change pause when this job has
   // at least one type='calibration' layer. Label switches singular/plural.
@@ -3279,6 +3538,7 @@ const settingsApiKey = $("settings-api-key");
 const settingsApiKeyCopy = $("settings-api-key-copy");
 const settingsPauseBetweenLayers = $("settings-pause-between-layers");
 const settingsDeleteOnComplete = $("settings-delete-on-complete");
+const settingsDisableMotorsOnComplete = $("settings-disable-motors-on-complete");
 const settingsSpeedPendown = $("settings-speed-pendown");
 const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
@@ -3367,6 +3627,7 @@ function applyAppSettings(data) {
     plotter_model: data.plotter_model ?? appSettings.plotter_model,
     pause_between_layers_default: data.pause_between_layers_default ?? appSettings.pause_between_layers_default,
     delete_on_complete_default: data.delete_on_complete_default ?? appSettings.delete_on_complete_default,
+    disable_motors_on_complete_default: data.disable_motors_on_complete_default ?? appSettings.disable_motors_on_complete_default,
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
     acceleration_default: data.acceleration_default ?? appSettings.acceleration_default,
@@ -3473,6 +3734,7 @@ async function openSettings() {
     settingsApiKey.value = data.api_key || "";
     settingsPauseBetweenLayers.checked = data.pause_between_layers_default ?? true;
     settingsDeleteOnComplete.checked = data.delete_on_complete_default ?? false;
+    settingsDisableMotorsOnComplete.checked = data.disable_motors_on_complete_default ?? false;
     settingsSpeedPendown.value = String(data.speed_pendown_default ?? 25);
     settingsSpeedPenup.value = String(data.speed_penup_default ?? 75);
     settingsAccel.value = String(data.acceleration_default ?? 75);
@@ -3515,6 +3777,7 @@ async function saveSettings() {
       active_machine_id: machineDraftActiveId,
       pause_between_layers_default: settingsPauseBetweenLayers.checked,
       delete_on_complete_default: settingsDeleteOnComplete.checked,
+      disable_motors_on_complete_default: settingsDisableMotorsOnComplete.checked,
       speed_pendown_default: parseInt(settingsSpeedPendown.value),
       speed_penup_default: parseInt(settingsSpeedPenup.value),
       acceleration_default: parseInt(settingsAccel.value),
@@ -3570,6 +3833,7 @@ for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-
 function resetSettingsJobOptions() {
   settingsPauseBetweenLayers.checked = true;
   settingsDeleteOnComplete.checked = false;
+  settingsDisableMotorsOnComplete.checked = false;
 }
 
 function resetSettingsPenHeight() {

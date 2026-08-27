@@ -57,7 +57,17 @@ _SETTINGS: list[_Setting] = [
     _Setting("plotter_model", int, int(os.environ.get("PLOTTER_MODEL", "2")),
              lambda v: 1 <= v <= 8),
     _Setting("pause_between_layers_default", bool, True),
+    # How a newly created job derives its layer rows / plot stages from the SVG:
+    # "layer" (Inkscape layers, the default), "group" (children of the root
+    # group), or "pen" (one stage per stroke width + colour). Only seeds new
+    # jobs — each job card can switch mode while it's being prepared.
+    _Setting("layer_mode_default", str, "layer",
+             lambda v: v in ("layer", "group", "pen")),
     _Setting("delete_on_complete_default", bool, False),
+    # Default for a new job's "disable motors on completion" checkbox — kill
+    # torque to the XY steppers once a plot finishes back at the origin so they
+    # don't sit warm holding position. Set in Settings → Job Options.
+    _Setting("disable_motors_on_complete_default", bool, False),
     _Setting("speed_pendown_default", int, 25, lambda v: 1 <= v <= 110),
     _Setting("speed_penup_default", int, 75, lambda v: 1 <= v <= 110),
     _Setting("acceleration_default", int, 75, lambda v: 1 <= v <= 100),

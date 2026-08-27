@@ -216,33 +216,43 @@ def _vpype_layer_id(label: str, elem_id: str, order: int) -> int:
     return int(m.group()) or 1
 
 
-def normalize_layer_structure(svg_path: Path) -> bool:
-    """Rewrite ``svg_path`` in place so every drawable top-level element is
-    addressable as a layer and no two layers collapse into one inside vpype.
-    Returns True if anything was changed.
+def decollide_layer_labels(root) -> bool:
+    """Prefix a free integer onto any top-level layer whose label would resolve
+    to the same vpype layer id as an earlier one (see _vpype_layer_id).
+    Mutates ``root`` in place; returns True if any label was rewritten.
 
-    Fixes two failure modes, both of them silent before this ran:
-
-    - Content outside any layer. Only ``inkscape:groupmode="layer"`` groups
-      count as layers, so a loose <path>, or the plain <g> groups written by
-      producers other than Inkscape, had no layer index at all: not listable,
-      not selectable, no pen or speed of its own, just force-fed into the
-      first stage (see _top_level_orphans and filter_to_layers). Plain groups
-      are promoted in place — they are layers in every sense but the attribute
-      their producer didn't write — and whatever is left over is collected
-      into one LAYERLESS_LABEL layer at the position it was found.
-
-    - Labels that map to the same vpype layer id. vpype takes that id from the
-      first digit group of the label (see _vpype_layer_id), so "Contours"
-      (no digits, so its position: 1) and "Layer 1" both resolve to 1 and get
-      merged into a single layer by "Optimize SVG". reconcile_layers restores
-      the layer *count* afterwards, but by then the geometry has been folded
-      into the wrong layer: one plots nothing, the other plots twice. Colliding
-      layers get a free id prefixed onto their label, which wins because vpype
-      reads the first digit group.
+    vpype takes that id from the first digit group of the label, so "Contours"
+    (no digits, so its position: 1) and "Layer 1" both resolve to 1 and get
+    merged into a single layer by "Optimize SVG". reconcile_layers restores the
+    layer *count* afterwards, but by then the geometry has been folded into the
+    wrong layer: one plots nothing, the other plots twice. The prefixed id wins
+    because vpype reads the first digit group.
     """
-    tree = etree.parse(str(svg_path))
-    root = tree.getroot()
+    # Two passes: every layer that claims an id first keeps it, so the
+    # replacement ids handed out below can't collide with a later layer's own.
+    layers = _top_level_layers(root)
+    ids = [_vpype_layer_id(g.get(LABEL_ATTR) or "", g.get("id") or "", order)
+           for order, g in enumerate(layers, start=1)]
+    taken: set[int] = set()
+    clashing = []
+    for g, lid in zip(layers, ids):
+        if lid in taken:
+            clashing.append(g)
+        else:
+            taken.add(lid)
+    for g in clashing:
+        free = next(i for i in itertools.count(1) if i not in taken)
+        taken.add(free)
+        g.set(LABEL_ATTR, f"{free} {g.get(LABEL_ATTR) or ''}".strip())
+    return bool(clashing)
+
+
+def normalize_layer_root(root) -> bool:
+    """Make ``root`` usable as a layered document: promote plain top-level <g>
+    to Inkscape layers, gather loose drawable content into one LAYERLESS_LABEL
+    layer, de-collide labels. Mutates ``root`` in place; returns True if
+    anything changed. See normalize_layer_structure for the why.
+    """
     changed = False
 
     for pos, el in enumerate([e for e in root if e.tag == LAYER_TAG], start=1):
@@ -263,25 +273,32 @@ def normalize_layer_structure(svg_path: Path) -> bool:
             wrapper.append(el)
         changed = True
 
-    # Resolve id collisions in two passes: every layer that claims an id first
-    # keeps it, so the replacement ids handed out below can't collide with a
-    # later layer's own id.
-    layers = _top_level_layers(root)
-    ids = [_vpype_layer_id(g.get(LABEL_ATTR) or "", g.get("id") or "", order)
-           for order, g in enumerate(layers, start=1)]
-    taken: set[int] = set()
-    clashing = []
-    for g, lid in zip(layers, ids):
-        if lid in taken:
-            clashing.append(g)
-        else:
-            taken.add(lid)
-    for g in clashing:
-        free = next(i for i in itertools.count(1) if i not in taken)
-        taken.add(free)
-        g.set(LABEL_ATTR, f"{free} {g.get(LABEL_ATTR) or ''}".strip())
+    if decollide_layer_labels(root):
         changed = True
+    return changed
 
+
+def normalize_layer_structure(svg_path: Path) -> bool:
+    """Rewrite ``svg_path`` in place so every drawable top-level element is
+    addressable as a layer and no two layers collapse into one inside vpype.
+    Returns True if anything was changed.
+
+    Fixes two failure modes, both of them silent before this ran:
+
+    - Content outside any layer. Only ``inkscape:groupmode="layer"`` groups
+      count as layers, so a loose <path>, or the plain <g> groups written by
+      producers other than Inkscape, had no layer index at all: not listable,
+      not selectable, no pen or speed of its own, just force-fed into the
+      first stage (see _top_level_orphans and filter_to_layers). Plain groups
+      are promoted in place — they are layers in every sense but the attribute
+      their producer didn't write — and whatever is left over is collected
+      into one LAYERLESS_LABEL layer at the position it was found.
+
+    - Labels that map to the same vpype layer id (see decollide_layer_labels).
+    """
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    changed = normalize_layer_root(root)
     if changed:
         tree.write(str(svg_path), xml_declaration=True, encoding="utf-8")
     return changed
@@ -307,6 +324,35 @@ def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path,
         for el in _top_level_orphans(root):
             el.getparent().remove(el)
     tree.write(str(out_path), xml_declaration=True, encoding="utf-8")
+
+
+def rewind_resume_distance(resume_path: Path, distance_mm: float) -> float:
+    """Move a resume SVG's plot point back by ``distance_mm`` of pen-down travel.
+
+    A paused plot's resume SVG carries a ``<plotdata>`` element whose
+    ``pause_dist`` attribute is the pen-down travel completed at the pause, an
+    integer in µm (see axidrawinternal.plot_status.ResumeStatus). ``res_plot``
+    replays from that distance to the end. Subtracting from it makes the replay
+    start earlier, so the last ``distance_mm`` of drawing is traced again before
+    the plot carries on — the recovery move for a skipped line or a pen that ran
+    dry mid-stroke.
+
+    Clamped at 0 (never negative: a negative ``pause_dist`` is the "no resume
+    data" flag and would stop res_plot from seeding the pen position). At 0,
+    res_plot's crop keeps the whole current stage — the honest result when the
+    ask reaches past the start of the layer being plotted.
+
+    Only ``pause_dist`` is touched; ``pause_ref`` (the record of the original
+    pause) and ``last_x``/``last_y`` (the physical pen position, which res_plot
+    travels from) are left alone. Returns the mm actually removed.
+    """
+    tree = etree.parse(str(resume_path))
+    node = tree.xpath("//*[local-name()='plotdata']")[0]
+    old_um = int(node.get("pause_dist"))
+    new_um = max(0, old_um - round(distance_mm * 1000))
+    node.set("pause_dist", str(new_um))
+    tree.write(str(resume_path), xml_declaration=True, encoding="utf-8")
+    return (old_um - new_um) / 1000
 
 
 def reconcile_layers(reference_path: Path, target_path: Path) -> None:

@@ -24,9 +24,9 @@ from pydantic import BaseModel, Field, ValidationError
 from lxml import etree
 
 from . import (
-    camera, config, ink_cache, notify, optimize_expert_queue, optimize_queue,
-    placement, plan_queue, plot_worker, state, svg_complexity, svg_optimize,
-    svg_utils, updates,
+    camera, config, ink_cache, layer_group, notify, optimize_expert_queue,
+    optimize_queue, placement, plan_queue, plot_worker, state, svg_complexity,
+    svg_optimize, svg_utils, updates,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -135,6 +135,7 @@ def _normalize_svg_layers(path: Path, info: dict) -> dict:
 _WORKER_ERROR_CODES: dict[str, str] = {
     "No active plot": "no_active_plot",
     "No paused job to resume": "no_paused_job",
+    "No paused job to redraw": "redraw_not_paused",
     "No resume data": "no_resume_data",
     "Nothing to continue": "nothing_to_continue",
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
@@ -551,6 +552,58 @@ def _promote_optimized(svg_id: str) -> str:
     return new_id
 
 
+_LAYER_MODE_SUFFIX = {"group": "groups", "pen": "pen width"}
+
+
+def _regroup_svg(source_svg_id: str, mode: str) -> tuple[str, dict]:
+    """Resolve the svg_id + parsed layers a job should use for ``layer_mode``.
+
+    ``layer`` — the upload itself. ``group`` / ``pen`` — a standalone
+    re-partitioned copy under its own id (see app/layer_group.py), reused
+    across mode switches and hidden from the library like a promoted optimize
+    copy. Falls back to the source whenever re-grouping would change nothing or
+    yields nothing usable.
+    """
+    src = UPLOAD_DIR / f"{source_svg_id}.svg"
+    if mode not in ("group", "pen"):
+        return source_svg_id, svg_utils.parse_layers(src)
+
+    # "group" only bites when a single wrapper group hides the real structure —
+    # otherwise it is identical to "layer" and a copy would be dead weight.
+    if mode == "group":
+        try:
+            root = etree.parse(str(src)).getroot()
+        except Exception:
+            raise _coded(422, "invalid_svg")
+        if len([el for el in root if el.tag == svg_utils.LAYER_TAG]) != 1:
+            return source_svg_id, svg_utils.parse_layers(src)
+
+    tag = f"{source_svg_id}:mode:{mode}"
+    for cand, meta in state.all_upload_meta().items():
+        if meta.get("derived_from") == tag and (UPLOAD_DIR / f"{cand}.svg").is_file():
+            return cand, svg_utils.parse_layers(UPLOAD_DIR / f"{cand}.svg")
+
+    new_id = uuid.uuid4().hex[:8]
+    dst = UPLOAD_DIR / f"{new_id}.svg"
+    try:
+        layer_group.regroup(src, mode, dst)
+    except layer_group.RegroupError as e:
+        dst.unlink(missing_ok=True)
+        raise _coded(422, "regroup_failed", reason=str(e))
+    info = svg_utils.parse_layers(dst)
+    # Nothing usable, or "group" that just re-labelled a lone layer — not worth
+    # a standalone copy; behave like "layer".
+    if not info["layers"] or (mode == "group" and len(info["layers"]) < 2):
+        dst.unlink(missing_ok=True)
+        return source_svg_id, svg_utils.parse_layers(src)
+    parent = state.get_upload_meta(source_svg_id) or {}
+    stem = Path(parent.get("filename") or f"{source_svg_id}.svg").stem
+    state.set_upload_meta(new_id, f"{stem} ({_LAYER_MODE_SUFFIX[mode]}).svg",
+                          derived_from=tag)
+    ink_cache.request(dst)
+    return new_id, info
+
+
 @app.post("/library/select")
 def library_select(req: LibrarySelect):
     """Resolve a library row into something a job can be built from.
@@ -927,8 +980,13 @@ class JobCreate(_OptimizeCreateFields):
     paper_size_name: str | None = None
     paper_name: str | None = None
     layer_selections: list[dict]
+    # How the layer rows / plot stages are derived from the SVG. "group" and
+    # "pen" re-partition the drawing into a standalone copy the job points at
+    # (see _regroup_svg); switchable per job while it's being prepared.
+    layer_mode: Literal["layer", "group", "pen"] = "layer"
     pause_between_layers: bool = True
     delete_on_complete: bool = False
+    disable_motors_on_complete: bool = False
     paper_width_mm: float
     paper_height_mm: float
     margin_top_mm: float = 0.0
@@ -977,7 +1035,9 @@ class MachineProfile(BaseModel):
 class SettingsUpdate(BaseModel):
     plotter_model: int | None = Field(None, ge=1, le=8)
     pause_between_layers_default: bool | None = None
+    layer_mode_default: Literal["layer", "group", "pen"] | None = None
     delete_on_complete_default: bool | None = None
+    disable_motors_on_complete_default: bool | None = None
     speed_pendown_default: int | None = Field(None, ge=1, le=110)
     speed_penup_default: int | None = Field(None, ge=1, le=110)
     acceleration_default: int | None = Field(None, ge=1, le=100)
@@ -1070,8 +1130,8 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "margin_top_mm", "margin_right_mm", "margin_bottom_mm", "margin_left_mm",
     "transform_scale", "transform_rotation_deg",
     "transform_offset_x_mm", "transform_offset_y_mm",
-    "fit_content", "pause_between_layers",
-    "delete_on_complete", "record_plot", "layer_selections",
+    "fit_content", "pause_between_layers", "layer_mode",
+    "delete_on_complete", "disable_motors_on_complete", "record_plot", "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
@@ -1115,11 +1175,13 @@ def _clamp_job_fields(d: dict,
 
 class JobUpdate(_OptimizeOptionalFields):
     layer_selections: list[dict] | None = None
+    layer_mode: Literal["layer", "group", "pen"] | None = None
     name: str | None = None
     paper_size_name: str | None = None
     paper_name: str | None = None
     pause_between_layers: bool | None = None
     delete_on_complete: bool | None = None
+    disable_motors_on_complete: bool | None = None
     paper_width_mm: float | None = None
     paper_height_mm: float | None = None
     margin_top_mm: float | None = None
@@ -1154,6 +1216,16 @@ def create_job(req: JobCreate):
     # queue a double-optimization either.
     if payload.get("pre_optimized"):
         payload["optimize_svg"] = False
+    # Non-default layer_mode: point the job at a re-partitioned copy and take
+    # its rows from that (see _regroup_svg). source_svg_id remembers the upload
+    # so a later mode switch always re-groups from the original.
+    payload["source_svg_id"] = payload["svg_id"]
+    if payload.get("layer_mode", "layer") != "layer":
+        sid, info = _regroup_svg(payload["svg_id"], payload["layer_mode"])
+        payload["svg_id"] = sid
+        payload["layer_selections"] = [
+            {"index": l["index"], "label": l["label"]} for l in info["layers"]
+        ]
     _clamp_job_fields(payload, payload.get("paper_width_mm"),
                       payload.get("paper_height_mm"))
     job = state.add_job(payload)
@@ -1193,6 +1265,19 @@ def update_job(job_id: str, req: JobUpdate):
     # asks for — see JobCreate.pre_optimized.
     if j.get("pre_optimized"):
         updates["optimize_svg"] = False
+    # Switching layer_mode re-points the job at a re-partitioned copy (or back
+    # at the original for "layer") and rebuilds its rows from that. The
+    # estimate reset + re-enqueue below is exactly what this needs.
+    new_mode = updates.get("layer_mode")
+    if new_mode is not None and new_mode != j.get("layer_mode", "layer"):
+        src_id = j.get("source_svg_id", j["svg_id"])
+        sid, info = _regroup_svg(src_id, new_mode)
+        updates["svg_id"] = sid
+        updates["source_svg_id"] = src_id
+        if "layer_selections" not in updates:
+            updates["layer_selections"] = [
+                {"index": l["index"], "label": l["label"]} for l in info["layers"]
+            ]
     _clamp_job_fields(updates, paper_w, paper_h)
     # Editing a finished/cancelled job makes it runnable again, so the user can
     # re-plot without any extra step. One already sitting at `ready` is already
@@ -1214,6 +1299,12 @@ def update_job(job_id: str, req: JobUpdate):
     })
     _persist_expert_defaults(updates)
     state.update_job(job_id, **updates)
+    # Renaming a job also renames the drawing it came from in the library, so
+    # the two stay in step. Upload metadata isn't part of the state broadcast —
+    # the browser re-pulls /library after a name PATCH.
+    if "name" in updates:
+        src_id = updates.get("source_svg_id") or j.get("source_svg_id", j["svg_id"])
+        state.rename_upload(src_id, updates["name"] or j.get("filename") or f"{src_id}.svg")
     fresh = state.get_job(job_id)
     plan_queue.cancel(job_id)
     optimize_queue.enqueue_for_job(fresh)
@@ -1405,8 +1496,10 @@ class ApiJobMetadata(_OptimizeOptionalFields):
     # Display-only: the paper stock, shown under the preview next to the size.
     paper: ApiPaper | None = None
     layers: list[ApiLayer] = Field(default_factory=list)
+    layer_mode: Literal["layer", "group", "pen"] | None = None
     pause_between_layers: bool | None = None
     delete_on_complete: bool | None = None
+    disable_motors_on_complete: bool | None = None
     speed_pendown: int | None = None
     speed_penup: int | None = None
     acceleration: int | None = None
@@ -1496,6 +1589,13 @@ async def api_create_job(file: UploadFile = File(...),
     # clean up.
     optimize_queue.enqueue_for_upload(svg_id)
 
+    # Non-default layer_mode: swap in a re-partitioned copy the same way
+    # create_job does, so layer_selections below are built from its layers.
+    source_svg_id = svg_id
+    layer_mode = meta.layer_mode or "layer"
+    if layer_mode != "layer":
+        svg_id, info = _regroup_svg(source_svg_id, layer_mode)
+
     paper_width_mm, paper_height_mm, paper_name = _resolve_paper(
         meta.paper_size, info.get("width_mm"), info.get("height_mm"),
     )
@@ -1535,6 +1635,8 @@ async def api_create_job(file: UploadFile = File(...),
 
     job_payload = {
         "svg_id": svg_id,
+        "source_svg_id": source_svg_id,
+        "layer_mode": layer_mode,
         "filename": file.filename or "upload.svg",
         "name": meta.name,
         "paper_size_name": paper_name,
@@ -1542,6 +1644,8 @@ async def api_create_job(file: UploadFile = File(...),
         "layer_selections": layer_selections,
         "pause_between_layers": pick(meta.pause_between_layers, config.PAUSE_BETWEEN_LAYERS_DEFAULT),
         "delete_on_complete": pick(meta.delete_on_complete, config.DELETE_ON_COMPLETE_DEFAULT),
+        "disable_motors_on_complete": pick(meta.disable_motors_on_complete,
+                                           config.DISABLE_MOTORS_ON_COMPLETE_DEFAULT),
         "paper_width_mm": paper_width_mm,
         "paper_height_mm": paper_height_mm,
         "margin_top_mm": 0.0,
@@ -1632,6 +1736,20 @@ def api_queue_resume():
     except RuntimeError as e:
         raise HTTPException(409, str(e))
     return {"ok": True}
+
+
+class RedrawRequest(BaseModel):
+    distance_mm: float
+
+
+@app.post("/api/v1/queue/redraw", dependencies=[Depends(require_api_key)])
+def api_queue_redraw(req: RedrawRequest):
+    if not 0 < req.distance_mm <= plot_worker.REDRAW_MAX_MM:
+        raise HTTPException(400, "distance_mm out of range")
+    try:
+        return plot_worker.redraw_recent(req.distance_mm)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/v1/queue/continue", dependencies=[Depends(require_api_key)])
@@ -1804,6 +1922,16 @@ def resume_queue():
     return {"ok": True}
 
 
+@app.post("/queue/redraw")
+def redraw_queue(req: RedrawRequest):
+    if not 0 < req.distance_mm <= plot_worker.REDRAW_MAX_MM:
+        raise _coded(400, "redraw_distance_out_of_range")
+    try:
+        return plot_worker.redraw_recent(req.distance_mm)
+    except RuntimeError as e:
+        raise _worker_error(e)
+
+
 @app.post("/queue/continue")
 def continue_queue():
     try:
@@ -1834,6 +1962,70 @@ def calibrate_queue():
 @app.get("/calibration/files")
 def list_calibration_files():
     return {"files": plot_worker.list_calibration_files()}
+
+
+class CalibrationSelect(BaseModel):
+    filename: str
+
+
+def _promote_calibration_file(filename: str) -> str:
+    """Copy a standalone calibration/ SVG into the uploads folder as a source
+    of its own, so the normal job-creation pipeline — which only ever resolves
+    a job's document as ``uploads/{svg_id}.svg`` — can build a job from it.
+    Same idea as _promote_optimized, but the parent lives outside UPLOAD_DIR
+    entirely rather than being a cached derivative of one of its own rows.
+
+    Copied once, not per selection: a previous promotion of the same file is
+    reused if its upload is still there.
+    """
+    tag = f"calibration:{filename}"
+    for candidate, info in state.all_upload_meta().items():
+        if (info.get("derived_from") == tag
+                and (UPLOAD_DIR / f"{candidate}.svg").is_file()):
+            return candidate
+
+    if filename != Path(filename).name:
+        raise _coded(400, "invalid_calibration_filename")
+    src = config.CALIBRATION_DIR / filename
+    if not src.is_file():
+        raise _coded(404, "calibration_file_not_found")
+
+    new_id = uuid.uuid4().hex[:8]
+    dst = UPLOAD_DIR / f"{new_id}.svg"
+    try:
+        shutil.copyfile(src, dst)
+    except OSError:
+        log.exception("calibration: could not copy %s", src.name)
+        raise _coded(500, "calibration_promote_failed")
+
+    state.set_upload_meta(new_id, filename, derived_from=tag)
+    ink_cache.request(dst)
+    return new_id
+
+
+@app.post("/calibration/select")
+def calibration_select(req: CalibrationSelect):
+    """Resolve a calibration-library file into something a job can be built
+    from — the same shape /library/select returns, so the browser builds a
+    job from it exactly the way it builds one from an upload or a library row.
+    """
+    svg_id = _promote_calibration_file(req.filename)
+    path = UPLOAD_DIR / f"{svg_id}.svg"
+    try:
+        info = svg_utils.parse_layers(path)
+    except Exception:
+        raise _coded(422, "invalid_svg")
+    if not info["layers"]:
+        raise _coded(400, "no_layers")
+
+    meta = state.get_upload_meta(svg_id) or {}
+    ink_cache.request(path)
+    return {
+        "id": svg_id,
+        "filename": meta.get("filename") or req.filename,
+        "pre_optimized": False,
+        **info,
+    }
 
 
 class CalibrateFileRequest(BaseModel):

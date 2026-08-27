@@ -105,8 +105,9 @@ _svgs: dict[str, dict] = {}
 # an 8-character uuid fragment.
 #
 # `derived_from` marks a copy promoted out of a parent's .opt.svg (see
-# main._promote_optimized), so a second promotion of the same parent reuses it
-# instead of copying the file again.
+# main._promote_optimized) or out of a calibration/ file (see
+# main._promote_calibration_file, tagged "calibration:<filename>"), so a
+# second promotion of the same parent reuses it instead of copying again.
 _uploads_meta: dict[str, dict] = {}
 _active_id: str | None = None
 # Sticky version of _active_id: sees the same job IDs but never reverts to
@@ -593,6 +594,17 @@ def get_upload_meta(svg_id: str) -> dict | None:
 
 def all_upload_meta() -> dict[str, dict]:
     return {k: dict(v) for k, v in _uploads_meta.items()}
+
+
+def rename_upload(svg_id: str, filename: str) -> None:
+    """Change only a library entry's display name, keeping uploaded_at,
+    pre_optimized and derived_from (set_upload_meta resets all three). No-op if
+    the entry is unknown."""
+    e = _uploads_meta.get(svg_id)
+    if e is None:
+        return
+    e["filename"] = filename
+    _persist()
 
 
 def drop_upload_meta(svg_id: str) -> None:

@@ -404,3 +404,80 @@ def test_clean_reclaims_what_job_deletion_now_leaves(client, uploaded):
     assert body["removed"] == 1
     assert body["freed_bytes"] > 0
     assert not (main.UPLOAD_DIR / f"{svg_id}.svg").exists()
+
+
+# Renaming a job renames its drawing ------------------------------------------
+
+def test_renaming_a_job_renames_the_library_row(client, uploaded):
+    """A job's title and its source drawing's library name are meant to stay in
+    step — renaming the job writes through to the upload metadata."""
+    svg_id = uploaded("sketch.svg")
+    job = client.post("/jobs", json=_job_payload(svg_id)).json()
+    try:
+        res = client.patch(f"/jobs/{job['job_id']}", json={"name": "Harbour at dusk"})
+        assert res.status_code == 200, res.text
+        assert res.json()["name"] == "Harbour at dusk"
+        assert _entry(client, svg_id)["filename"] == "Harbour at dusk"
+        # And a fresh selection of that row now offers the new name.
+        again = client.post("/library/select", json={"svg_id": svg_id})
+        assert again.json()["filename"] == "Harbour at dusk"
+    finally:
+        state.remove_job(job["job_id"])
+
+
+# layer_mode ---------------------------------------------------------------
+
+WRAPPED_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" '
+    b'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+    b'width="160mm" height="90mm" viewBox="0 0 160 90">'
+    b'<g id="wrap" transform="translate(6,3)">'
+    b'<g inkscape:label="ridges"><path fill="none" stroke="#111" d="M0,0 L120,0"/></g>'
+    b'<g inkscape:label="valleys"><path fill="none" stroke="#111" d="M0,20 L120,20"/></g>'
+    b'<g inkscape:label="horizon"><path fill="none" stroke="#111" d="M0,40 L120,40"/></g>'
+    b'</g></svg>')
+
+
+@pytest.fixture
+def wrapped(client):
+    res = client.post("/upload", files={"file": ("scene.svg", WRAPPED_SVG, "image/svg+xml")})
+    assert res.status_code == 200, res.text
+    svg_id = res.json()["id"]
+    yield svg_id
+    for leftover in main.UPLOAD_DIR.glob("*.svg"):
+        leftover.unlink(missing_ok=True)
+    for sid in list(state.all_upload_meta()):
+        state.drop_upload_meta(sid)
+
+
+def test_group_mode_job_points_at_a_hidden_derived_copy(client, wrapped):
+    payload = _job_payload(wrapped, layer_mode="group",
+                           layer_selections=[{"index": 0, "label": "wrap"}])
+    job = client.post("/jobs", json=payload).json()
+    try:
+        assert job["layer_mode"] == "group"
+        assert job["source_svg_id"] == wrapped
+        assert job["svg_id"] != wrapped
+        assert [s["label"] for s in job["layer_selections"]] == \
+            ["ridges", "valleys", "horizon"]
+        meta = state.get_upload_meta(job["svg_id"])
+        assert meta["derived_from"] == f"{wrapped}:mode:group"
+    finally:
+        state.remove_job(job["job_id"])
+
+
+def test_switching_mode_back_to_layer_restores_the_source(client, wrapped):
+    job = client.post("/jobs", json=_job_payload(
+        wrapped, layer_mode="group",
+        layer_selections=[{"index": 0, "label": "wrap"}])).json()
+    try:
+        derived = job["svg_id"]
+        assert derived != wrapped
+        back = client.patch(f"/jobs/{job['job_id']}", json={"layer_mode": "layer"}).json()
+        assert back["svg_id"] == wrapped
+        assert len(back["layer_selections"]) == 1
+        # Flipping back to group reuses the copy rather than making a new one.
+        again = client.patch(f"/jobs/{job['job_id']}", json={"layer_mode": "group"}).json()
+        assert again["svg_id"] == derived
+    finally:
+        state.remove_job(job["job_id"])

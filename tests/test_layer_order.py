@@ -116,9 +116,8 @@ def test_the_reorder_is_written_back_before_the_patch_is_sent():
 
 # What the machine actually does ---------------------------------------------
 
-def _job(layers, separate=True):
+def _job(layers):
     return {"job_id": "j", "svg_id": "s", "layer_selections": layers,
-            "layer_mode": "separate" if separate else "combined",
             "speed_pendown": 25, "speed_penup": 75, "acceleration": 75}
 
 

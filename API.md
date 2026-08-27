@@ -71,8 +71,10 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   },
 
   // Job options — omit any field to inherit the corresponding server default.
+  "layer_mode": "layer",             // "layer" | "group" | "pen". How the drawing is split into rows / plot stages: Inkscape layers, children of the root group, or one stage per stroke width + colour. "group"/"pen" re-partition the SVG into a standalone copy the job points at; layers[] overrides below are keyed against that copy's layers.
   "pause_between_layers": true,       // Pause for pen change between selected layers (multi-layer only).
   "delete_on_complete":   false,      // Auto-remove the job and its uploaded SVG once complete.
+  "disable_motors_on_complete": false, // Cut motor torque once the plot finishes back at the origin, so the steppers don't sit warm.
 
   // Request-only directive (not stored on the job record). When `true` AND
   // no other job is in a runnable or in-progress state (ready / paused /
@@ -202,6 +204,7 @@ Layer types are decorative — the icon is shown in the layer list:
   "paper_height_mm": 297.0,
   "pause_between_layers": true,       // From server-side defaults (Settings).
   "delete_on_complete": false,
+  "disable_motors_on_complete": false,
   "speed_pendown": 25,
   "speed_penup": 75,
   "acceleration": 75,
@@ -241,6 +244,7 @@ All endpoints take no body, return `{"ok": true}` on success, and respond `409 C
 | `POST` | `/api/v1/queue/pause` | Pause the active plot. Pen is raised; resumable. | No actively-plotting job. |
 | `POST` | `/api/v1/queue/pause-at-pen-up` | Soft pause: defer until the next pen lift, so the pen doesn't stop mid-stroke (useful for pump-action pens). Pauses immediately if the pen is already up. While pending, the snapshot field `pause_at_pen_up_pending` is `true`. | No actively-plotting job. |
 | `POST` | `/api/v1/queue/resume` | Resume a paused plot. | No paused job; missing resume data. |
+| `POST` | `/api/v1/queue/redraw` | From a `paused` plot, rewind the resume point by `{"distance_mm": 50}` of pen-down travel (1–2000) and carry on — so the last stretch of drawing is traced again (a skipped line, a stretch a dry pen missed) and the plot still finishes. Clamped to the start of the layer currently plotting; can't reach into an earlier layer. | Active job is not `paused`; `distance_mm` out of range. |
 | `POST` | `/api/v1/queue/continue` | Advance past a pen-change pause, on to the job's next stage. | Nothing waiting on a continue. |
 | `POST` | `/api/v1/queue/calibrate` | At a pen-change pause, plot every layer with `type: "calibration"` (regardless of `selected`) as a one-shot side plot, then return to `awaiting_pen_change`. Lets the user verify pen alignment between layers without advancing the main plot. | Active job is not in `awaiting_pen_change`; job has no calibration-typed layers. |
 | `POST` | `/api/v1/queue/nudge-origin` | At a pen-change pause, shift the origin of the remaining (not-yet-plotted) stages by `{"dx_mm": 0.1, "dy_mm": 0.0}` (either field optional, default `0.0`) — for compensating small paper drift between layers. Session-only: not written back to the job's `transform_offset_*_mm`, and resets when the run ends. | Active job is not in `awaiting_pen_change`. |
@@ -366,7 +370,8 @@ Editable fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `name` | string \| null | Display name override. |
+| `name` | string \| null | Display name override. Renaming a job also renames its source drawing in the library. |
+| `layer_mode` | `"layer"` \| `"group"` \| `"pen"` | How the drawing is split into rows / plot stages. Switching it re-points the job at a re-partitioned copy and rebuilds `layer_selections` — any custom row labels are lost. |
 | `paper_size_name` | string \| null | Display label for the paper size. |
 | `paper_name` | string \| null | Display label for the paper stock (e.g. `"FABRIANO Black Black 300g"`). |
 | `paper_width_mm`, `paper_height_mm` | number | Paper dimensions; always in mm. |
@@ -383,6 +388,7 @@ Editable fields:
 | `record_timelapse_interval_s` | number | 0.5–3600 |
 | `record_speed_multiplier` | number | 1.1–60 |
 | `pause_between_layers`, `delete_on_complete` | bool | `pause_between_layers` pauses only resume via `/queue/continue`, never the physical button — see the note under Queue control. |
+| `disable_motors_on_complete` | bool | After the plot finishes and returns to the origin, cut torque to the XY steppers so they don't sit warm. Only on natural completion — not on cancel or failure. |
 | `optimize_svg` | bool | Run the vpype optimization pipeline before planning. |
 | `optimize_svg_tolerance_mm` | number | 0.01–10.0 |
 | `optimize_svg_linemerge`, `optimize_svg_linesimplify`, `optimize_svg_linesort`, `optimize_svg_reloop` | bool | Per-step toggles for the vpype pipeline. |
@@ -469,7 +475,9 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
 {
   "plotter_model": 2,                           // 1–8 (see install.sh / Settings UI for the table)
   "pause_between_layers_default": true,
+  "layer_mode_default": "layer",                // "layer" | "group" | "pen" — new jobs' layer grouping
   "delete_on_complete_default": false,
+  "disable_motors_on_complete_default": false,  // Default for a new job's disable-motors-on-complete checkbox
   "speed_pendown_default": 25,                  // 1–110
   "speed_penup_default": 75,                    // 1–110
   "acceleration_default": 75,                   // 1–100
@@ -546,7 +554,9 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `draw_stream_background` | `"black"` \| `"white"` |
 | `draw_stream_max_resolution_px` | int 480–4096 |
 | `pause_between_layers_default` | bool |
+| `layer_mode_default` | `"layer"` \| `"group"` \| `"pen"` |
 | `delete_on_complete_default` | bool |
+| `disable_motors_on_complete_default` | bool |
 | `speed_pendown_default` | int 1–110 |
 | `speed_penup_default` | int 1–110 |
 | `acceleration_default` | int 1–100 |

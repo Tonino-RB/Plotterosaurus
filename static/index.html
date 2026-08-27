@@ -442,6 +442,10 @@
             <input type="checkbox" id="settings-delete-on-complete" />
             <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
           </label>
+          <label class="inline-check">
+            <input type="checkbox" id="settings-disable-motors-on-complete" />
+            <span data-i18n="job.disable_motors_on_complete">Disable motors on completion (once back at the origin, so they don't overheat)</span>
+          </label>
         </div>
       </section>
 
@@ -852,13 +856,17 @@
         </label>
         <div id="library-panel">
           <div class="library-head">
-            <span class="library-title" data-i18n="library.title">Library</span>
+            <div class="segmented library-tabs" id="library-tabs">
+              <button type="button" class="active" data-tab="library" data-i18n="library.tab_library">Library</button>
+              <button type="button" data-tab="calibration" data-i18n="library.tab_calibration">Calibration</button>
+            </div>
             <span class="library-usage" id="library-usage"></span>
             <button id="library-clean" class="neutral" type="button"
                     title="Delete every drawing no job is using"
                     data-i18n="library.clean" data-i18n-title="library.clean_title">Clean up</button>
           </div>
           <ul id="library-list"></ul>
+          <ul id="calibration-list" hidden></ul>
         </div>
       </div>
       <input type="file" id="file-input" accept=".svg,image/svg+xml" multiple class="visually-hidden" />
@@ -897,6 +905,14 @@
           <button type="button" class="nudge-btn" data-axis="y" data-step="0.1">+0.1</button>
           <button type="button" class="nudge-btn" data-axis="y" data-step="1">+1</button>
         </div>
+      </div>
+      <div id="redraw-controls" class="redraw-controls" hidden>
+        <span class="field-label" data-i18n="controls.redraw_label">Redraw last (mm)</span>
+        <button type="button" class="redraw-preset" data-mm="10">10</button>
+        <button type="button" class="redraw-preset" data-mm="50">50</button>
+        <button type="button" class="redraw-preset" data-mm="100">100</button>
+        <input type="number" id="redraw-mm" min="1" max="2000" step="5" value="50" />
+        <button id="redraw-btn" class="secondary" data-i18n="controls.redraw">Redraw</button>
       </div>
       <div id="queue-progress" hidden>
         <div class="progress-bar"><div class="progress-fill"></div><div class="progress-ticks"></div></div>
@@ -1011,6 +1027,12 @@
                 <span class="card-section-caret" aria-hidden="true">▼</span>
               </header>
               <div class="card-section-body">
+                <div class="segmented layer-mode">
+                  <button type="button" data-val="layer" class="active" data-i18n="layer_mode.layer">Layers</button>
+                  <button type="button" data-val="group" data-i18n="layer_mode.group">Groups</button>
+                  <button type="button" data-val="pen" data-i18n="layer_mode.pen">Pen width</button>
+                </div>
+                <p class="muted layer-mode-note" data-i18n="layer_mode.note">Choose how the drawing is split into rows and pen-change stages.</p>
                 <ul class="layers"></ul>
                 <div class="stages-wrap" hidden>
                   <h3 class="subsection-title" data-i18n="card.stages">Stages</h3>
@@ -1225,6 +1247,10 @@
                 <label class="inline-check">
                   <input type="checkbox" class="delete-on-complete" />
                   <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
+                </label>
+                <label class="inline-check">
+                  <input type="checkbox" class="disable-motors-on-complete" />
+                  <span data-i18n="job.disable_motors_on_complete">Disable motors on completion (once back at the origin, so they don't overheat)</span>
                 </label>
                 <div class="camera-job-options" hidden>
                   <label class="inline-check">
