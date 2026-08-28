@@ -94,6 +94,8 @@ _cancel_flag = threading.Event()           # cancel the active job
 _continue_event = threading.Event()        # continue: pen change within a job, or next job
 _calibrate_event = threading.Event()       # set alongside _continue_event to request a calibration plot from the awaiting_pen_change pause
 _calibration_filename: str | None = None   # set alongside _calibrate_event to request a calibration/ library file instead of the job's own calibration layers
+_optical_reg_event = threading.Event()     # set alongside _continue_event to request a camera layer-registration measurement from the pause
+_optical_reg_probe_mm: float | None = None  # nominal probe-cross offset for that measurement (None -> config default); doubled on an auto-retry
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
@@ -1043,6 +1045,56 @@ def _jog_carriage(dx_mm: float, dy_mm: float) -> None:
             pass
 
 
+def _plot_cross(x_mm: float, y_mm: float, size_mm: float) -> None:
+    """Plot one open cross (four arms, hollow centre) centred at (x_mm, y_mm)
+    in page millimetres — i.e. relative to the plot origin the carriage is
+    already sitting on — then bring the pen back to that origin, pen up.
+
+    Its own return-to-origin is the point: a `plot`-mode run homes the carriage
+    itself and the optical-reg phase needs to know exactly where the carriage
+    ends up so its follow-up camera jog lands square. Skew-corrects every
+    target the same way _jog_carriage does; over a few-mm cross the correction
+    is tiny but it keeps the marks in the same frame the artwork plots in.
+    """
+    machine = config.active_machine()
+    skew_deg = machine["skew_deg"]
+    true_axis = machine.get("skew_true_axis", "x")
+
+    def _pt(px: float, py: float) -> tuple[float, float]:
+        return axis_skew.skew_delta(px, py, skew_deg, true_axis)
+
+    half = size_mm / 2.0
+    gap = min(half * 0.35, 0.6)
+    arms = (
+        ((x_mm - half, y_mm), (x_mm - gap, y_mm)),
+        ((x_mm + gap, y_mm), (x_mm + half, y_mm)),
+        ((x_mm, y_mm - half), (x_mm, y_mm - gap)),
+        ((x_mm, y_mm + gap), (x_mm, y_mm + half)),
+    )
+    ad = axidraw.AxiDraw()
+    ad.interactive()
+    ad.options.model = config.PLOTTER_MODEL
+    ad.options.units = 2  # millimeters
+    ad.options.pen_pos_up, ad.options.pen_pos_down = _active_pen_heights()
+    _apply_bed_size(ad)
+    if not ad.connect():
+        raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
+    _suppress_position_emit.active = True
+    try:
+        ad.penup()
+        for (ax0, ay0), (ax1, ay1) in arms:
+            ad.moveto(*_pt(ax0, ay0))
+            ad.lineto(*_pt(ax1, ay1))
+        ad.penup()
+        ad.moveto(*_pt(0.0, 0.0))
+    finally:
+        _suppress_position_emit.active = False
+        try:
+            ad.disconnect()
+        except Exception:
+            pass
+
+
 def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:
     """Shift the origin of the remaining (not-yet-plotted) stages by a small
     delta, to compensate for paper drift between layers during a pen-change
@@ -1873,6 +1925,210 @@ def _run_calibration_file_phase(job_id: str, filename: str) -> None:
         log.warning("calibration-file plot ended with stopped=%s", stopped)
 
 
+# Optical layer registration -------------------------------------------------
+#
+# A carriage-mounted macro camera measures how far a pen-change left the next
+# layer off the first, and the result is offered to the user as an origin
+# nudge they confirm (it never moves the carriage itself — Apply routes the
+# dx/dy through nudge_origin). See app/optical_reg.py for the geometry and
+# app/camera.py grab_gray_frames for the stream-safe frame pull.
+
+def _plot_reference_fiducial(job_id: str) -> None:
+    """Draw the once-per-run reference cross at M with the layer-1 pen, at the
+    end of stage 0. A failure here is logged, never fatal — the job can still
+    plot, just without an optical reference to measure against."""
+    try:
+        _plot_cross(config.OPTICAL_REG_MARK_X_MM, config.OPTICAL_REG_MARK_Y_MM,
+                    config.OPTICAL_REG_MARK_SIZE_MM)
+    except Exception:
+        log.warning("optical-reg: reference cross failed for job %s", job_id,
+                    exc_info=True)
+
+
+def _run_optical_reg_phase(job_id: str, probe_mm: float) -> None:
+    """From an awaiting_pen_change pause: draw a probe cross at M + (probe,
+    probe) with the current pen, image it against the reference cross, and
+    publish the measured misalignment as a proposed nudge for the user to
+    confirm. Returns the carriage to the pause origin and the job to
+    awaiting_pen_change. Never raises — a camera or plotter hiccup here becomes
+    a 'failed' reading, not a stranded job.
+
+    Touches none of origin_base / manual_origin_offset / origin_nudge: it only
+    measures and proposes. Applying the correction is a separate nudge_origin
+    call the user makes from the UI.
+    """
+    from . import optical_reg
+
+    job = state.get_job(job_id)
+    if job is None:
+        return
+
+    mm_per_px = config.OPTICAL_REG_MM_PER_PX
+    rot = config.OPTICAL_REG_CAM_ROTATION_DEG
+    mx, my = config.OPTICAL_REG_MARK_X_MM, config.OPTICAL_REG_MARK_Y_MM
+    cx, cy = config.OPTICAL_REG_CAM_OFFSET_X_MM, config.OPTICAL_REG_CAM_OFFSET_Y_MM
+    max_probe = config.OPTICAL_REG_PROBE_OFFSET_MAX_MM
+
+    state.update_job(job_id, status="measuring_registration")
+    try:
+        probe = min(probe_mm, max_probe)
+        while True:
+            state.set_optical_reg("measuring", probe_mm=probe)
+            outcome = _measure_registration_once(optical_reg, probe, mx, my,
+                                                 cx, cy, mm_per_px, rot)
+            if outcome != "widen":
+                return
+            if probe * 2.0 > max_probe:
+                state.set_optical_reg(
+                    "failed", probe_mm=probe,
+                    reason="The two crosses overlap even at the widest probe "
+                           "offset — use a larger mark size.")
+                return
+            probe *= 2.0
+    except Exception:
+        log.exception("optical-reg: measurement failed for job %s", job_id)
+        state.set_optical_reg("failed", probe_mm=probe_mm,
+                              reason="Measurement could not be completed.")
+    finally:
+        # Restore the pause only if we still own the status — a cancel landing
+        # mid-measurement moves it to 'cancelled', which the pause loop then
+        # finalises. Restoring blindly would be an invalid transition.
+        cur = state.get_job(job_id)
+        if cur is not None and cur["status"] == "measuring_registration":
+            state.update_job(job_id, status="awaiting_pen_change")
+
+
+def _measure_registration_once(optical_reg, probe: float, mx: float, my: float,
+                               cx: float, cy: float, mm_per_px: float,
+                               rot: float) -> str:
+    """One probe-cross + grab + measure cycle. Returns "done" (a reading or a
+    terminal failure was published) or "widen" (crosses merged — retry bigger)."""
+    ox = oy = probe
+    # Camera jog: pen at (M + O/2 - C) puts the camera centre on the midpoint
+    # between the two crosses. Walked back exactly after the grab.
+    jog_x = mx + ox / 2.0 - cx
+    jog_y = my + oy / 2.0 - cy
+
+    _plot_cross(mx + ox, my + oy, config.OPTICAL_REG_MARK_SIZE_MM)
+    _jog_carriage(jog_x, jog_y)
+    try:
+        frame = camera.grab_median_gray(config.OPTICAL_REG_FRAMES)
+    finally:
+        _jog_carriage(-jog_x, -jog_y)
+    if frame is None:
+        state.set_optical_reg("failed", probe_mm=probe,
+                              reason="No camera frame — is the stream up?")
+        return "done"
+
+    exp_px = optical_reg.mm_to_px((ox, oy), mm_per_px, rot)
+    got = optical_reg.measure(frame, exp_px)
+    if got is None:
+        state.set_optical_reg("failed", probe_mm=probe,
+                              reason="No cross found in the frame.")
+        return "done"
+    if not got["separable"]:
+        return "widen"
+
+    sep_mm = optical_reg.px_to_mm(got["sep_px"], mm_per_px, rot)
+    lim = config.OPTICAL_REG_MAX_CORRECTION_MM
+    ndx = max(-lim, min(lim, -(sep_mm[0] - ox)))
+    ndy = max(-lim, min(lim, -(sep_mm[1] - oy)))
+
+    try:
+        ref_c, probe_c = _reg_preview_centers(got["sep_px"], frame.shape)
+        camera.write_optical_reg_preview(
+            optical_reg.annotate(frame, ref_c, probe_c))
+    except Exception:
+        log.warning("optical-reg: preview render failed", exc_info=True)
+
+    state.set_optical_reg("measured", dx_mm=round(ndx, 3), dy_mm=round(ndy, 3),
+                          confidence=round(got["confidence"], 3), probe_mm=probe)
+    return "done"
+
+
+def _reg_preview_centers(sep_px, shape):
+    """Place the two centres symmetrically about the frame centre for the
+    annotated preview (measure() reports only their difference)."""
+    h, w = shape[:2]
+    mid = (w / 2.0, h / 2.0)
+    return ((mid[0] - sep_px[0] / 2.0, mid[1] - sep_px[1] / 2.0),
+            (mid[0] + sep_px[0] / 2.0, mid[1] + sep_px[1] / 2.0))
+
+
+def trigger_optical_reg(probe_mm: float | None = None) -> None:
+    """Request a camera layer-registration measurement from the current
+    pen-change pause. Only valid while the active job is paused at a pen change
+    and the camera is calibrated."""
+    job = state.active_job()
+    if job is None or job["status"] != "awaiting_pen_change":
+        raise RuntimeError("Optical registration only available at a pen-change pause")
+    if not config.CAMERA_ENABLED:
+        raise RuntimeError("Camera is not enabled")
+    if config.OPTICAL_REG_MM_PER_PX <= 0:
+        raise RuntimeError("Camera is not calibrated for optical registration")
+    global _optical_reg_probe_mm
+    _optical_reg_probe_mm = (config.OPTICAL_REG_PROBE_OFFSET_MM if probe_mm is None
+                             else max(0.2, probe_mm))
+    _optical_reg_event.set()
+    _continue_event.set()
+
+
+def optical_reg_calibrate() -> dict:
+    """One-shot image-scale + rotation calibration, run from idle. Assumes the
+    carriage has been jogged over a clear patch of paper. Draws a cross there,
+    jogs the carriage two known short vectors watching how far the cross slides
+    in the frame, solves the pixel<->mm similarity, and stores it. Returns the
+    fitted values plus the resulting field-of-view in mm.
+    """
+    from . import optical_reg
+
+    with _worker_lock:
+        _claim_idle_machine()
+        if not config.CAMERA_ENABLED:
+            raise RuntimeError("Camera is not enabled")
+
+        d = 3.0
+        size = config.OPTICAL_REG_MARK_SIZE_MM
+        frames_n = config.OPTICAL_REG_FRAMES
+
+        def _center() -> tuple[float, float]:
+            frame = camera.grab_median_gray(frames_n)
+            if frame is None:
+                raise RuntimeError("No camera frame — is the stream up?")
+            got = optical_reg.cross_center(frame)
+            if got is None:
+                raise RuntimeError("Calibration cross not visible — check the camera aim and focus")
+            return got[0], got[1]
+
+        _plot_cross(0.0, 0.0, size)
+        c0 = _center()
+        _jog_carriage(d, 0.0)
+        c1 = _center()
+        _jog_carriage(-d, d)
+        c2 = _center()
+        _jog_carriage(0.0, -d)
+
+        # Camera moved +d in x, then (-d, +d): the paper-fixed cross appears to
+        # move the opposite way, so the mm vector paired with each pixel shift
+        # is negated.
+        pairs = [((-d, 0.0), (c1[0] - c0[0], c1[1] - c0[1])),
+                 ((d, -d), (c2[0] - c1[0], c2[1] - c1[1]))]
+        mm_per_px, rot, rms = optical_reg.solve_scale_rotation(pairs)
+        if not (0.0 < mm_per_px < 5.0) or rms > 0.5:
+            raise RuntimeError("Calibration reading is inconsistent — check focus, "
+                               "lighting, and the camera hflip/vflip settings")
+
+        frame_w = config.CAMERA_RESOLUTION_WIDTH
+        frame_h = config.CAMERA_RESOLUTION_HEIGHT
+        fov_mm = mm_per_px * min(frame_w, frame_h)
+        config.update(optical_reg_mm_per_px=mm_per_px,
+                      optical_reg_cam_rotation_deg=rot)
+        return {"mm_per_px": round(mm_per_px, 5),
+                "cam_rotation_deg": round(rot, 3),
+                "fov_mm": round(fov_mm, 1),
+                "rms_mm": round(rms, 4)}
+
+
 def _resume_job(job_id: str) -> None:
     """Resume a job left in 'paused' by a service restart.
 
@@ -2084,6 +2340,7 @@ def _run_staged_loop(job_id: str, svg_path: Path, first_mode: str) -> None:
     finally:
         _run_absorb_scale = 1.0
         _undo_origin_nudge()
+        state.set_optical_reg("idle")
         if camera.is_recording_job(job_id):
             camera.stop_recording()
         # Last thing, after the nudge walk-back above has done any moving of its
@@ -2261,7 +2518,13 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                 # _BUTTON_ACTIVE_STATUSES) — only /queue/continue (UI/API)
                 # resumes it, giving the user a chance to calibrate, jog the
                 # pen, and nudge the origin first.
+                # The layer-1 pen is still mounted here: drop the once-per-run
+                # optical-registration reference cross before the swap.
+                if (i == 0 and job.get("optical_reg") and config.CAMERA_ENABLED
+                        and config.OPTICAL_REG_MM_PER_PX > 0):
+                    _plot_reference_fiducial(job_id)
                 state.update_job(job_id, status="awaiting_pen_change")
+                state.set_optical_reg("idle")
                 if camera.is_recording_job(job_id):
                     camera.pause_recording()
                 while True:
@@ -2271,6 +2534,21 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                         _cancel_flag.clear()
                         state.update_job(job_id, status="cancelled")
                         return
+                    if _optical_reg_event.is_set():
+                        _optical_reg_event.clear()
+                        global _optical_reg_probe_mm
+                        probe = (_optical_reg_probe_mm
+                                 if _optical_reg_probe_mm is not None
+                                 else config.OPTICAL_REG_PROBE_OFFSET_MM)
+                        _optical_reg_probe_mm = None
+                        _run_optical_reg_phase(job_id, probe)
+                        if _cancel_flag.is_set():
+                            _cancel_flag.clear()
+                            state.update_job(job_id, status="cancelled",
+                                             resume_path=None)
+                            return
+                        state.update_job(job_id, status="awaiting_pen_change")
+                        continue
                     if _calibrate_event.is_set():
                         _calibrate_event.clear()
                         global _calibration_filename

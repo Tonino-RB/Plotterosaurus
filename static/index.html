@@ -562,6 +562,39 @@
         </div>
       </section>
 
+      <section class="card-section collapsed" data-section="camera-optical-reg">
+        <header class="card-section-head">
+          <span class="card-section-title" data-i18n="camera.optical.title">Optical Layer Registration</span>
+          <span class="card-section-caret" aria-hidden="true">▼</span>
+        </header>
+        <div class="card-section-body">
+          <p class="muted" data-i18n="camera.optical.note">Measures how far a pen-change left the next layer off the first and proposes an origin nudge, at each pen-change pause. Enable it per job on the job card.</p>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.optical.mark_x">Reference mark X (mm)</span>
+              <input type="number" id="optical-reg-mark-x" min="0" step="1" value="10" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.optical.mark_y">Reference mark Y (mm)</span>
+              <input type="number" id="optical-reg-mark-y" min="0" step="1" value="10" />
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label" data-i18n="camera.optical.mark_size">Mark size (mm)</span>
+              <input type="number" id="optical-reg-mark-size" min="0.5" max="20" step="0.5" value="3" />
+            </label>
+            <label class="field">
+              <span class="field-label" data-i18n="camera.optical.probe_offset">Probe offset (mm)</span>
+              <input type="number" id="optical-reg-probe-offset" min="0.2" max="20" step="0.5" value="2" />
+            </label>
+          </div>
+          <p class="muted" data-i18n="camera.optical.calibrate_hint">Jog the pen over a clear patch of paper, then calibrate — it plots a cross and moves the carriage a few mm to learn the camera's scale and rotation.</p>
+          <button type="button" id="optical-reg-calibrate-btn" class="secondary" data-i18n="camera.optical.calibrate">Calibrate camera</button>
+          <div id="optical-reg-calibrate-status" class="muted"></div>
+        </div>
+      </section>
+
       <section class="card-section collapsed" data-section="camera-image">
         <header class="card-section-head">
           <span class="card-section-title" data-i18n="camera.image.title">Resolution &amp; Bitrate</span>
@@ -904,6 +937,26 @@
           <span class="nudge-readout" id="nudge-y-readout">0.0</span>
           <button type="button" class="nudge-btn" data-axis="y" data-step="0.1">+0.1</button>
           <button type="button" class="nudge-btn" data-axis="y" data-step="1">+1</button>
+        </div>
+      </div>
+      <div id="optical-reg" class="origin-nudge" hidden>
+        <span class="field-label" data-i18n="controls.optical_reg_label">Optical registration (camera)</span>
+        <div class="optical-reg-actions">
+          <button type="button" id="optical-reg-measure-btn" class="secondary"
+                  data-i18n="controls.optical_reg_measure">Measure alignment</button>
+          <button type="button" id="optical-reg-widen-btn" class="neutral" hidden
+                  data-i18n="controls.optical_reg_widen">Bigger offset &amp; retry</button>
+        </div>
+        <div id="optical-reg-status" class="muted"></div>
+        <div id="optical-reg-result" hidden>
+          <img id="optical-reg-preview" class="optical-reg-preview" alt="Registration measurement" />
+          <div id="optical-reg-readout" class="muted"></div>
+          <div class="optical-reg-actions">
+            <button type="button" id="optical-reg-apply-btn" class="primary"
+                    data-i18n="controls.optical_reg_apply">Apply as nudge</button>
+            <button type="button" id="optical-reg-dismiss-btn" class="neutral"
+                    data-i18n="controls.optical_reg_dismiss">Dismiss</button>
+          </div>
         </div>
       </div>
       <div id="redraw-controls" class="redraw-controls" hidden>
@@ -1257,6 +1310,10 @@
                     <input type="checkbox" class="record-plot" />
                     <span data-i18n="job.record_plot">Record this plot</span>
                   </label>
+                  <label class="inline-check">
+                    <input type="checkbox" class="optical-reg" />
+                    <span data-i18n="job.optical_reg">Optical layer registration (camera)</span>
+                  </label>
                   <div class="record-plot-options" hidden>
                     <label class="field">
                       <span class="field-label" data-i18n="camera.recording.mode_label">Recording mode</span>
@@ -1278,6 +1335,36 @@
                     </div>
                   </div>
                 </div>
+              </div>
+            </section>
+            <section class="card-section collapsed" data-section="export">
+              <header class="card-section-head">
+                <span class="card-section-title" data-i18n="card.export_title">Save As</span>
+                <span class="card-section-caret" aria-hidden="true">▼</span>
+              </header>
+              <div class="card-section-body">
+                <div class="field">
+                  <span class="field-label" data-i18n="export.scope_label">Content</span>
+                  <div class="segmented export-scope">
+                    <button type="button" data-val="optimized" class="active" data-i18n="export.scope_optimized">As optimized</button>
+                    <button type="button" data-val="placed" data-i18n="export.scope_placed">As plotted</button>
+                  </div>
+                </div>
+                <p class="muted export-note-optimized" data-i18n="export.note">Exports the drawing as vpype optimized it — in its own coordinates, not positioned on the page or filtered to the selected layers.</p>
+                <p class="muted export-note-placed" hidden data-i18n="export.note_placed">Rendered as a plot would lay it down: selected layers only, positioned on the page by this job's size/margins/transform, then sheared by the active machine's axis skew. Set your target machine's profile in Settings first.</p>
+                <label class="field">
+                  <span class="field-label" data-i18n="export.format_label">Format</span>
+                  <select class="export-format">
+                    <option value="svg" data-i18n="export.fmt_svg">Optimized SVG</option>
+                    <option value="png" data-i18n="export.fmt_png">PNG (white background)</option>
+                    <option value="png-transparent" data-i18n="export.fmt_png_transparent">PNG (transparent background)</option>
+                    <option value="pdf" data-i18n="export.fmt_pdf">PDF</option>
+                    <option value="gcode" data-i18n="export.fmt_gcode">G-code (.gcode)</option>
+                    <option value="hpgl" data-i18n="export.fmt_hpgl">HPGL (.hpgl)</option>
+                  </select>
+                </label>
+                <button type="button" class="primary export-download" data-i18n="export.download">Download</button>
+                <div class="job-error export-error" hidden></div>
               </div>
             </section>
           </div>

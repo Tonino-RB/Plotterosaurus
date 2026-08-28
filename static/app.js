@@ -26,6 +26,15 @@ const penControlsMessage = $("pen-controls-message");
 const originNudge = $("origin-nudge");
 const nudgeXReadout = $("nudge-x-readout");
 const nudgeYReadout = $("nudge-y-readout");
+const opticalReg = $("optical-reg");
+const opticalRegMeasureBtn = $("optical-reg-measure-btn");
+const opticalRegWidenBtn = $("optical-reg-widen-btn");
+const opticalRegStatus = $("optical-reg-status");
+const opticalRegResult = $("optical-reg-result");
+const opticalRegPreview = $("optical-reg-preview");
+const opticalRegReadout = $("optical-reg-readout");
+const opticalRegApplyBtn = $("optical-reg-apply-btn");
+const opticalRegDismissBtn = $("optical-reg-dismiss-btn");
 const jogXReadout = $("jog-x-readout");
 const jogYReadout = $("jog-y-readout");
 const jogXInput = $("jog-x-input");
@@ -78,6 +87,12 @@ const cameraSpeedMultiplier = $("camera-speed-multiplier");
 const cameraOutputFolder = $("camera-output-folder");
 const cameraRcloneTarget = $("camera-rclone-target");
 const cameraRcloneDeleteLocal = $("camera-rclone-delete-local");
+const opticalRegMarkX = $("optical-reg-mark-x");
+const opticalRegMarkY = $("optical-reg-mark-y");
+const opticalRegMarkSize = $("optical-reg-mark-size");
+const opticalRegProbeOffset = $("optical-reg-probe-offset");
+const opticalRegCalibrateBtn = $("optical-reg-calibrate-btn");
+const opticalRegCalibrateStatus = $("optical-reg-calibrate-status");
 const cameraRtspUrl = $("camera-rtsp-url");
 const cameraHlsUrl = $("camera-hls-url");
 const cameraSettingsMessage = $("camera-settings-message");
@@ -303,6 +318,7 @@ function buildJobPayload(svg, fallbackName) {
       pen_pos_up: appSettings.pen_pos_up_default,
       pen_pos_down: appSettings.pen_pos_down_default,
       record_plot: appSettings.record_plot_default,
+      optical_reg: appSettings.optical_reg_default,
       record_mode: appSettings.camera_recording_mode_default,
       record_timelapse_interval_s: appSettings.camera_timelapse_interval_s_default,
       record_speed_multiplier: appSettings.camera_speed_multiplier_default,
@@ -1161,6 +1177,7 @@ function createCardForJob(job) {
   card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
   card.querySelector(".record-plot").checked = !!job.record_plot;
   card.querySelector(".record-plot-options").hidden = !job.record_plot;
+  card.querySelector(".optical-reg").checked = !!job.optical_reg;
   card.querySelector(".record-mode").value = job.record_mode || appSettings.camera_recording_mode_default;
   card.querySelector(".record-timelapse-interval").value =
     job.record_timelapse_interval_s ?? appSettings.camera_timelapse_interval_s_default;
@@ -1191,6 +1208,15 @@ function createCardForJob(job) {
   card.querySelector(".job-move-up").addEventListener("click", () => moveJob(job.job_id, -1));
   card.querySelector(".job-move-down").addEventListener("click", () => moveJob(job.job_id, +1));
   card.querySelector(".job-requeue").addEventListener("click", () => requeueJob(job.job_id));
+  card.querySelectorAll(".export-scope button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setSegmentedValue(card.querySelector(".export-scope"), btn.dataset.val);
+      const placed = btn.dataset.val === "placed";
+      card.querySelector(".export-note-optimized").hidden = placed;
+      card.querySelector(".export-note-placed").hidden = !placed;
+    });
+  });
+  card.querySelector(".export-download").addEventListener("click", () => exportJob(card, job.job_id));
   card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
     nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
   );
@@ -2728,6 +2754,7 @@ async function sendCardUpdate(card, pending) {
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
     updates.disable_motors_on_complete = card.querySelector(".disable-motors-on-complete").checked;
     updates.record_plot = card.querySelector(".record-plot").checked;
+    updates.optical_reg = card.querySelector(".optical-reg").checked;
     updates.record_mode = card.querySelector(".record-mode").value;
     updates.record_timelapse_interval_s = parseFloat(card.querySelector(".record-timelapse-interval").value) || 5;
     updates.record_speed_multiplier = parseFloat(card.querySelector(".record-speed-multiplier").value) || 4;
@@ -2880,6 +2907,52 @@ async function nudgeBack(jobId, dxStr, dyStr) {
   } catch (e) {
     topMessage.textContent = t("error.request_failed", { message: e.message });
     topMessage.className = "error";
+  }
+}
+
+// "Save As": download the job's processed drawing in the chosen format. The
+// source is whatever GET /jobs/{id}/svg would serve (the vpype .opt.svg once
+// optimization has run, else the raw upload) — exported in its own
+// coordinates, not placed on the page. The fetch goes through a blob so a
+// failed conversion shows in the card instead of navigating the tab to a JSON
+// error body.
+async function exportJob(card, id) {
+  const sel = card.querySelector(".export-format");
+  const btn = card.querySelector(".export-download");
+  const errEl = card.querySelector(".export-error");
+  const raw = sel.value;
+  let params = raw === "png-transparent"
+    ? "fmt=png&bg=transparent"
+    : `fmt=${encodeURIComponent(raw)}`;
+  if (getSegmentedValue(card.querySelector(".export-scope"), "optimized") === "placed") {
+    params += "&placed=true";
+  }
+  errEl.hidden = true;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/jobs/${id}/export?${params}`);
+    if (!res.ok) {
+      errEl.textContent = await readErr(res);
+      errEl.hidden = false;
+      return;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    const name = m ? m[1] : `export.${raw}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    errEl.textContent = t("export.failed", { message: String(e) });
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -3074,6 +3147,86 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
     if (btn.dataset.axis === "x") postNudge(step, 0, false);
     else postNudge(0, step, false);
   });
+});
+
+// Optical registration — a camera measurement at a pen-change pause that
+// proposes a dx/dy, which the user confirms via the same postNudge() path as
+// the manual nudge above. It never moves the carriage on its own.
+let opticalRegDismissedSig = null;
+
+function opticalRegSig(r) {
+  return `${r.status}|${r.dx_mm}|${r.dy_mm}|${r.probe_mm}`;
+}
+
+async function postOpticalRegMeasure(probeMm) {
+  try {
+    const res = await fetch("/queue/optical-reg/measure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(probeMm == null ? {} : { probe_mm: probeMm }),
+    });
+    if (!res.ok) throw new Error((await readErrDetail(res)).text);
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+}
+
+function renderOpticalReg(active, status) {
+  const reg = serverState.optical_reg || { status: "idle" };
+  const eligible = !!active
+    && (status === "awaiting_pen_change" || status === "measuring_registration")
+    && !!appSettings.camera_enabled
+    && !!active.optical_reg
+    && (appSettings.optical_reg_mm_per_px || 0) > 0;
+  opticalReg.hidden = !eligible;
+  if (!eligible) return;
+
+  const busy = reg.status === "measuring" || status === "measuring_registration";
+  opticalRegMeasureBtn.disabled = busy;
+  opticalRegWidenBtn.disabled = busy;
+  opticalRegWidenBtn.hidden = !(reg.status === "measured" || reg.status === "failed");
+  const dismissed = opticalRegDismissedSig === opticalRegSig(reg);
+
+  if (busy) {
+    opticalRegStatus.textContent = t("controls.optical_reg_measuring");
+    opticalRegResult.hidden = true;
+  } else if (reg.status === "measured" && !dismissed) {
+    opticalRegStatus.textContent = "";
+    opticalRegPreview.src = `/camera/optical-reg/preview?t=${Date.now()}`;
+    opticalRegReadout.textContent = t("controls.optical_reg_readout", {
+      dx: (reg.dx_mm ?? 0).toFixed(2),
+      dy: (reg.dy_mm ?? 0).toFixed(2),
+      conf: Math.round((reg.confidence || 0) * 100),
+      probe: (reg.probe_mm ?? 0).toFixed(1),
+    });
+    opticalRegResult.hidden = false;
+  } else if (reg.status === "failed" && !dismissed) {
+    opticalRegStatus.textContent = reg.reason || t("controls.optical_reg_failed");
+    opticalRegResult.hidden = true;
+  } else {
+    opticalRegStatus.textContent = "";
+    opticalRegResult.hidden = true;
+  }
+}
+
+opticalRegMeasureBtn.addEventListener("click", () => postOpticalRegMeasure(null));
+opticalRegWidenBtn.addEventListener("click", () => {
+  const reg = serverState.optical_reg || {};
+  postOpticalRegMeasure(Math.max(0.4, (reg.probe_mm || 2) * 2));
+});
+opticalRegApplyBtn.addEventListener("click", () => {
+  const reg = serverState.optical_reg || {};
+  if (reg.status === "measured") postNudge(reg.dx_mm || 0, reg.dy_mm || 0, false);
+});
+opticalRegDismissBtn.addEventListener("click", () => {
+  opticalRegDismissedSig = opticalRegSig(serverState.optical_reg || { status: "idle" });
+  renderOpticalReg(
+    serverState.active_id ? serverState.queue.find((j) => j.job_id === serverState.active_id) : null,
+    serverState.active_id
+      ? (serverState.queue.find((j) => j.job_id === serverState.active_id) || {}).status
+      : "idle",
+  );
 });
 
 // Manual jog — idle-only (see applyTopControls, which enables/disables
@@ -3289,6 +3442,8 @@ function applyTopControls() {
   originNudge.hidden = !(active && status === "awaiting_pen_change");
   nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
   nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
+
+  renderOpticalReg(active, status);
 
   // Manual jog: idle-only. A run ends with its own job, so between jobs the
   // machine really is idle and these stay available for re-aiming.
@@ -3680,6 +3835,13 @@ function applyAppSettings(data) {
     camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
     camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
     record_plot_default: data.record_plot_default ?? appSettings.record_plot_default,
+    optical_reg_default: data.optical_reg_default ?? appSettings.optical_reg_default,
+    optical_reg_mm_per_px: data.optical_reg_mm_per_px ?? appSettings.optical_reg_mm_per_px,
+    optical_reg_cam_rotation_deg: data.optical_reg_cam_rotation_deg ?? appSettings.optical_reg_cam_rotation_deg,
+    optical_reg_mark_x_mm: data.optical_reg_mark_x_mm ?? appSettings.optical_reg_mark_x_mm,
+    optical_reg_mark_y_mm: data.optical_reg_mark_y_mm ?? appSettings.optical_reg_mark_y_mm,
+    optical_reg_mark_size_mm: data.optical_reg_mark_size_mm ?? appSettings.optical_reg_mark_size_mm,
+    optical_reg_probe_offset_mm: data.optical_reg_probe_offset_mm ?? appSettings.optical_reg_probe_offset_mm,
     draw_stream_enabled: data.draw_stream_enabled ?? appSettings.draw_stream_enabled,
     draw_stream_stroke_width_px: data.draw_stream_stroke_width_px ?? appSettings.draw_stream_stroke_width_px,
     draw_stream_background: data.draw_stream_background ?? appSettings.draw_stream_background,
@@ -4183,6 +4345,11 @@ async function openCameraSettings() {
     cameraOutputFolder.value = appSettings.camera_output_folder;
     cameraRcloneTarget.value = appSettings.camera_rclone_target || "";
     cameraRcloneDeleteLocal.checked = !!appSettings.camera_rclone_delete_local;
+    opticalRegMarkX.value = appSettings.optical_reg_mark_x_mm ?? 10;
+    opticalRegMarkY.value = appSettings.optical_reg_mark_y_mm ?? 10;
+    opticalRegMarkSize.value = appSettings.optical_reg_mark_size_mm ?? 3;
+    opticalRegProbeOffset.value = appSettings.optical_reg_probe_offset_mm ?? 2;
+    renderOpticalRegCalibrationStatus();
 
     const statusRes = await fetch("/camera/status");
     if (statusRes.ok) {
@@ -4228,6 +4395,10 @@ async function saveCameraSettings() {
       camera_output_folder: cameraOutputFolder.value.trim() || "recordings",
       camera_rclone_target: cameraRcloneTarget.value.trim(),
       camera_rclone_delete_local: cameraRcloneDeleteLocal.checked,
+      optical_reg_mark_x_mm: numOr(opticalRegMarkX.value, 10),
+      optical_reg_mark_y_mm: numOr(opticalRegMarkY.value, 10),
+      optical_reg_mark_size_mm: numOr(opticalRegMarkSize.value, 3),
+      optical_reg_probe_offset_mm: numOr(opticalRegProbeOffset.value, 2),
     };
     const res = await fetch("/settings", {
       method: "PATCH",
@@ -4243,6 +4414,40 @@ async function saveCameraSettings() {
   }
 }
 $("camera-settings-save").addEventListener("click", saveCameraSettings);
+
+function renderOpticalRegCalibrationStatus() {
+  opticalRegCalibrateStatus.className = "muted";
+  const mmpp = appSettings.optical_reg_mm_per_px || 0;
+  if (mmpp > 0) {
+    const w = appSettings.camera_resolution_width || 1920;
+    const h = appSettings.camera_resolution_height || 1080;
+    opticalRegCalibrateStatus.textContent = t("camera.optical.calibrated", {
+      mm_per_px: mmpp.toFixed(4),
+      rot: (appSettings.optical_reg_cam_rotation_deg || 0).toFixed(1),
+      fov: (mmpp * Math.min(w, h)).toFixed(0),
+    });
+  } else {
+    opticalRegCalibrateStatus.textContent = t("camera.optical.uncalibrated");
+  }
+}
+
+opticalRegCalibrateBtn.addEventListener("click", async () => {
+  opticalRegCalibrateBtn.disabled = true;
+  opticalRegCalibrateStatus.textContent = t("camera.optical.calibrating");
+  try {
+    const res = await fetch("/optical-reg/calibrate", { method: "POST" });
+    if (!res.ok) throw new Error((await readErrDetail(res)).text);
+    const r = await res.json();
+    appSettings.optical_reg_mm_per_px = r.mm_per_px;
+    appSettings.optical_reg_cam_rotation_deg = r.cam_rotation_deg;
+    renderOpticalRegCalibrationStatus();
+  } catch (e) {
+    opticalRegCalibrateStatus.textContent = t("settings.save_failed", { message: e.message });
+    opticalRegCalibrateStatus.className = "error";
+  } finally {
+    opticalRegCalibrateBtn.disabled = false;
+  }
+});
 
 // AF mode + live focus: PATCHes /camera/focus immediately (debounced for the
 // slider) so the embedded preview reflects the change while framing a shot —

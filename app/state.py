@@ -61,9 +61,14 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "plotting":             {"paused", "homing", "awaiting_pen_change",
                              "completed", "failed"},
     "paused":               {"plotting", "homing", "cancelled", "failed"},
-    "awaiting_pen_change":  {"plotting", "plotting_calibration", "cancelled",
-                             "failed"},
+    "awaiting_pen_change":  {"plotting", "plotting_calibration",
+                             "measuring_registration", "cancelled", "failed"},
     "plotting_calibration": {"awaiting_pen_change", "cancelled", "failed"},
+    # Camera-driven layer-registration measurement, run as a side action from
+    # an awaiting_pen_change pause (see plot_worker._run_optical_reg_phase):
+    # plots a probe cross, grabs a frame, returns to the pause. Same shape as
+    # plotting_calibration.
+    "measuring_registration": {"awaiting_pen_change", "cancelled", "failed"},
     "homing":               {"cancelled"},
     "completed":            {"ready"},
     "failed":               {"ready"},
@@ -160,6 +165,13 @@ _origin_base: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.
 _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
+# Result of the last camera layer-registration measurement at a pen-change
+# pause (see plot_worker._run_optical_reg_phase). Advisory only — the user
+# reviews it and clicks Apply, which routes the dx/dy through the ordinary
+# nudge_origin path. Belongs to one run: reset when a pause begins and when the
+# run ends. status: idle | measuring | measured | failed.
+_optical_reg: dict = {"status": "idle", "dx_mm": 0.0, "dy_mm": 0.0,
+                      "confidence": 0.0, "probe_mm": 0.0, "reason": ""}
 
 _clients: set = set()
 _event_queue: asyncio.Queue | None = None
@@ -335,6 +347,7 @@ def snapshot() -> dict:
         "manual_origin_offset_y_mm": _manual_origin_offset["y_mm"],
         "recording_status": _recording["status"],
         "recording_job_id": _recording["job_id"],
+        "optical_reg": dict(_optical_reg),
         "status": _derive_top_status(),
         "error": _error,
     }
@@ -547,6 +560,22 @@ def set_recording(status: str, job_id: str | None) -> None:
 
 def recording() -> tuple[str, str | None]:
     return _recording["status"], _recording["job_id"]
+
+
+def set_optical_reg(status: str, *, dx_mm: float = 0.0, dy_mm: float = 0.0,
+                    confidence: float = 0.0, probe_mm: float = 0.0,
+                    reason: str = "") -> None:
+    global _optical_reg
+    new = {"status": status, "dx_mm": dx_mm, "dy_mm": dy_mm,
+           "confidence": confidence, "probe_mm": probe_mm, "reason": reason}
+    if _optical_reg == new:
+        return
+    _optical_reg = new
+    _broadcast()
+
+
+def optical_reg() -> dict:
+    return dict(_optical_reg)
 
 
 def set_svg_status(svg_id: str, status: str,

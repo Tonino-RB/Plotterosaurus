@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError
 from lxml import etree
 
 from . import (
-    camera, config, ink_cache, layer_group, notify, optimize_expert_queue,
+    camera, config, export, ink_cache, layer_group, notify, optimize_expert_queue,
     optimize_queue, placement, plan_queue, plot_worker, state, svg_complexity,
     svg_optimize, svg_utils, updates,
 )
@@ -140,6 +140,8 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Nothing to continue": "nothing_to_continue",
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
     "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
+    "Optical registration only available at a pen-change pause": "optical_reg_not_at_pause",
+    "Camera is not calibrated for optical registration": "optical_reg_not_calibrated",
     "Manual jog only available while idle": "jog_not_idle",
     # Not failures — the UI turns these two into a confirm/cancel prompt and
     # retries with confirm_below_origin set.
@@ -371,6 +373,65 @@ def get_job_svg(job_id: str):
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(str(path), media_type="image/svg+xml")
+
+
+@app.get("/jobs/{job_id}/export")
+def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
+    """Download the job's processed drawing in another file format.
+
+    ``placed=false`` (default): the same file GET /jobs/{id}/svg serves — the
+    optimized .opt.svg when optimization has run, else the raw upload — in the
+    document's own coordinates, no placement or layer filtering.
+
+    ``placed=true``: the drawing rendered as a plot would lay it down —
+    selected layers only, positioned on the page by the job's settings, then
+    sheared by the *active machine's* axis skew (see app/export.py's
+    build_placed_svg). This is the post-processing output for driving another
+    plotter directly.
+
+    Synchronous on purpose — FastAPI runs it in a worker thread, so the
+    blocking vpype/cairosvg call doesn't stall the event loop.
+    """
+    job = state.get_job(job_id)
+    if job is None:
+        raise HTTPException(404)
+    if fmt not in export.FORMATS:
+        raise _coded(422, "export_bad_format")
+    src = plot_worker._effective_svg_path(job)
+    if not src.exists():
+        raise HTTPException(404)
+
+    ext = export.extension(fmt)
+    if placed:
+        if not any(s.get("selected", True) for s in job.get("layer_selections", [])):
+            raise _coded(422, "select_one_layer")
+        # Skew is a machine correction — it belongs only in a toolpath that
+        # drives the machine (G-code / HPGL). SVG / PNG / PDF are pictures of
+        # the drawing and stay square. Placement + transform apply to all.
+        apply_skew = fmt in ("gcode", "hpgl")
+        convert_src = UPLOAD_DIR / (
+            f"{job['svg_id']}.export.placed-src{'' if apply_skew else '-flat'}.svg")
+        try:
+            export.build_placed_svg(job, src, convert_src, apply_skew=apply_skew)
+        except export.ExportError as e:
+            raise _coded(422, "export_failed", message=str(e))
+        out = UPLOAD_DIR / f"{job['svg_id']}.export.placed.{ext}"
+    else:
+        convert_src = src
+        out = UPLOAD_DIR / f"{job['svg_id']}.export.{ext}"
+
+    try:
+        export.export(convert_src, out, fmt,
+                      transparent=(fmt == "png" and bg == "transparent"))
+    except export.ExportError as e:
+        raise _coded(422, "export_failed", message=str(e))
+
+    meta = state.get_upload_meta(job["svg_id"]) or {}
+    name = job.get("filename") or meta.get("filename") or f"{job['svg_id']}.svg"
+    stem = Path(name).stem
+    suffix = ".placed" if placed else ""
+    return FileResponse(str(out), media_type=export.media_type(fmt),
+                        filename=f"{stem}{suffix}.{ext}")
 
 
 # Library ------------------------------------------------------------------
@@ -1007,6 +1068,7 @@ class JobCreate(_OptimizeCreateFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
+    optical_reg: bool = False
 
 
 class MoveRequest(BaseModel):
@@ -1090,6 +1152,18 @@ class SettingsUpdate(BaseModel):
     camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
     camera_speed_multiplier_default: float | None = Field(None, gt=1.0)
     record_plot_default: bool | None = None
+    optical_reg_default: bool | None = None
+    optical_reg_mm_per_px: float | None = Field(None, ge=0.0)
+    optical_reg_cam_rotation_deg: float | None = Field(None, ge=-180.0, le=180.0)
+    optical_reg_cam_offset_x_mm: float | None = Field(None, ge=-50.0, le=50.0)
+    optical_reg_cam_offset_y_mm: float | None = Field(None, ge=-50.0, le=50.0)
+    optical_reg_mark_x_mm: float | None = Field(None, ge=0.0)
+    optical_reg_mark_y_mm: float | None = Field(None, ge=0.0)
+    optical_reg_mark_size_mm: float | None = Field(None, ge=0.5, le=20.0)
+    optical_reg_probe_offset_mm: float | None = Field(None, ge=0.2, le=20.0)
+    optical_reg_probe_offset_max_mm: float | None = Field(None, ge=0.5, le=40.0)
+    optical_reg_frames: int | None = Field(None, ge=1, le=15)
+    optical_reg_max_correction_mm: float | None = Field(None, ge=0.1, le=20.0)
     draw_stream_enabled: bool | None = None
     draw_stream_stroke_width_px: int | None = Field(None, ge=1, le=40)
     draw_stream_background: Literal["black", "white"] | None = None
@@ -1131,7 +1205,8 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "transform_scale", "transform_rotation_deg",
     "transform_offset_x_mm", "transform_offset_y_mm",
     "fit_content", "pause_between_layers", "layer_mode",
-    "delete_on_complete", "disable_motors_on_complete", "record_plot", "layer_selections",
+    "delete_on_complete", "disable_motors_on_complete", "record_plot",
+    "optical_reg", "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
@@ -1202,6 +1277,7 @@ class JobUpdate(_OptimizeOptionalFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
+    optical_reg: bool | None = None
 
 
 @app.post("/jobs")
@@ -1509,6 +1585,7 @@ class ApiJobMetadata(_OptimizeOptionalFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
+    optical_reg: bool | None = None
     # Request-only directive: when true AND the queue is empty at the moment of
     # the POST, kick off the worker so this job plots immediately. Not stored
     # on the job record.
@@ -1668,6 +1745,7 @@ async def api_create_job(file: UploadFile = File(...),
                                            config.CAMERA_TIMELAPSE_INTERVAL_S_DEFAULT),
         "record_speed_multiplier": pick(meta.record_speed_multiplier,
                                        config.CAMERA_SPEED_MULTIPLIER_DEFAULT),
+        "optical_reg": pick(meta.optical_reg, config.OPTICAL_REG_DEFAULT),
         "optimize_svg": pick(meta.optimize_svg, config.OPTIMIZE_SVG_DEFAULT),
         "optimize_svg_tolerance_mm": pick(meta.optimize_svg_tolerance_mm, config.OPTIMIZE_SVG_TOLERANCE_DEFAULT_MM),
         "optimize_svg_linemerge": pick(meta.optimize_svg_linemerge, config.OPTIMIZE_SVG_LINEMERGE_DEFAULT),
@@ -2069,6 +2147,48 @@ def nudge_origin_queue(req: NudgeOriginRequest):
 @app.post("/api/v1/queue/nudge-origin", dependencies=[Depends(require_api_key)])
 def api_nudge_origin_queue(req: NudgeOriginRequest):
     return nudge_origin_queue(req)
+
+
+class OpticalRegMeasureRequest(BaseModel):
+    # Nominal probe-cross offset; None -> the configured default. The
+    # "measure with a bigger offset" button sends a larger value.
+    probe_mm: float | None = Field(None, ge=0.2, le=40.0)
+
+
+@app.post("/queue/optical-reg/measure")
+def optical_reg_measure(req: OpticalRegMeasureRequest):
+    try:
+        plot_worker.trigger_optical_reg(req.probe_mm)
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return {"ok": True}
+
+
+@app.post("/api/v1/queue/optical-reg/measure", dependencies=[Depends(require_api_key)])
+def api_optical_reg_measure(req: OpticalRegMeasureRequest):
+    return optical_reg_measure(req)
+
+
+@app.get("/camera/optical-reg/preview")
+def optical_reg_preview():
+    if not camera.OPTICAL_REG_PREVIEW.exists():
+        raise HTTPException(404, "no optical-registration preview yet")
+    return FileResponse(str(camera.OPTICAL_REG_PREVIEW), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/optical-reg/calibrate")
+def optical_reg_calibrate():
+    try:
+        result = plot_worker.optical_reg_calibrate()
+    except RuntimeError as e:
+        raise _worker_error(e)
+    return result
+
+
+@app.post("/api/v1/optical-reg/calibrate", dependencies=[Depends(require_api_key)])
+def api_optical_reg_calibrate():
+    return optical_reg_calibrate()
 
 
 class LivePenHeightRequest(BaseModel):

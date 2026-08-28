@@ -31,6 +31,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import numpy as np
+
 from . import config, state
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,9 @@ _FLICKER_PERIOD_US = {"off": 0, "50hz": 10_000, "60hz": 8_333}
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEGMENTS_DIR = BASE_DIR / "recordings" / "_segments"
+# Annotated still from the last optical-registration measurement, served by
+# GET /camera/optical-reg/preview and overwritten on every measure.
+OPTICAL_REG_PREVIEW = BASE_DIR / "recordings" / "_optical_reg_preview.jpg"
 
 # Serializes recording start/pause/resume/stop so a job hook and a manual
 # button click can't race MediaMTX into an inconsistent state.
@@ -373,3 +378,62 @@ def _timelapse_loop(segments_dir: Path, interval_s: float) -> None:
         except Exception:
             log.warning("camera: timelapse snapshot failed", exc_info=True)
         _stop_timelapse.wait(interval_s)
+
+
+# Optical-registration still capture -----------------------------------------
+#
+# Grabbing frames for optical_reg goes through the same passive RTSP pull the
+# timelapse loop uses: ffmpeg connects as one more reader, MediaMTX fans the
+# camera out to it, and the live WebRTC/HLS viewers never notice. Nothing here
+# touches the Control API, so the pipeline is never restarted.
+
+def grab_gray_frames(n: int = 3, timeout: float = 15.0) -> list[np.ndarray]:
+    """`n` single grey frames pulled from the live stream, each a 2-D uint8
+    array at the configured stream resolution. Frames that fail to decode are
+    skipped; the list can come back shorter than `n` (empty if the camera is
+    unreachable)."""
+    if not config.CAMERA_ENABLED:
+        raise RuntimeError("Camera is not enabled")
+    w = config.CAMERA_RESOLUTION_WIDTH
+    h = config.CAMERA_RESOLUTION_HEIGHT
+    rtsp_url = f"rtsp://127.0.0.1:{RTSP_PORT}/{PATH_NAME}"
+    frames: list[np.ndarray] = []
+    for _ in range(max(1, n)):
+        try:
+            out = subprocess.run(
+                ["ffmpeg", "-nostdin", "-rtsp_transport", "tcp", "-i", rtsp_url,
+                 "-frames:v", "1", "-an", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                check=True, capture_output=True, timeout=timeout,
+            ).stdout
+        except Exception:
+            log.warning("camera: optical-reg frame grab failed", exc_info=True)
+            continue
+        if len(out) >= w * h:
+            frames.append(np.frombuffer(out[:w * h], dtype=np.uint8).reshape(h, w))
+    return frames
+
+
+def grab_median_gray(n: int = 3) -> np.ndarray | None:
+    """Median of `n` grey frames — kills sensor noise and JPEG mush before the
+    line fits. None if no frame could be read."""
+    frames = grab_gray_frames(n)
+    if not frames:
+        return None
+    if len(frames) == 1:
+        return frames[0]
+    return np.median(np.stack(frames), axis=0).astype(np.uint8)
+
+
+def write_optical_reg_preview(rgb: np.ndarray) -> None:
+    """Encode an (H, W, 3) uint8 RGB array to OPTICAL_REG_PREVIEW as JPEG."""
+    h, w = rgb.shape[:2]
+    OPTICAL_REG_PREVIEW.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgb24",
+             "-s", f"{w}x{h}", "-i", "-", "-frames:v", "1", str(OPTICAL_REG_PREVIEW)],
+            input=np.ascontiguousarray(rgb, dtype=np.uint8).tobytes(),
+            check=True, capture_output=True, timeout=30,
+        )
+    except Exception:
+        log.warning("camera: could not write optical-reg preview", exc_info=True)

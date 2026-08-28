@@ -27,6 +27,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
 - Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
 - Background pre-optimization and pre-planning queues: uploads are vpype-optimized and time/distance-estimated ahead of time (on upload and on job create/edit), so clicking Plot is usually an instant cache hit rather than a 20–30s wait
+- "Save As" on the job card: download the processed drawing as SVG, PNG (white or transparent), PDF, G-code, or HPGL — either "as optimized" (the drawing's own coordinates) or "as plotted" (selected layers only, placed on the page with the job's size/margins/transform; G-code and HPGL additionally carry the active machine's axis-skew correction, SVG/PNG/PDF stay square), so the export is a ready-to-run toolpath for another plotter / GRBL machine
 
 **During the plot**
 

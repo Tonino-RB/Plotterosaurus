@@ -1,0 +1,28 @@
+# vpype config for app/export.py's HPGL export.
+#
+# vpype-gcode ships an "HPGL-R" profile, but it emits *relative* coordinates:
+# each segment's delta is rounded to a whole plotter unit (1/40 mm), and on a
+# finely tessellated curve those roundings accumulate — a plain circle drifts
+# outward by ~1% over a few thousand segments. It also restarts every layer at
+# the origin, which desynchronises its own delta tracking and mispositions any
+# layer after the first.
+#
+# "hpgl_abs" below sidesteps both: absolute PA coordinates, so every point is
+# rounded once from its true position (bounded ±1/80 mm, no accumulation) and
+# layers need no per-layer origin reset. app/export.py reads it with
+# --single-layer so everything is pen SP1.
+#
+# `unit = "0.025mm"` (not `scale_x/scale_y = 40`) is deliberate: gwrite computes
+# its vertical-flip origin from the page size divided by the unit scale, so the
+# geometry and the flip pivot only line up when the plotter unit *is* the unit.
+# With scale_x/scale_y the flip pivot lands in millimetres while the geometry is
+# in 1/40 mm, and every Y comes out negative and unframed.
+
+[gwrite.hpgl_abs]
+document_start = "IN;SP1;PA;"
+segment_first = "PU{x:.0f},{y:.0f};PD"
+segment = "{x:.0f},{y:.0f},"
+segment_last = "{x:.0f},{y:.0f};"
+document_end = "PU;SP0;IN;\n"
+unit = "0.025mm"
+vertical_flip = true

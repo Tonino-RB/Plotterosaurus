@@ -17,3 +17,10 @@ lxml
 # dependencies of vpype, and relying on that is luck rather than a declaration.
 numpy
 scipy
+
+# The "Save As" export feature (app/export.py). cairosvg rasterizes/prints the
+# optimized SVG to PNG/PDF — pure Python, binds to the system libcairo, which is
+# already present on the Pi. vpype-gcode adds vpype's `gwrite` command and the
+# bundled `gcodemm` / `HPGL-R` profiles used for the G-code and HPGL exports.
+cairosvg
+vpype-gcode
