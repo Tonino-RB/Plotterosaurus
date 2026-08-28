@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from typing import Iterator
@@ -139,6 +140,15 @@ _POSITION_BROADCAST_MIN_INTERVAL_S = 0.1
 # draw_stream_enabled, since most installs never read the trace at all.
 _draw_trace_fp = None
 _draw_trace_job_id: str | None = None
+# Bytes written to the current trace, and the ceiling at which appending
+# stops. The file is truncated per run (set_active), so this bounds one run,
+# not the machine's lifetime — but one run is exactly where it grew without
+# limit: at one point per motion segment a ten-hour job writes on the order of
+# 100MB. Past the ceiling the run keeps plotting and the live socket keeps
+# streaming; only the on-disk replay stops extending, so a refresh mid-run
+# redraws the first ~350k points instead of nothing.
+_draw_trace_bytes: int = 0
+_DRAW_TRACE_MAX_BYTES = 32 * 1024 * 1024
 # Always None: nothing sets it, and the setter that used to has been removed as
 # dead code. The field stays in snapshot() because API.md publishes it in the
 # WebSocket state payload, so dropping it is a wire-format change for external
@@ -179,8 +189,17 @@ _optical_reg: dict = {"status": "idle", "dx_mm": 0.0, "dy_mm": 0.0,
 # to measure against and must not offer the button.
 _optical_reg_ready: bool = False
 
-_clients: set = set()
+# ws -> _Client. Each connected socket gets its own bounded backlog and its
+# own send task (see _Client / drain_events), so a socket that has stopped
+# draining — a backgrounded phone tab, an OBS source on flaky wifi — starves
+# only itself instead of holding up the fan-out for everyone else.
+_clients: dict = {}
 _event_queue: asyncio.Queue | None = None
+# Bounded so a stalled loop can't grow it without limit. drain_events never
+# awaits a client, so this only backs up if the event loop itself is blocked,
+# and _offer_event drops rather than raising when it does.
+_EVENT_QUEUE_MAXSIZE = 512
+_event_queue_full_logged: bool = False
 _loop: asyncio.AbstractEventLoop | None = None
 # Serializes writes to STATE_PATH. The asyncio loop, the plot worker thread,
 # and the optimize worker thread can all call _persist concurrently. Without
@@ -192,7 +211,7 @@ _persist_lock = threading.Lock()
 def init(loop: asyncio.AbstractEventLoop) -> None:
     global _event_queue, _loop
     _loop = loop
-    _event_queue = asyncio.Queue()
+    _event_queue = asyncio.Queue(maxsize=_EVENT_QUEUE_MAXSIZE)
     _load_from_disk()
 
 
@@ -476,6 +495,7 @@ def move_job(job_id: str, new_index: int) -> bool:
 
 def set_active(job_id: str | None) -> None:
     global _active_id, _last_active_id, _draw_trace_fp, _draw_trace_job_id
+    global _draw_trace_bytes
     _active_id = job_id
     if job_id is not None:
         _last_active_id = job_id
@@ -488,6 +508,7 @@ def set_active(job_id: str | None) -> None:
         if _draw_trace_fp is not None:
             _draw_trace_fp.close()
             _draw_trace_fp = None
+        _draw_trace_bytes = 0
         if config.DRAW_STREAM_ENABLED:
             try:
                 # Line-buffered so a concurrent reader (draw_trace_snapshot_lines)
@@ -684,11 +705,11 @@ def _broadcast() -> None:
     if _loop is None or _event_queue is None:
         return
     payload = {"type": "state", **snapshot()}
-    _loop.call_soon_threadsafe(_event_queue.put_nowait, payload)
+    _loop.call_soon_threadsafe(_offer_event, payload)
 
 
 def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
-    global _last_pen_position, _last_position_broadcast_t
+    global _last_pen_position, _last_position_broadcast_t, _draw_trace_bytes
     _last_pen_position = {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
     # Append every sample for the active job to disk (see DRAW_TRACE_PATH
     # above) so the /draw-stream OBS overlay can replay what's already been
@@ -698,13 +719,19 @@ def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
     # completion, but the file itself is left alone so a finished job's trace
     # is still replayable until the next job actually starts, matching
     # last_active_id's "hold the last run" behaviour above.
-    if _draw_trace_fp is not None and _active_id is not None:
+    if (_draw_trace_fp is not None and _active_id is not None
+            and _draw_trace_bytes < _DRAW_TRACE_MAX_BYTES):
         job = _get(_active_id)
         stage_index = (job or {}).get("current_stage_index", 0)
+        line = json.dumps(
+            {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down,
+             "stage_index": stage_index}) + "\n"
         try:
-            _draw_trace_fp.write(json.dumps(
-                {"x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down,
-                 "stage_index": stage_index}) + "\n")
+            _draw_trace_fp.write(line)
+            _draw_trace_bytes += len(line)
+            if _draw_trace_bytes >= _DRAW_TRACE_MAX_BYTES:
+                log.warning("state: draw trace hit %d bytes; no longer appending",
+                            _draw_trace_bytes)
         except (OSError, ValueError):
             # Never allowed to fail the run — trace recording is a bonus, not
             # a plotting dependency (see _draw_trace_fp above). A full disk
@@ -725,7 +752,7 @@ def emit_position(x_mm: float, y_mm: float, pen_down: bool) -> None:
         return
     _last_position_broadcast_t = now
     payload = {"type": "position", "x_mm": x_mm, "y_mm": y_mm, "pen_down": pen_down}
-    _loop.call_soon_threadsafe(_event_queue.put_nowait, payload)
+    _loop.call_soon_threadsafe(_offer_event, payload)
 
 
 def draw_trace_snapshot_lines() -> Iterator[str]:
@@ -757,24 +784,111 @@ def draw_trace_snapshot_lines() -> Iterator[str]:
         pass
 
 
+def _offer_event(payload: dict) -> None:
+    """Put an event on the fan-out queue, dropping it if the queue is full.
+
+    Runs on the event loop (producers reach it through call_soon_threadsafe),
+    so it must not block and must not raise — an exception here surfaces as an
+    unhandled error in the loop, not at the plot worker that emitted it.
+    """
+    global _event_queue_full_logged
+    if _event_queue is None:
+        return
+    try:
+        _event_queue.put_nowait(payload)
+        _event_queue_full_logged = False
+    except asyncio.QueueFull:
+        # Once per stretch of fullness, not once per dropped frame: the loop
+        # being stuck is exactly when the journal should not be flooded.
+        if not _event_queue_full_logged:
+            _event_queue_full_logged = True
+            log.warning("state: event queue full; dropping events")
+
+
+# How many frames may sit unsent for one client before it starts losing them.
+# Deep enough to ride out a normal stall (a phone tab that is slow for a
+# second), shallow enough that a client which comes back gets current data
+# rather than a minute of replay.
+_CLIENT_BACKLOG_MAX = 64
+
+
+class _Client:
+    """One connected socket, its backlog, and the task that drains it."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        # (type, serialized text) — the text is built once in drain_events and
+        # shared by every client; the type is what the drop policy reads.
+        self.pending: deque = deque()
+        self.wake = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    def offer(self, kind: str, text: str) -> None:
+        if len(self.pending) >= _CLIENT_BACKLOG_MAX:
+            # Full: make room by discarding the oldest position frame. A
+            # position is a sample of a continuous signal and the next one is
+            # milliseconds away; a state frame is a transition. If the backlog
+            # holds no position to sacrifice it is all transitions, so an
+            # incoming position yields instead, and an incoming state frame
+            # displaces the oldest one (each state frame is a whole snapshot,
+            # so the newest is the one that must arrive).
+            for i, (k, _) in enumerate(self.pending):
+                if k == "position":
+                    del self.pending[i]
+                    break
+            else:
+                if kind == "position":
+                    return
+                self.pending.popleft()
+        self.pending.append((kind, text))
+        self.wake.set()
+
+
+async def _client_sender(client: _Client) -> None:
+    """Send one client's backlog, at that client's own pace."""
+    try:
+        while True:
+            if not client.pending:
+                client.wake.clear()
+                await client.wake.wait()
+                continue
+            _, text = client.pending.popleft()
+            await client.ws.send_text(text)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Socket is gone (or broke mid-send). Nothing to report — the route's
+        # own finally still calls remove_client.
+        _clients.pop(client.ws, None)
+
+
 async def drain_events() -> None:
     assert _event_queue is not None
     while True:
         payload = await _event_queue.get()
         text = json.dumps(payload)
-        dead = []
-        for ws in list(_clients):
-            try:
-                await ws.send_text(text)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            _clients.discard(ws)
+        kind = payload.get("type")
+        # Hands off to each client's own queue and never awaits a socket, so
+        # one client that has stopped reading cannot hold up the others.
+        for client in list(_clients.values()):
+            client.offer(kind, text)
 
 
 def add_client(ws) -> None:
-    _clients.add(ws)
+    """Register a socket and start its sender task, seeded with a snapshot.
+
+    The initial snapshot goes through the same backlog as everything else
+    rather than being sent by the route directly: two coroutines writing to
+    one WebSocket concurrently is a race, and this way the socket has exactly
+    one writer.
+    """
+    client = _Client(ws)
+    _clients[ws] = client
+    client.offer("state", json.dumps({"type": "state", **snapshot()}))
+    client.task = asyncio.create_task(_client_sender(client))
 
 
 def remove_client(ws) -> None:
-    _clients.discard(ws)
+    client = _clients.pop(ws, None)
+    if client is not None and client.task is not None:
+        client.task.cancel()

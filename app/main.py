@@ -2698,9 +2698,10 @@ async def system_shutdown():
 @app.websocket("/ws/state")
 async def ws_state(ws: WebSocket):
     await ws.accept()
+    # add_client queues the opening snapshot on the socket's own sender task —
+    # sending it from here too would put two writers on one WebSocket.
     state.add_client(ws)
     try:
-        await ws.send_json({"type": "state", **state.snapshot()})
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -2721,9 +2722,10 @@ async def api_ws_state(ws: WebSocket):
         await ws.close()
         return
     await ws.accept()
+    # add_client queues the opening snapshot on the socket's own sender task —
+    # sending it from here too would put two writers on one WebSocket.
     state.add_client(ws)
     try:
-        await ws.send_json({"type": "state", **state.snapshot()})
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
