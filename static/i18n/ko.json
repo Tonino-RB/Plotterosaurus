@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "광학 정합은 펜 교체 일시정지 중에만 사용할 수 있어요.",
+  "apierror.optical_reg_not_calibrated": "카메라가 광학 정합용으로 보정되지 않았습니다. 설정에서 보정하세요.",
+  "apierror.optical_reg_no_reference": "이 작업 실행에는 측정 기준이 되는 기준 표시가 없습니다. 기준 표시는 광학 정합을 켠 작업의 첫 펜 교체 때 그려집니다."
 }

@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "光学レジストレーションはペン交換の一時停止中のみ利用できます。",
+  "apierror.optical_reg_not_calibrated": "カメラが光学レジストレーション用に較正されていません。設定で較正してください。",
+  "apierror.optical_reg_no_reference": "この実行には測定の基準となるマークがありません。基準マークは、光学レジストレーションを有効にしたジョブの最初のペン交換時に描かれます。"
 }

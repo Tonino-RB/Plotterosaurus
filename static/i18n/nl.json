@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "Optische registratie is alleen beschikbaar bij een pauze voor penwissel.",
+  "apierror.optical_reg_not_calibrated": "De camera is niet gekalibreerd voor optische registratie. Kalibreer hem bij Instellingen.",
+  "apierror.optical_reg_no_reference": "Deze run heeft geen referentiemarkering om tegen te meten. Die wordt getekend bij de eerste penwissel van een taak met optische registratie aan."
 }

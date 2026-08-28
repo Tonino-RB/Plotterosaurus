@@ -3133,14 +3133,15 @@ async function postNudge(dx, dy, confirmBelowOrigin) {
     if (!res.ok) {
       const { code, text } = await readErrDetail(res);
       if (code === "nudge_below_origin") {
-        askBelowOrigin(() => postNudge(dx, dy, true));
-        return;
+        return askBelowOrigin(() => postNudge(dx, dy, true));
       }
       throw new Error(text);
     }
+    return true;
   } catch (e) {
     topMessage.textContent = t("error.request_failed", { message: e.message });
     topMessage.className = "error";
+    return false;
   }
 }
 
@@ -3156,6 +3157,16 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
 // proposes a dx/dy, which the user confirms via the same postNudge() path as
 // the manual nudge above. It never moves the carriage on its own.
 let opticalRegDismissedSig = null;
+// Signature of the reading already sent to nudge_origin, so it can never be
+// applied twice (see the Apply handler).
+let opticalRegAppliedSig = null;
+
+function rerenderOpticalReg() {
+  const active = serverState.active_id
+    ? serverState.queue.find((j) => j.job_id === serverState.active_id)
+    : null;
+  renderOpticalReg(active, active ? active.status : "idle");
+}
 
 function opticalRegSig(r) {
   return `${r.status}|${r.dx_mm}|${r.dy_mm}|${r.probe_mm}`;
@@ -3181,6 +3192,10 @@ function renderOpticalReg(active, status) {
     && (status === "awaiting_pen_change" || status === "measuring_registration")
     && !!appSettings.camera_enabled
     && !!active.optical_reg
+    // reg.ready: the run actually got its reference cross down. Without it
+    // there is nothing to measure against, and measuring would draw probe
+    // crosses on the artwork and report the gap between two of those.
+    && !!reg.ready
     && (appSettings.optical_reg_mm_per_px || 0) > 0;
   opticalReg.hidden = !eligible;
   if (!eligible) return;
@@ -3218,18 +3233,30 @@ opticalRegWidenBtn.addEventListener("click", () => {
   const reg = serverState.optical_reg || {};
   postOpticalRegMeasure(Math.max(0.4, (reg.probe_mm || 2) * 2));
 });
-opticalRegApplyBtn.addEventListener("click", () => {
+opticalRegApplyBtn.addEventListener("click", async () => {
   const reg = serverState.optical_reg || {};
-  if (reg.status === "measured") postNudge(reg.dx_mm || 0, reg.dy_mm || 0, false);
+  const sig = opticalRegSig(reg);
+  // The nudge is *relative* and the reading stays "measured" after it lands, so
+  // a second click would apply the same correction a second time. Retire the
+  // reading up front, by signature, so neither a double click nor a re-render
+  // from the WebSocket can offer it again; the result card disappearing is also
+  // the only confirmation the user gets that it went through. Put back on a
+  // definite failure. (The below-origin confirmation hands off to a modal and
+  // resolves undefined here — the reading stays retired either way, so
+  // cancelling that prompt means measuring again.)
+  if (reg.status !== "measured" || opticalRegAppliedSig === sig) return;
+  opticalRegAppliedSig = sig;
+  opticalRegDismissedSig = sig;
+  rerenderOpticalReg();
+  if ((await postNudge(reg.dx_mm || 0, reg.dy_mm || 0, false)) === false) {
+    opticalRegAppliedSig = null;
+    opticalRegDismissedSig = null;
+    rerenderOpticalReg();
+  }
 });
 opticalRegDismissBtn.addEventListener("click", () => {
   opticalRegDismissedSig = opticalRegSig(serverState.optical_reg || { status: "idle" });
-  renderOpticalReg(
-    serverState.active_id ? serverState.queue.find((j) => j.job_id === serverState.active_id) : null,
-    serverState.active_id
-      ? (serverState.queue.find((j) => j.job_id === serverState.active_id) || {}).status
-      : "idle",
-  );
+  rerenderOpticalReg();
 });
 
 // Manual jog — idle-only (see applyTopControls, which enables/disables

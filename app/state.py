@@ -172,6 +172,12 @@ _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paus
 # run ends. status: idle | measuring | measured | failed.
 _optical_reg: dict = {"status": "idle", "dx_mm": 0.0, "dy_mm": 0.0,
                       "confidence": 0.0, "probe_mm": 0.0, "reason": ""}
+# Whether this run got its reference cross onto the paper — the once-per-run
+# mark every measurement is taken against. Outlives the per-measurement result
+# above (which resets at each pause), because it is a fact about the run: a job
+# that never opted in, or one resumed past the stage that draws it, has nothing
+# to measure against and must not offer the button.
+_optical_reg_ready: bool = False
 
 _clients: set = set()
 _event_queue: asyncio.Queue | None = None
@@ -347,7 +353,7 @@ def snapshot() -> dict:
         "manual_origin_offset_y_mm": _manual_origin_offset["y_mm"],
         "recording_status": _recording["status"],
         "recording_job_id": _recording["job_id"],
-        "optical_reg": dict(_optical_reg),
+        "optical_reg": dict(_optical_reg, ready=_optical_reg_ready),
         "status": _derive_top_status(),
         "error": _error,
     }
@@ -574,8 +580,21 @@ def set_optical_reg(status: str, *, dx_mm: float = 0.0, dy_mm: float = 0.0,
     _broadcast()
 
 
+def set_optical_reg_ready(ready: bool) -> None:
+    """Record whether this run has a reference cross to measure against.
+
+    Separate from set_optical_reg, which resets at every pause: this one is a
+    property of the run, not of the last reading.
+    """
+    global _optical_reg_ready
+    if _optical_reg_ready == ready:
+        return
+    _optical_reg_ready = ready
+    _broadcast()
+
+
 def optical_reg() -> dict:
-    return dict(_optical_reg)
+    return dict(_optical_reg, ready=_optical_reg_ready)
 
 
 def set_svg_status(svg_id: str, status: str,

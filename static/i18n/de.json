@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "Die optische Registrierung ist nur bei einer Pause zum Stiftwechsel verfügbar.",
+  "apierror.optical_reg_not_calibrated": "Die Kamera ist nicht für die optische Registrierung kalibriert. Kalibriere sie in den Einstellungen.",
+  "apierror.optical_reg_no_reference": "Für diesen Lauf gibt es keine Referenzmarke zum Messen. Sie wird beim ersten Stiftwechsel eines Auftrags mit eingeschalteter optischer Registrierung gezeichnet."
 }

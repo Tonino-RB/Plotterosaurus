@@ -279,3 +279,53 @@ def test_placed_endpoint_no_selection_is_422(client, job_from_svg):
                      params={"fmt": "svg", "placed": "true"})
     assert res.status_code == 422
     assert res.json()["detail"]["code"] == "select_one_layer"
+
+
+# Output files -----------------------------------------------------------
+#
+# Nothing reuses an export — every request re-runs the conversion — so the
+# output is scratch, and a path keyed on the job alone was not a cache but a
+# collision: white and transparent PNG wrote the same file, two requests in
+# flight together could serve each other's bytes, and nothing ever reclaimed
+# any of it.
+
+def _exports_in_uploads():
+    from app import main
+    return sorted(p.name for p in main.UPLOAD_DIR.glob("*.export*"))
+
+
+def test_each_export_gets_its_own_output_path(client, export_job, monkeypatch):
+    seen = []
+    real = export.export
+    monkeypatch.setattr(export, "export",
+                        lambda src, dst, fmt, **kw: (seen.append(dst),
+                                                     real(src, dst, fmt, **kw))[1])
+    url = f"/jobs/{export_job['job_id']}/export"
+    assert client.get(url, params={"fmt": "png"}).status_code == 200
+    assert client.get(url, params={"fmt": "png", "bg": "transparent"}).status_code == 200
+    assert len(seen) == 2 and seen[0] != seen[1]
+
+
+@pytest.mark.parametrize("params", [
+    {"fmt": "png"},
+    {"fmt": "png", "bg": "transparent"},
+    {"fmt": "svg", "placed": "true"},
+])
+def test_an_export_leaves_nothing_behind(client, export_job, params):
+    before = _exports_in_uploads()
+    res = client.get(f"/jobs/{export_job['job_id']}/export", params=params)
+    assert res.status_code == 200, res.text
+    assert res.content
+    assert _exports_in_uploads() == before
+
+
+def test_a_failed_export_leaves_nothing_behind(client, export_job, monkeypatch):
+    def boom(src, dst, fmt, **kw):
+        raise export.ExportError("nope")
+
+    monkeypatch.setattr(export, "export", boom)
+    before = _exports_in_uploads()
+    res = client.get(f"/jobs/{export_job['job_id']}/export",
+                     params={"fmt": "svg", "placed": "true"})
+    assert res.status_code == 422
+    assert _exports_in_uploads() == before

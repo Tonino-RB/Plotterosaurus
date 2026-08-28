@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
+from starlette.background import BackgroundTask
 
 from lxml import etree
 
@@ -142,6 +143,8 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
     "Optical registration only available at a pen-change pause": "optical_reg_not_at_pause",
     "Camera is not calibrated for optical registration": "optical_reg_not_calibrated",
+    "No optical registration reference mark for this run": "optical_reg_no_reference",
+    "Camera is not enabled": "camera_not_enabled",
     "Manual jog only available while idle": "jog_not_idle",
     # Not failures — the UI turns these two into a confirm/cancel prompt and
     # retries with confirm_below_origin set.
@@ -405,6 +408,14 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
         raise HTTPException(404)
 
     ext = export.extension(fmt)
+    # One private set of files per request, cleaned up once the response is out.
+    # Nothing reuses an export — every request re-runs the conversion — so a
+    # path keyed on the job alone bought no cache, only collisions: white and
+    # transparent PNG wrote the same file, and two requests in flight together
+    # could serve each other's bytes. The {svg_id}. prefix keeps whatever a
+    # crashed request leaves behind inside delete_svg_files' glob.
+    token = uuid.uuid4().hex[:8]
+    scratch: list[Path] = []
     if placed:
         if not any(s.get("selected", True) for s in job.get("layer_selections", [])):
             raise _coded(422, "select_one_layer")
@@ -412,21 +423,23 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
         # drives the machine (G-code / HPGL). SVG / PNG / PDF are pictures of
         # the drawing and stay square. Placement + transform apply to all.
         apply_skew = fmt in ("gcode", "hpgl")
-        convert_src = UPLOAD_DIR / (
-            f"{job['svg_id']}.export.placed-src{'' if apply_skew else '-flat'}.svg")
+        convert_src = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.placed-src.svg"
+        scratch.append(convert_src)
         try:
             export.build_placed_svg(job, src, convert_src, apply_skew=apply_skew)
         except export.ExportError as e:
+            _unlink_all(scratch)
             raise _coded(422, "export_failed", message=str(e))
-        out = UPLOAD_DIR / f"{job['svg_id']}.export.placed.{ext}"
     else:
         convert_src = src
-        out = UPLOAD_DIR / f"{job['svg_id']}.export.{ext}"
+    out = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.{ext}"
+    scratch.append(out)
 
     try:
         export.export(convert_src, out, fmt,
                       transparent=(fmt == "png" and bg == "transparent"))
     except export.ExportError as e:
+        _unlink_all(scratch)
         raise _coded(422, "export_failed", message=str(e))
 
     meta = state.get_upload_meta(job["svg_id"]) or {}
@@ -434,7 +447,16 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     stem = Path(name).stem
     suffix = ".placed" if placed else ""
     return FileResponse(str(out), media_type=export.media_type(fmt),
-                        filename=f"{stem}{suffix}.{ext}")
+                        filename=f"{stem}{suffix}.{ext}",
+                        background=BackgroundTask(_unlink_all, scratch))
+
+
+def _unlink_all(paths: list[Path]) -> None:
+    for p in paths:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            log.exception("export: failed to unlink %s", p)
 
 
 # Library ------------------------------------------------------------------
@@ -2546,10 +2568,28 @@ def patch_settings(req: SettingsUpdate):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise _coded(400, "no_settings")
+    # optical_reg_mm_per_px is millimetres per *pixel*, so it only means
+    # anything at the resolution it was fitted at (plot_worker.optical_reg_
+    # calibrate). Changing the stream resolution silently rescales every later
+    # measurement while the UI still reports "Calibrated", so drop it back to
+    # the uncalibrated sentinel and make the user recalibrate. Skipped when the
+    # same request sets the scale itself — then they mean that value.
+    if ("optical_reg_mm_per_px" not in updates
+            and _changes_camera_resolution(updates)):
+        updates["optical_reg_mm_per_px"] = 0.0
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()
     return _settings_payload()
+
+
+def _changes_camera_resolution(updates: dict) -> bool:
+    return (updates.get("camera_resolution_width",
+                        config.CAMERA_RESOLUTION_WIDTH)
+            != config.CAMERA_RESOLUTION_WIDTH
+            or updates.get("camera_resolution_height",
+                           config.CAMERA_RESOLUTION_HEIGHT)
+            != config.CAMERA_RESOLUTION_HEIGHT)
 
 
 # System -----------------------------------------------------------------

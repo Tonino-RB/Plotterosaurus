@@ -187,10 +187,19 @@ _SETTINGS: list[_Setting] = [
     _Setting("optical_reg_mark_size_mm", float, 3.0, lambda v: 0.5 <= v <= 20.0),
     # Deliberate nominal offset of the probe cross from the reference, so the
     # two never overlap however different the nib widths; doubled and retried
-    # up to _max if the crosses still merge.
-    _Setting("optical_reg_probe_offset_mm", float, 2.0, lambda v: 0.2 <= v <= 20.0),
-    _Setting("optical_reg_probe_offset_max_mm", float, 8.0, lambda v: 0.5 <= v <= 40.0),
+    # up to _max if the crosses still merge. Has to clear both the mark size and
+    # the max correction below, or the crosses merge on every attempt and no
+    # pair can be told apart — plot_worker._run_optical_reg_phase floors it at
+    # whatever those two imply, so setting this lower than the floor does
+    # nothing.
+    _Setting("optical_reg_probe_offset_mm", float, 6.0, lambda v: 0.2 <= v <= 20.0),
+    _Setting("optical_reg_probe_offset_max_mm", float, 24.0, lambda v: 0.5 <= v <= 40.0),
     _Setting("optical_reg_frames", int, 3, lambda v: 1 <= v <= 15),
+    # Largest misalignment worth reporting. Doubles as the tolerance the marks
+    # are identified with and as the pitch of the probe lanes (see
+    # plot_worker._reg_tolerance_mm / _probe_offset), so a tighter value buys a
+    # tighter, more reliably readable pattern; a reading past it is refused
+    # rather than clamped.
     _Setting("optical_reg_max_correction_mm", float, 3.0, lambda v: 0.1 <= v <= 20.0),
     # Live "draw progress" page for an OBS Browser Source (see app/main.py's
     # /draw-stream routes). Opt-in the same way camera_enabled is: only present

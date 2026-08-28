@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "La registrazione ottica è disponibile solo durante una pausa per il cambio penna.",
+  "apierror.optical_reg_not_calibrated": "La fotocamera non è calibrata per la registrazione ottica. Calibrala nelle Impostazioni.",
+  "apierror.optical_reg_no_reference": "Questa esecuzione non ha un segno di riferimento da misurare. Viene tracciato al primo cambio penna di un lavoro con la registrazione ottica attiva."
 }

@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "光学套准仅在换笔暂停时可用。",
+  "apierror.optical_reg_not_calibrated": "相机尚未针对光学套准完成标定。请在设置中标定。",
+  "apierror.optical_reg_no_reference": "本次运行没有可供测量的基准标记。基准标记会在开启光学套准的作业首次换笔时绘制。"
 }

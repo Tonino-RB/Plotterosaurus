@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "Optical registration is only available at a pen-change pause.",
+  "apierror.optical_reg_not_calibrated": "The camera is not calibrated for optical registration. Calibrate it in Settings.",
+  "apierror.optical_reg_no_reference": "This run has no reference mark to measure against. It is drawn at the first pen change of a job with optical registration switched on."
 }

@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
-  "camera.optical.calibrating": "Calibrating…"
+  "camera.optical.calibrating": "Calibrating…",
+  "apierror.optical_reg_not_at_pause": "O registo ótico só está disponível numa pausa para troca de caneta.",
+  "apierror.optical_reg_not_calibrated": "A câmara não está calibrada para o registo ótico. Calibra-a nas Definições.",
+  "apierror.optical_reg_no_reference": "Esta execução não tem marca de referência para medir. É desenhada na primeira troca de caneta de um trabalho com o registo ótico ativado."
 }

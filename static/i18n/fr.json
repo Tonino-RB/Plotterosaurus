@@ -488,5 +488,8 @@
   "camera.optical.calibrate": "Calibrer la caméra",
   "camera.optical.calibrated": "Calibré : {mm_per_px} mm/px, rotation {rot}°, champ de vision ~{fov} mm",
   "camera.optical.uncalibrated": "Pas encore calibré.",
-  "camera.optical.calibrating": "Calibration…"
+  "camera.optical.calibrating": "Calibration…",
+  "apierror.optical_reg_not_at_pause": "Le repérage optique n'est disponible que lors d'une pause de changement de stylo.",
+  "apierror.optical_reg_not_calibrated": "La caméra n'est pas calibrée pour le repérage optique. Calibre-la dans les Réglages.",
+  "apierror.optical_reg_no_reference": "Cette exécution n'a pas de repère de référence à mesurer. Il est tracé au premier changement de stylo d'un travail avec le repérage optique activé."
 }

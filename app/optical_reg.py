@@ -42,6 +42,44 @@ _MIN_ARM_PX = 12
 _MIN_TOTAL_PX = 30
 _REFINE_ITERS = 5
 _CONVERGE_PX = 0.02
+# How many of the largest ink groups measure() will fit a centre to. More than
+# two, because a run leaves earlier probe crosses on the paper (see
+# plot_worker._measure_registration_once) and the right pair has to be picked
+# out from among them rather than assumed to be the two biggest.
+_MAX_CANDIDATES = 6
+# How far a candidate pair's separation may sit from the expected one before it
+# stops being a plausible reading, as a fraction of the expected separation.
+# Wider than the largest correction anyone would dial in (a few mm against a
+# probe offset several times that), tight enough that two unrelated marks don't
+# pass for the pair.
+_PAIR_TOL_FRAC = 0.6
+
+# The centre hole of a cross, as a fraction of its half-size. Keeps ink off the
+# exact intersection the arm lines are fitted to find.
+_GAP_FRACTION = 0.35
+
+
+def cross_gap(size_mm: float) -> float:
+    """Half-width of the hollow centre of a ``size_mm`` cross."""
+    return size_mm / 2.0 * _GAP_FRACTION
+
+
+def cross_arms(cx: float, cy: float, size_mm: float
+               ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    """The four arm segments of one open cross centred at ``(cx, cy)``, as
+    ``((x0, y0), (x1, y1))`` pairs.
+
+    Lives here, next to the detector, rather than in the plotting code that
+    draws it: ``measure`` has to reassemble these four separate strokes back
+    into one mark, and it can only size that grouping correctly if the arm
+    layout and the code reading it cannot drift apart.
+    """
+    half = size_mm / 2.0
+    gap = cross_gap(size_mm)
+    return (((cx - half, cy), (cx - gap, cy)),
+            ((cx + gap, cy), (cx + half, cy)),
+            ((cx, cy - half), (cx, cy - gap)),
+            ((cx, cy + gap), (cx, cy + half)))
 
 
 def _ink_threshold(img: np.ndarray) -> float | None:
@@ -138,26 +176,68 @@ def cross_center(img: np.ndarray, roi: tuple[int, int, int, int] | None = None
     balance = min(nh, nv) / max(nh, nv)
     resid = math.sqrt((np.sum((y[h] - (m_h * x[h] + b_h)) ** 2)
                        + np.sum((x[v] - (m_v * y[v] + b_v)) ** 2)) / (nh + nv))
-    score = balance / (1.0 + resid)
+    # A perfectly straight arm of width W still spreads its pixels ~W/sqrt(12)
+    # around its own axis, so a raw residual is largely a nib-width meter — a
+    # 1.4 mm nib would score near zero however clean its mark, and the readout
+    # would report a perfect measurement as a few percent confident. Divide out
+    # the spread the arms' own measured widths already explain; what is left is
+    # fit quality: ragged ink, a bent arm, a neighbouring mark dragged in.
+    spread = math.sqrt((nh * _band_sigma(x[h]) ** 2
+                        + nv * _band_sigma(y[v]) ** 2) / (nh + nv))
+    score = balance * min(1.0, spread / resid) if resid > 1e-9 else balance
     return float(cx + x0), float(cy + y0), float(score)
 
 
-def measure(img: np.ndarray, expected_sep_px: tuple[float, float]) -> dict | None:
+def _band_sigma(along: np.ndarray) -> float:
+    """Distance-from-axis spread expected of a straight arm, inferred from its
+    own thickness: its pixels spread over so many columns along the axis, so
+    the band is this many pixels wide. Counting occupied columns rather than
+    the extent keeps the cross's hollow centre from inflating the estimate."""
+    columns = max(1, int(np.unique(np.round(along)).size))
+    return max(along.size / columns, 1.0) / math.sqrt(12.0)
+
+
+def measure(img: np.ndarray, expected_sep_px: tuple[float, float],
+            group_px: float = 0.0, tol_px: float | None = None) -> dict | None:
     """Pixel vector from the reference cross to the probe cross.
 
     ``expected_sep_px`` is where the probe cross should sit relative to the
     reference (the nominal offset ``O`` rotated/scaled into pixels) — used to
-    orient the pair and to sanity-check the reading.
+    pick the pair out of the frame and to sanity-check the reading.
+
+    ``tol_px`` is how far a pair's separation may sit from ``expected_sep_px``
+    and still be the pair — i.e. the largest misalignment worth reporting. The
+    caller sets it from ``optical_reg_max_correction_mm``, since that is the
+    same quantity; it also sizes the probe layout in
+    ``plot_worker._probe_offset`` so no two marks on the paper can be confused
+    for the pair at this tolerance. Defaults to a fraction of the expected
+    separation.
+
+    ``group_px`` is how far apart two strokes can be and still belong to the
+    same mark — ``cross_gap`` in pixels. A cross is drawn as four *separate*
+    arms around a hollow centre (``cross_arms``), so anything but the fattest
+    nib leaves four disconnected blobs; the ink is dilated by this much before
+    the components are labelled so each cross groups back into one mark. Centres
+    are still fitted on the original, undilated ink. ``0`` skips the grouping,
+    for marks that are already single components.
 
     Returns ``{"sep_px": (dx, dy) | None, "separable": bool,
-    "confidence": float}``. ``separable`` is False when the two crosses merged
-    into one blob (nibs far too different, offset too small) — the caller then
-    retries with a bigger offset. ``None`` means no mark was found at all.
+    "confidence": float}``. ``separable`` is False when no plausible pair could
+    be picked out — the two crosses merged into one blob (nibs far too
+    different, offset too small), or nothing in the frame is separated by
+    anything like ``expected_sep_px``. The caller then retries with a bigger
+    offset. ``None`` means no mark was found at all.
     """
-    lbl, n = ndimage.label(_dark_mask(img))
+    mask = _dark_mask(img)
+    radius = int(round(group_px))
+    grouped = (ndimage.binary_dilation(mask, iterations=radius) if radius > 0
+               else mask)
+    lbl, n = ndimage.label(grouped)
     if n == 0:
         return None
-    sizes = ndimage.sum_labels(np.ones_like(lbl, dtype=np.float64), lbl,
+    # Sized by the *original* ink each group holds, not the dilated footprint —
+    # so _MIN_COMPONENT_PX keeps meaning "this much real ink".
+    sizes = ndimage.sum_labels(mask.astype(np.float64), lbl,
                                index=np.arange(1, n + 1))
     big = [int(i) + 1 for i in np.argsort(sizes)[::-1]
            if sizes[i] >= _MIN_COMPONENT_PX]
@@ -167,25 +247,37 @@ def measure(img: np.ndarray, expected_sep_px: tuple[float, float]) -> dict | Non
         return {"sep_px": None, "separable": False, "confidence": 0.0}
 
     centers, scores = [], []
-    for ci in big[:2]:
-        cys, cxs = np.nonzero(lbl == ci)
+    for ci in big[:_MAX_CANDIDATES]:
+        cys, cxs = np.nonzero(mask & (lbl == ci))
         got = cross_center(img, (int(cys.min()), int(cys.max()) + 1,
                                  int(cxs.min()), int(cxs.max()) + 1))
         if got is None:
-            return {"sep_px": None, "separable": False, "confidence": 0.0}
+            continue  # a smudge that isn't a cross — just not a candidate
         centers.append(np.array(got[:2]))
         scores.append(got[2])
+    if len(centers) < 2:
+        return {"sep_px": None, "separable": False, "confidence": 0.0}
 
-    a, b = centers
+    # Earlier probe crosses from this run are still on the paper, so the pair is
+    # the one whose separation matches the offset we asked for — not the two
+    # biggest blobs. Ordered pairs, so this also settles which is the reference.
     exp = np.asarray(expected_sep_px, dtype=np.float64)
-    if math.hypot(*((b - a) - exp)) <= math.hypot(*((a - b) - exp)):
-        ref, probe = a, b
-    else:
-        ref, probe = b, a
-    sep = probe - ref
     scale = max(1.0, math.hypot(*exp))
-    dev = math.hypot(*(sep - exp))
-    confidence = min(scores) / (1.0 + dev / scale)
+    tol = _PAIR_TOL_FRAC * scale if tol_px is None else tol_px
+    best = None
+    for i, ci in enumerate(centers):
+        for j, cj in enumerate(centers):
+            if i == j:
+                continue
+            sep = cj - ci
+            dev = math.hypot(*(sep - exp))
+            if best is None or dev < best[0]:
+                best = (dev, sep, min(scores[i], scores[j]))
+
+    dev, sep, score = best
+    if dev > tol:
+        return {"sep_px": None, "separable": False, "confidence": 0.0}
+    confidence = score / (1.0 + dev / scale)
     return {"sep_px": (float(sep[0]), float(sep[1])),
             "separable": True, "confidence": float(confidence)}
 
@@ -204,6 +296,8 @@ def mm_to_px(vec_mm: tuple[float, float], mm_per_px: float,
              cam_rotation_deg: float) -> tuple[float, float]:
     """Inverse of :func:`px_to_mm` — the expected pixel separation for a known
     millimetre offset."""
+    if mm_per_px <= 0.0:
+        raise ValueError("camera is not calibrated (mm_per_px must be > 0)")
     th = math.radians(-cam_rotation_deg)
     cos_t, sin_t = math.cos(th), math.sin(th)
     x = vec_mm[0] / mm_per_px
