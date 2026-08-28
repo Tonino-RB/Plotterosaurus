@@ -164,7 +164,14 @@ fi
 
 echo ">>> Installing system packages"
 run_sudo apt-get update
-run_sudo apt-get install -y python3 python3-venv python3-pip
+# libcairo2 is a *runtime* library, not a build dependency: cairosvg (the PNG
+# and PDF half of "Save As", see app/export.py) reaches it through cairocffi,
+# which dlopens libcairo.so.2 at import time. pip cannot supply it, and a
+# Raspberry Pi OS Lite image does not ship it — on a desktop image it arrives
+# incidentally with the browser and GStreamer, which is exactly why its absence
+# went unnoticed. Without it the export route still answers, with
+# "cairosvg is not available".
+run_sudo apt-get install -y python3 python3-venv python3-pip libcairo2
 
 echo ">>> Creating Python virtualenv"
 if [ ! -d "$PROJECT_DIR/venv" ]; then
@@ -288,6 +295,16 @@ PYEOF
     echo ">>> Enabling camera recording in plotterosaurus.service"
     run_sudo sed -i "s/^Environment=ENABLE_CAMERA=.*/Environment=ENABLE_CAMERA=1/" "$UNIT_DST"
     enable_config_flag camera_enabled
+
+    # Deliberately not installed or configured here — authenticating a remote
+    # is interactive and the credentials are the user's, not this installer's.
+    # Say so rather than leaving the empty "rclone target" field in Settings
+    # looking like something that should already work.
+    if ! command -v rclone >/dev/null 2>&1; then
+        echo "    note: rclone is not installed, so finished recordings will stay on the Pi."
+        echo "          To push them to cloud storage: sudo apt-get install -y rclone && rclone config,"
+        echo "          then set the target in Settings -> Camera -> Recording."
+    fi
 fi
 
 # Draw-stream OBS overlay (opt-in) ------------------------------------------

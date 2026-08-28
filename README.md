@@ -101,6 +101,7 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 - [`python3`](https://www.python.org/)
 - [`python3-venv`](https://docs.python.org/3/library/venv.html)
 - [`python3-pip`](https://pip.pypa.io/)
+- [`libcairo2`](https://www.cairographics.org/) — the system library `cairosvg` dlopens for the PNG/PDF exports; absent from a Raspberry Pi OS Lite image
 
 **Python packages**, pip-installed into a project-local `venv/`:
 
@@ -109,6 +110,10 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 - [`python-multipart`](https://github.com/Kludex/python-multipart)
 - [`pyaxidraw`](https://axidraw.com/doc/py_api/) (from the Evil Mad Scientist [AxiDraw API zip](https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip))
 - [`vpype`](https://vpype.readthedocs.io/) — invoked as a subprocess for optional pre-plot optimization
+- [`lxml`](https://lxml.de/) — SVG parsing (`app/svg_utils.py`)
+- [`numpy`](https://numpy.org/) / [`scipy`](https://scipy.org/) — the complexity guard's KD-tree (`app/svg_complexity.py`) and the optical-registration line fits (`app/optical_reg.py`)
+- [`cairosvg`](https://cairosvg.org/) — PNG/PDF "Save As" export (`app/export.py`); needs the `libcairo2` apt package above
+- [`vpype-gcode`](https://github.com/plottertools/vpype-gcode) — adds vpype's `gwrite`, used for the G-code and HPGL exports
 
 **Camera dependencies** (opt-in, only installed with `ENABLE_CAMERA=1`):
 
