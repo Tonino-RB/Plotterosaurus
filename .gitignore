@@ -15,6 +15,11 @@ recordings/
 .claude/
 config.json
 state.json
+# Scratch files the atomic saves rename from. Present only between a write and
+# its os.replace, or after a crash in that window — an empty state.json.tmp
+# has been committed by accident once already.
+config.json.tmp
+state.json.tmp
 draw_trace.jsonl
 update.log
 update.lock

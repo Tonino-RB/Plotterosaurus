@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -510,11 +511,40 @@ def _load_from_disk() -> None:
         _save_to_disk()
 
 
+# Serializes _save_to_disk. Settings are written from request handlers, which
+# FastAPI runs on a thread pool, so two of them can land here at once — and
+# without this they would race on the one .tmp path below: whichever renames
+# first leaves the other's os.replace with nothing to rename. Same reasoning
+# as state._persist, which this mirrors.
+_save_lock = threading.Lock()
+
+
 def _save_to_disk() -> None:
-    try:
-        CONFIG_PATH.write_text(json.dumps(snapshot(), indent=2) + "\n")
-    except Exception:
-        log.exception("config: failed to save %s", CONFIG_PATH)
+    """Persist to config.json, atomically.
+
+    Written to a sibling tmp file and renamed, so an interrupted write can't
+    leave a half-file behind. A plotter is a machine people switch off at the
+    wall, and a truncated config.json does not fail loudly: _load_from_disk
+    catches the parse error and falls back to defaults, which silently loses
+    every setting *and* rotates API_KEY out from under any configured client.
+    os.replace is atomic within a filesystem, so a reader sees either the old
+    file or the new one.
+    """
+    with _save_lock:
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(json.dumps(snapshot(), indent=2) + "\n")
+            os.replace(tmp, CONFIG_PATH)
+        except Exception:
+            log.exception("config: failed to save %s", CONFIG_PATH)
+            # Nested: this is the handler for a save that already failed, and
+            # whatever broke the write can break the cleanup too. Letting that
+            # escape would turn a logged failure into a raised one, at every
+            # call site that only ever expected the former.
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                log.exception("config: could not remove %s", tmp)
 
 
 def snapshot() -> dict:
