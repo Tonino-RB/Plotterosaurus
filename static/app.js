@@ -149,6 +149,18 @@ function localeDefaultUnit() {
   return "mm";
 }
 
+// The sentence a failed job carries. The plot worker writes an English one
+// onto the job record and, since it is the message a user meets at the worst
+// moment, a `joberror.` key and its arguments beside it (plot_worker._fail).
+// Prefer the key; fall back to the English when the catalog has not caught up
+// or an older server sent none, so a message never disappears entirely.
+function jobErrorText(job) {
+  if (!job.error_code) return job.error || "";
+  const key = "joberror." + job.error_code;
+  const translated = t(key, job.error_params || {});
+  return translated === key ? (job.error || "") : translated;
+}
+
 function effectiveDisplayUnit() {
   const u = appSettings.display_unit;
   if (u === "mm" || u === "cm" || u === "in") return u;
@@ -1731,7 +1743,7 @@ function updateCard(card, job) {
   const errorEl = card.querySelector(".job-error");
   const nudgeBtn = card.querySelector(".job-error-nudge-btn");
   if (job.error) {
-    card.querySelector(".job-error-text").textContent = job.error;
+    card.querySelector(".job-error-text").textContent = jobErrorText(job);
     errorEl.hidden = false;
     const hasHint = job.jog_hint_dx_mm != null && job.jog_hint_dy_mm != null;
     nudgeBtn.hidden = !hasHint;
@@ -3529,7 +3541,7 @@ function applyTopControls() {
     statusEl.textContent = `${statusLabel(status)}${active.filename ? ` · ${active.filename}` : ""}`;
     statusEl.className = `status ${status}`;
     let msg = "";
-    if (active.error) msg = t("msg.error_prefix", { error: active.error });
+    if (active.error) msg = t("msg.error_prefix", { error: jobErrorText(active) });
     else if (status === "awaiting_pen_change") msg = penChangeMessage(active);
     else if (status === "awaiting_optimize") msg = t("msg.awaiting_optimize");
     else if (status === "optimizing") msg = t("msg.optimizing");

@@ -1990,7 +1990,8 @@ def requeue_job(job_id: str):
         return j  # already runnable — nothing to do (idempotent).
     if j["status"] in ("plotting", "planning", "paused", "awaiting_pen_change", "homing"):
         raise _coded(409, "cannot_requeue_running")
-    state.update_job(job_id, status="ready", error=None, resume_path=None,
+    state.update_job(job_id, status="ready", error=None,
+                     error_code=None, error_params=None, resume_path=None,
                      started_at=None, plotting_started_at=None,
                      run_elapsed_seconds=0.0,
                      stages=[], current_stage_index=0,

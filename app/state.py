@@ -258,6 +258,8 @@ def _load_from_disk() -> None:
             # click. The optimize phase will re-run on its own.
             job["status"] = "ready"
             job["error"] = None
+            job["error_code"] = None
+            job["error_params"] = None
             job["resume_path"] = None
             job["stages"] = []
             job["current_stage_index"] = 0
@@ -281,10 +283,14 @@ def _load_from_disk() -> None:
             else:
                 job["status"] = "failed"
                 job["error"] = "Service restarted mid-plot before a resume point was reached."
+                job["error_code"] = "restart_no_resume"
+                job["error_params"] = None
                 job["resume_path"] = None
         elif status == "paused" and not resume_ok:
             job["status"] = "failed"
             job["error"] = "Resume data missing after service restart."
+            job["error_code"] = "resume_missing"
+            job["error_params"] = None
             job["resume_path"] = None
         rehydrated.append(job)
     _queue = rehydrated
@@ -436,6 +442,16 @@ def _make_record(data: dict) -> dict:
         "pen_lifts": None,
         "resume_path": None,
         "error": None,
+        # A translation key and its arguments for the sentence in "error".
+        # The message a plot fails with is the one a user hits at the worst
+        # moment, and it used to reach the card as English in every language:
+        # HTTP errors have gone through a {code, params} pair the browser
+        # localizes for a while (main._coded), but a message written onto the
+        # job record took a different path and was rendered verbatim. "error"
+        # stays alongside as the fallback, so an older client and the logs are
+        # unaffected. Cleared with "error" on requeue.
+        "error_code": None,
+        "error_params": None,
         # Set alongside "error" only when the job was blocked by a leftover
         # manual jog (see plot_worker._run_job / _delta_correction_mm): the
         # exact (dx, dy) nudge that would bring the artwork back onto the

@@ -83,8 +83,33 @@ _STOPPED_MESSAGES = {
 }
 
 
+_STOPPED_CODES = {101: "plot_connect_failed", 104: "plot_connection_lost"}
+
+
 def _format_stopped(code: int) -> str:
     return _STOPPED_MESSAGES.get(code, f"plot stopped unexpectedly (code {code})")
+
+
+def _stopped_code(code: int) -> tuple[str, dict | None]:
+    """The translation key and arguments for _format_stopped's sentence."""
+    key = _STOPPED_CODES.get(code)
+    if key is not None:
+        return key, None
+    return "plot_stopped_unexpectedly", {"code": code}
+
+
+def _fail(job_id: str, message: str, code: str,
+          params: dict | None = None, **fields) -> None:
+    """Fail a job with a message the card can render in the user's language.
+
+    The English sentence is stored too and is what the logs and any older
+    client see; the browser prefers the key when it recognizes it (see
+    jobErrorText in static/app.js). Keys live under `joberror.` in
+    static/i18n — a new one has to be added to all ten catalogs, which
+    tests/test_i18n.py enforces.
+    """
+    state.update_job(job_id, status="failed", error=message,
+                     error_code=code, error_params=params, **fields)
 
 
 # Shared control state for the worker thread -------------------------------
@@ -1787,7 +1812,7 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
                      status="awaiting_optimize",
                      started_at=time.time(),
                      plotting_started_at=None,
-                     error=None,
+                     error=None, error_code=None, error_params=None,
                      stages=stages,
                      current_stage_index=0)
 
@@ -1810,8 +1835,8 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
                 pass
             state.update_job(job_id, status="cancelled")
             return None
-        state.update_job(job_id, status="failed",
-                         error=f"Optimization failed: {err or 'unknown error'}")
+        _fail(job_id, f"Optimization failed: {err or 'unknown error'}",
+              "optimize_failed", {"message": err or "unknown error"})
         return None
 
     state.update_job(job_id, optimized_with_key=cache_key)
@@ -2388,11 +2413,12 @@ def _run_job(job_id: str) -> None:
         state.update_job(job_id, plan_status=prior_plan_status)
     if correction is not None:
         cx, cy = correction
-        state.update_job(job_id, status="failed",
-                         error=f"A leftover manual jog puts the artwork off the page. "
-                               f"Nudge back by ({cx:+.1f}, {cy:+.1f}) mm to bring it "
-                               "onto the page, then plot again.",
-                         jog_hint_dx_mm=cx, jog_hint_dy_mm=cy)
+        _fail(job_id,
+              f"A leftover manual jog puts the artwork off the page. "
+              f"Nudge back by ({cx:+.1f}, {cy:+.1f}) mm to bring it "
+              "onto the page, then plot again.",
+              "manual_jog_off_page", {"dx": f"{cx:+.1f}", "dy": f"{cy:+.1f}"},
+              jog_hint_dx_mm=cx, jog_hint_dy_mm=cy)
         return
 
     optimized = _run_optimize_phase(job_id, svg_path, stages)
@@ -2418,7 +2444,7 @@ def _run_job(job_id: str) -> None:
                          plotting_started_at=None,
                          run_elapsed_seconds=0.0,
                          resume_path=None,
-                         error=None,
+                         error=None, error_code=None, error_params=None,
                          plan_status="ready",
                          **_estimate_fields(cached_estimate))
     else:
@@ -2430,7 +2456,7 @@ def _run_job(job_id: str) -> None:
                          plotting_started_at=None,
                          run_elapsed_seconds=0.0,
                          resume_path=None,
-                         error=None,
+                         error=None, error_code=None, error_params=None,
                          estimated_total_seconds=None,
                          progress_total_seconds=None,
                          distance_pendown_m=None,
@@ -2445,11 +2471,11 @@ def _run_job(job_id: str) -> None:
         if job.get("plan_status") == "too_complex":
             log.warning("plot: job %s refused, previously measured too complex", job_id)
             svg_complexity.request(svg_path)
-            state.update_job(
-                job_id, status="failed", resume_path=None,
-                error="This drawing is too complex for this machine to plan. "
-                      "Nothing was sent to the plotter. See the card for which "
-                      "vpype setting would bring it into range.")
+            _fail(job_id,
+                  "This drawing is too complex for this machine to plan. "
+                  "Nothing was sent to the plotter. See the card for which "
+                  "vpype setting would bring it into range.",
+                  "too_complex", resume_path=None)
             return
 
         try:
@@ -2464,12 +2490,12 @@ def _run_job(job_id: str) -> None:
             # at this point, and nothing will be.
             log.warning("plot: job %s too complex to plan: %s", job_id, exc)
             svg_complexity.request(svg_path)
-            state.update_job(
-                job_id, status="failed", resume_path=None,
-                plan_status="too_complex", plan_error=str(exc),
-                error="This drawing is too complex for this machine to plan. "
-                      "Nothing was sent to the plotter. See the card for which "
-                      "vpype setting would bring it into range.")
+            _fail(job_id,
+                  "This drawing is too complex for this machine to plan. "
+                  "Nothing was sent to the plotter. See the card for which "
+                  "vpype setting would bring it into range.",
+                  "too_complex", resume_path=None,
+                  plan_status="too_complex", plan_error=str(exc))
             return
 
         if _cancel_flag.is_set():
@@ -2599,10 +2625,10 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                     job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
             except Exception:
                 log.exception("could not render stage %s of job %s", i, job_id)
-                state.update_job(
-                    job_id, status="failed", resume_path=None,
-                    error="Could not prepare this layer for plotting — the SVG "
-                          "may be malformed. Nothing was sent to the plotter.")
+                _fail(job_id,
+                      "Could not prepare this layer for plotting — the SVG "
+                      "may be malformed. Nothing was sent to the plotter.",
+                      "layer_prepare_failed", resume_path=None)
                 return
 
         # Flag this stage as current on the job's stages list
@@ -2617,8 +2643,9 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
             stopped, output_svg = _run_stage(current_svg, mode, job, stage)
         except IndexError:
             log.warning("plotink IndexError; treating as plotter-not-ready")
-            state.update_job(job_id, status="failed",
-                             error="Plotter not ready. Wait a moment after power-on and try again.")
+            _fail(job_id,
+                  "Plotter not ready. Wait a moment after power-on and try again.",
+                  "plotter_not_ready")
             return
         # The pen has stopped moving for this stage, whatever the outcome —
         # close the span so the progress bar keeps counting the run rather
@@ -2638,10 +2665,11 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                 log.exception("failed to write resume SVG for job %s", job_id)
                 _cancel_flag.clear()
                 _stop_button_poll()
-                state.update_job(job_id, status="failed", resume_path=None,
-                                 error="Could not save plot progress (disk full or write "
-                                       "error). The plotter has stopped physically; home it "
-                                       "manually before starting another job.")
+                _fail(job_id,
+                      "Could not save plot progress (disk full or write "
+                      "error). The plotter has stopped physically; home it "
+                      "manually before starting another job.",
+                      "progress_write_failed", resume_path=None)
                 return
             if _cancel_flag.is_set():
                 _cancel_flag.clear()
@@ -2685,7 +2713,8 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
             continue
 
         if stopped != STOPPED_COMPLETED:
-            state.update_job(job_id, status="failed", error=_format_stopped(stopped))
+            code, params = _stopped_code(stopped)
+            _fail(job_id, _format_stopped(stopped), code, params)
             return
 
         # Stage complete
