@@ -195,7 +195,9 @@ Plotterosaurus has no built-in login — anyone who can reach its web port can u
 
 ## Updating
 
-Plotterosaurus can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed, but it's opt-in: it does a `git reset --hard`, which would silently discard any local changes on a modified checkout, so `install.sh` only sets it up when run with `ENABLE_SELF_UPDATE=1` (see [Install options](#install-options)). Without that flag, the update banner and "Update now" stay inert and the manual path below is the only way to update.
+Plotterosaurus can update itself from the web UI, or you can update manually over ssh. The UI path is the convenient one — no terminal needed, but it's opt-in: it does a `git reset --hard`, which would silently discard any local changes on a modified checkout, so `install.sh` only sets it up when run with `ENABLE_SELF_UPDATE=1` (see [Install options](#install-options)).
+
+Without that flag there is no update helper installed, so no update can be applied — Plotterosaurus doesn't check for one either, and hides the banner, the availability badge and **Check now** rather than offering a button that cannot work. The manual path below is then the only way to update.
 
 ### From the UI (recommended)
 
@@ -303,7 +305,6 @@ Never restart the service mid-plot — Python can't kill a thread, so a SIGTERM 
 ## Known limitations
 
 - No live progress while `plot_run` is in its ~18s pre-motion setup phase (EBB version query, servo init, path planning) — pyaxidraw doesn't expose progress events until motion starts.
-- Remote update checks are hardcoded off in `app/updates.py` (`_UPDATES_DISABLED = True`) on this checkout, since it's an actively-changing personal fork — the update banner never appears regardless of `ENABLE_SELF_UPDATE`. `git pull && ./install.sh` always works as the manual update path.
 - **Content outside the SVG canvas is only dropped when "Optimize SVG" is on.** The canvas is treated as the composition, so anything outside it is meant to be excluded — but that rule is currently enforced by vpype's page crop, which only runs as part of optimization. With optimization off, out-of-canvas geometry is plotted wherever it lands on the sheet.
 - **A document with nothing plottable is accepted and plots nothing.** Live text and raster images are dropped on the way to the plotter (they aren't strokes), but the upload succeeds and the job runs to "completed" without drawing. Convert text to paths before uploading.
 - The machine profile isn't snapshotted onto a job, so switching the active machine changes how jobs already sitting at `ready` are placed.
@@ -326,6 +327,8 @@ See [tests/README.md](tests/README.md) for what the suite covers and how to rege
 
 ## License
 
-Released under the MIT License — see [LICENSE](LICENSE). Built around the AxiDraw Python API from Evil Mad Scientist (GPL-2.0), which is installed as a runtime dependency rather than bundled; the assembled system is therefore subject to GPL-2.0 terms. Optional path optimization uses [vpype](https://vpype.readthedocs.io/) (MIT, © Antoine Beyeler & Contributors), invoked as a separate subprocess and likewise installed as a runtime dependency.
+Released under the MIT License — see [LICENSE](LICENSE), which carries the copyright of both [Plotter Hub](https://github.com/Synendo/PlotterHub) (© Synendo), the upstream project this is forked from, and Plotterosaurus itself. **The licence disclaims all warranties and all liability; the [Disclaimer](#disclaimer) above is the plain-language version and applies in full.**
+
+Built around the AxiDraw Python API from Evil Mad Scientist (GPL-2.0), which is installed as a runtime dependency rather than bundled; the assembled system is therefore subject to GPL-2.0 terms. Optional path optimization uses [vpype](https://vpype.readthedocs.io/) (MIT, © Antoine Beyeler & Contributors), invoked as a separate subprocess and likewise installed as a runtime dependency.
 
 Plotterosaurus is an independent project and is not affiliated with, endorsed by, or supported by Evil Mad Scientist Laboratories. AxiDraw is a trademark of Evil Mad Scientist Laboratories.

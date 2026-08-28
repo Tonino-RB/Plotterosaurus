@@ -5162,13 +5162,12 @@ I18N.onLanguageChange(() => {
 function renderUpdateStatus(status) {
   updateStatus = status;
 
-  // Self-update is compiled out on this fork (updates._UPDATES_DISABLED), and
-  // the server says so via `enabled`. Without reading it, every field below is
-  // indistinguishable from a healthy "you are up to date" answer — so the
-  // banner, the pill and Check now all stayed live over a feature that can do
-  // nothing, and pressing Check now returned a permanently reassuring result
-  // that meant nothing. Hide the controls; keep the version line, which is
-  // still true and still useful.
+  // `enabled` is the server saying whether update checking can run at all.
+  // It reports true on a normal install; the branch stays because every other
+  // field below is indistinguishable from a healthy "you are up to date"
+  // answer, so a build that ever switches checking off again would otherwise
+  // leave the banner, the pill and Check now live over a feature that can do
+  // nothing. Hide the controls; keep the version line, which is still true.
   //
   // Hidden rather than removed: `updateBanner` is captured once at load and
   // several handlers bind unconditionally, so removing the nodes would throw.

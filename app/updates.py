@@ -12,15 +12,14 @@ with no key configured. ``git fetch`` only writes ``.git``/``FETCH_HEAD``; the
 working tree is never touched.
 """
 import logging
+import os
+import re
 import subprocess
 import time
 
 from . import config
 
 log = logging.getLogger(__name__)
-
-# This checkout is a personal fork with local changes; see fetch_remote_version.
-_UPDATES_DISABLED = True
 
 REPO_HTTPS_URL = "https://github.com/Tonino-RB/Plotterosaurus.git"
 REMOTE_BRANCH = "main"
@@ -41,19 +40,46 @@ _cache_error: bool = False
 _cache_at: float = 0.0
 
 
-def _parse(v: str | None) -> tuple[int, ...] | None:
+# MAJOR.MINOR.PATCH, optionally followed by a pre-release suffix ("1.0.0-rc1").
+_VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)(?:-(.+))?$")
+
+
+def _parse(v: str | None) -> tuple[tuple[int, ...], tuple] | None:
+    """Sort key for a version string, or None if it isn't one.
+
+    The suffix has to be part of the key, not thrown away: splitting on "."
+    and calling int() on every part meant a pre-release like "0.3.0-beta"
+    failed to parse at all, and an unparsable *local* version reads as older
+    than anything (see semver_gt) — so every release, including older ones,
+    announced itself as an available update.
+
+    Returned as (numeric core, pre-release marker). The marker orders a
+    pre-release below its own release — (0, "rc1") < (1,) — and two
+    pre-releases of the same core against each other by text, which is enough
+    to get rc1 < rc2 right.
+    """
     if not v:
         return None
-    try:
-        return tuple(int(p) for p in v.strip().split("."))
-    except ValueError:
+    m = _VERSION_RE.match(v.strip())
+    if m is None:
         return None
+    core = tuple(int(p) for p in m.group(1).split("."))
+    # Pad so "1.0" and "1.0.0" describe the same release rather than sorting
+    # the shorter one lower.
+    core += (0,) * (3 - len(core))
+    pre = m.group(2)
+    return core, ((0, pre) if pre else (1,))
 
 
 def semver_gt(a: str | None, b: str | None) -> bool:
     """True if version ``a`` is strictly newer than ``b``. Numeric, not string,
-    comparison (so 1.1.10 > 1.1.4). Unknown/unparsable versions sort lowest and
-    therefore never present as an available update."""
+    comparison (so 1.1.10 > 1.1.4), and a pre-release is older than the release
+    it leads to (1.0.0-rc1 < 1.0.0).
+
+    An unparsable ``a`` never presents as an update — we can't claim a version
+    we can't read is newer. An unparsable ``b`` does: a local VERSION file that
+    can't be read is damaged, and the update that would overwrite it is the
+    repair."""
     pa, pb = _parse(a), _parse(b)
     if pa is None:
         return False
@@ -63,16 +89,7 @@ def semver_gt(a: str | None, b: str | None) -> bool:
 
 
 def fetch_remote_version(timeout: float = 8.0) -> str | None:
-    """Return the VERSION file content on origin/main, or None on any error.
-
-    Gated by _UPDATES_DISABLED: this checkout is a personal fork with local
-    changes that diverge from Tonino-RB/Plotterosaurus, and /update/apply's
-    `git reset --hard` would wipe them out. Reporting "no update" unconditionally
-    keeps the banner off and makes /update/apply refuse (it checks
-    update_available first) without touching that logic.
-    """
-    if _UPDATES_DISABLED:
-        return None
+    """Return the VERSION file content on origin/main, or None on any error."""
     base = str(config.BASE_DIR)
     try:
         subprocess.run(
@@ -97,28 +114,41 @@ def _git(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
     )
 
 
+def is_enabled() -> bool:
+    """True when this install can actually apply an update.
+
+    Which is exactly "the root-owned wrapper is installed" — install.sh puts it
+    there only for `ENABLE_SELF_UPDATE=1`, and removes it again when re-run
+    without the flag, so its presence is the opt-in rather than a second flag
+    that could disagree with it.
+
+    Checked rather than assumed because the two halves fail apart. Reporting a
+    newer version on an install that has no wrapper would light the banner and
+    then hand "Update now" a `sudo` that exits non-zero into DEVNULL: no error
+    reaches the browser, and the progress dialog waits on an update.log that is
+    never written.
+    """
+    try:
+        return os.path.exists(WRAPPER_PATH)
+    except OSError:
+        return False
+
+
 def get_status(force: bool = False) -> dict:
     """Cached update status. ``force=True`` (the "Check now" button) bypasses
-    the TTL and re-fetches immediately."""
-    if _UPDATES_DISABLED:
-        # error=False deliberately: this is a disabled feature, not a failed
-        # check, so the UI shouldn't show a "check failed" indicator for it.
-        #
-        # `enabled` says the feature is off. Every other field below is
-        # indistinguishable from a healthy "you are up to date" answer, so
-        # without it a caller cannot tell a disabled checker from a passing
-        # one, and pressing Check now returns a permanently reassuring result
-        # that means nothing.
-        #
-        # NOTE: nothing consumes it yet. `renderUpdateStatus` in static/app.js
-        # reads `update_available`, `skipped`, `current` and `error`, but not
-        # this — so the banner, the pill and the Check now button are still
-        # live over a feature that cannot do anything. The field is the honest
-        # half of the fix; hiding the surface on it is still to do.
+    the TTL and re-fetches immediately.
+
+    On an install without the wrapper this reports ``enabled: False`` and skips
+    the fetch entirely — there is no point asking GitHub about a version this
+    install has no way to move to, and the UI hides the update controls on it
+    (see renderUpdateStatus in static/app.js). ``error`` stays False: a feature
+    that was never opted into has not failed.
+    """
+    if not is_enabled():
         return {
-            "current": config.APP_VERSION, "latest": None, "update_available": False,
-            "skipped": False, "checked_at": time.time(), "error": False,
-            "enabled": False,
+            "current": config.APP_VERSION, "latest": None,
+            "update_available": False, "skipped": False,
+            "checked_at": time.time(), "error": False, "enabled": False,
         }
     global _cache_latest, _cache_error, _cache_at
     now = time.time()
