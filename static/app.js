@@ -87,9 +87,11 @@ const cameraSpeedMultiplier = $("camera-speed-multiplier");
 const cameraOutputFolder = $("camera-output-folder");
 const cameraRcloneTarget = $("camera-rclone-target");
 const cameraRcloneDeleteLocal = $("camera-rclone-delete-local");
+const cameraRetentionGb = $("camera-retention-gb");
 const cameraRecordingsList = $("camera-recordings-list");
 const cameraRecordingsNote = $("camera-recordings-note");
 const cameraRecordingsRefresh = $("camera-recordings-refresh");
+const cameraFinalizeFailures = $("camera-finalize-failures");
 const opticalRegMarkX = $("optical-reg-mark-x");
 const opticalRegMarkY = $("optical-reg-mark-y");
 const opticalRegMarkSize = $("optical-reg-mark-size");
@@ -3861,6 +3863,7 @@ function applyAppSettings(data) {
     camera_output_folder: data.camera_output_folder ?? appSettings.camera_output_folder,
     camera_rclone_target: data.camera_rclone_target ?? appSettings.camera_rclone_target,
     camera_rclone_delete_local: data.camera_rclone_delete_local ?? appSettings.camera_rclone_delete_local,
+    camera_retention_gb: data.camera_retention_gb ?? appSettings.camera_retention_gb,
     camera_recording_mode_default: data.camera_recording_mode_default ?? appSettings.camera_recording_mode_default,
     camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
     camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
@@ -4379,6 +4382,7 @@ async function openCameraSettings() {
     cameraOutputFolder.value = appSettings.camera_output_folder;
     cameraRcloneTarget.value = appSettings.camera_rclone_target || "";
     cameraRcloneDeleteLocal.checked = !!appSettings.camera_rclone_delete_local;
+    cameraRetentionGb.value = appSettings.camera_retention_gb ?? 10;
     opticalRegMarkX.value = appSettings.optical_reg_mark_x_mm ?? 10;
     opticalRegMarkY.value = appSettings.optical_reg_mark_y_mm ?? 10;
     opticalRegMarkSize.value = appSettings.optical_reg_mark_size_mm ?? 3;
@@ -4430,6 +4434,7 @@ async function saveCameraSettings() {
       camera_output_folder: cameraOutputFolder.value.trim() || "recordings",
       camera_rclone_target: cameraRcloneTarget.value.trim(),
       camera_rclone_delete_local: cameraRcloneDeleteLocal.checked,
+      camera_retention_gb: Math.max(0, numOr(cameraRetentionGb.value, 10)),
       optical_reg_mark_x_mm: numOr(opticalRegMarkX.value, 10),
       optical_reg_mark_y_mm: numOr(opticalRegMarkY.value, 10),
       optical_reg_mark_size_mm: numOr(opticalRegMarkSize.value, 3),
@@ -4506,6 +4511,29 @@ function recordingStatusText(r) {
   }
 }
 
+function renderFinalizeFailures(rows) {
+  // A recording ffmpeg could not assemble is not in the list below — there is
+  // no video. Its raw footage is still on the Pi, and this is the only place
+  // that says so, so it has to name the folder it was kept in.
+  cameraFinalizeFailures.innerHTML = "";
+  for (const f of rows || []) {
+    const row = document.createElement("div");
+    row.className = "recording-row";
+    row.innerHTML = `
+      <div class="recording-line">
+        <span class="recording-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+        <span class="recording-meta">${escapeHtml(formatBytes(f.size_bytes))}</span>
+      </div>
+      <div class="recording-line">
+        <span class="recording-status error">${escapeHtml(t("camera.recording.finalize_failed", {
+          error: f.error,
+          path: f.path,
+        }))}</span>
+      </div>`;
+    cameraFinalizeFailures.appendChild(row);
+  }
+}
+
 function renderRecordings(data) {
   if (!data.rclone_target) {
     cameraRecordingsNote.textContent = t("camera.recording.files_no_target");
@@ -4516,6 +4544,12 @@ function renderRecordings(data) {
       ? t("camera.recording.files_delete_note")
       : t("camera.recording.files_keep_note");
   }
+  if (data.free_bytes != null) {
+    cameraRecordingsNote.textContent += " " + t("camera.recording.files_disk_free", {
+      free: formatBytes(data.free_bytes),
+    });
+  }
+  renderFinalizeFailures(data.failed_finalizes);
 
   cameraRecordingsList.innerHTML = "";
   const rows = data.recordings || [];

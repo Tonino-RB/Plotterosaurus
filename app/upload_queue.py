@@ -77,6 +77,15 @@ def output_dir() -> Path:
     return out_dir
 
 
+def free_bytes(path: Path | None = None) -> int | None:
+    """Free space on the volume holding `path` (the output folder by
+    default), or None if it can't be measured."""
+    try:
+        return shutil.disk_usage(path if path is not None else output_dir()).free
+    except OSError:
+        return None
+
+
 def is_recording_file(path: Path) -> bool:
     """Recordings only. The folder also holds camera scratch — the segment
     directory and the optical-registration still — which are named with a
@@ -222,6 +231,8 @@ def list_recordings() -> dict:
         "rclone_target": target,
         "rclone_installed": shutil.which("rclone") is not None,
         "delete_local": bool(config.CAMERA_RCLONE_DELETE_LOCAL),
+        "retention_gb": config.CAMERA_RETENTION_GB,
+        "free_bytes": free_bytes(),
         "recordings": rows,
     }
 
@@ -236,6 +247,62 @@ def delete(name: str) -> None:
             if proc is not None and proc.poll() is None:
                 proc.kill()
     path.unlink(missing_ok=True)
+
+
+def enforce_retention(keep: str | None = None) -> None:
+    """Delete the oldest recordings until the folder fits camera_retention_gb.
+
+    Called after each finished recording, which is the only moment the folder
+    grows. Nothing used to delete a finished recording ever, and a five-hour
+    realtime capture is ~7GB, so a handful of plots was enough to fill the
+    card — at which point state._persist() starts logging its write failures
+    and quietly discarding the job queue.
+
+    Two things are never deleted: `keep`, the recording that just finished
+    (deleting it the instant it lands would be a strange way to record), and
+    anything whose cloud upload hasn't landed yet — a stuck upload wins over
+    the cap, since the alternative is deleting the only copy that exists.
+    """
+    if config.CAMERA_RETENTION_GB <= 0:
+        return
+    limit = config.CAMERA_RETENTION_GB * (1 << 30)
+    try:
+        files = sorted((p for p in output_dir().iterdir() if is_recording_file(p)),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        log.warning("upload_queue: could not scan the recordings folder", exc_info=True)
+        return
+    total = 0.0
+    for path in files:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+        if total <= limit or path.name == keep:
+            continue
+        with _lock:
+            entry = _uploads.get(path.name)
+        if config.CAMERA_RCLONE_TARGET:
+            # No entry is not the same as nothing to wait for. sweep() skips a
+            # file younger than _SETTLE_S in case ffmpeg is still writing it,
+            # and only runs every _SWEEP_INTERVAL_S — so a recording that just
+            # landed has no entry yet, and `keep` only covers the newest one.
+            # Deleting on an absent entry would destroy the only copy of the
+            # recording before its upload was ever attempted.
+            if entry is None or entry["status"] != "uploaded":
+                continue
+        elif entry is not None and entry["status"] != "uploaded":
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            log.warning("upload_queue: could not delete %s for retention", path.name,
+                        exc_info=True)
+            continue
+        with _lock:
+            _uploads.pop(path.name, None)
+        log.info("upload_queue: deleted %s — over the %.1fGB retention cap",
+                 path.name, config.CAMERA_RETENTION_GB)
 
 
 # Internals --------------------------------------------------------------

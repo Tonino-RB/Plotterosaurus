@@ -161,6 +161,15 @@ _SETTINGS: list[_Setting] = [
     # Delete the local recording once `rclone copy` above confirms success.
     # Ignored if camera_rclone_target is unset (nothing to confirm against).
     _Setting("camera_rclone_delete_local", bool, False),
+    # Cap on the total size of the local recordings folder, in GB. Enforced
+    # after each finished recording (app/upload_queue.py enforce_retention),
+    # oldest first; 0 keeps everything, which is what the folder did
+    # unconditionally before — and a five-hour realtime capture is ~7GB, so a
+    # few plots were enough to fill the card. A cap rather than a "keep the
+    # last N" count because what runs out is bytes: one long realtime capture
+    # and fifty timelapses are the same number and nothing like the same
+    # amount of disk.
+    _Setting("camera_retention_gb", float, 10.0, lambda v: v >= 0.0),
     _Setting("camera_recording_mode_default", str, "realtime",
              lambda v: v in ("realtime", "timelapse", "sped_up")),
     _Setting("camera_timelapse_interval_s_default", float, 5.0, lambda v: v > 0),

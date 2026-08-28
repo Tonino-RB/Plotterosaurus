@@ -783,6 +783,11 @@
             <input type="checkbox" id="camera-rclone-delete-local" />
             <span data-i18n="camera.recording.rclone_delete_local">Delete local recording once the upload to the rclone target is confirmed</span>
           </label>
+          <label class="field">
+            <span class="field-label" data-i18n="camera.recording.retention_gb_label">Keep at most (GB of recordings, 0 = keep everything)</span>
+            <input type="number" id="camera-retention-gb" min="0" step="1" value="10" />
+          </label>
+          <p class="muted" data-i18n="camera.recording.retention_gb_note">Once the folder goes over this, the oldest recordings are deleted each time a new one finishes. A recording still waiting to upload is never deleted.</p>
 
           <div class="recordings-panel">
             <div class="recordings-head">
@@ -790,6 +795,7 @@
               <button id="camera-recordings-refresh" class="neutral" type="button" data-i18n="camera.recording.files_refresh">Refresh</button>
             </div>
             <p id="camera-recordings-note" class="muted"></p>
+            <div id="camera-finalize-failures"></div>
             <div id="camera-recordings-list"></div>
           </div>
         </div>

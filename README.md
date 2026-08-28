@@ -57,6 +57,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - A job can request recording itself (`record_plot`); it pauses/resumes automatically with the job. Recording can also be started/stopped manually, independent of any job
 - Live RTSP / HLS / WebRTC stream URLs for viewing in VLC, OBS, or Home Assistant while a plot runs
 - Finished recordings are saved locally under `camera_output_folder` and optionally pushed to cloud storage via `rclone copy` (bring your own installed + authenticated `rclone`), one upload at a time, retried with backoff until the remote confirms them — an upload cut short by a restart or a dropped connection is picked back up by a sweep of the folder at startup and every five minutes
+- **Keep at most** (`camera_retention_gb`, default 10 GB) caps the local recordings folder: once it is over, the oldest recordings are deleted each time a new one finishes — `0` keeps everything, as it always used to. A recording whose upload hasn't landed yet is never deleted, and a recording won't start at all when the card is nearly full
 - Settings → Camera → Recording lists what is still on the Pi, with each file's upload percentage, an inline preview, a delete button, and an "upload now" retry. With *delete local after upload* on, that list is empty whenever every recording has landed
 - Opt-in at install time (`ENABLE_CAMERA=1`) — everything above is skipped entirely on installs without a camera. See [Install options](#install-options) and [API.md](API.md#camera--plot-recording)
 

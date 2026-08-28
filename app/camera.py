@@ -46,8 +46,25 @@ WEBRTC_PORT = 8889
 # camera_flicker_mode -> MediaMTX's rpiCameraFlickerPeriod (microseconds).
 _FLICKER_PERIOD_US = {"off": 0, "50hz": 10_000, "60hz": 8_333}
 
+# Free space start_recording insists on before it will start capturing.
+# Capture is only half the cost: finalizing concatenates the segments into a
+# second copy on the same filesystem (a third in sped_up mode, which writes
+# concat_raw.mp4 first), so a recording needs 2-3x its own size free by the
+# time it ends. Nothing here knows how long the plot will run, so the guard
+# asks for an hour of capture at the configured bitrate plus the copies that
+# implies, floored so a very low bitrate can't shrink the check to nothing.
+# Filling the card is worse than losing the footage: state._persist() swallows
+# its own write error, so the job queue silently stops being saved.
+_GUARD_HOURS = 1.0
+_GUARD_COPIES = 3
+_GUARD_FLOOR_BYTES = 2 << 30
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEGMENTS_DIR = BASE_DIR / "recordings" / "_segments"
+# Where the segments of a finalize that failed are parked. Deliberately not a
+# subdirectory of SEGMENTS_DIR: stop_orphaned_recording() clears that whole
+# tree at startup, and these are the one thing in it worth keeping.
+FAILED_SEGMENTS_DIR = BASE_DIR / "recordings" / "_failed_segments"
 # Annotated still from the last optical-registration measurement, served by
 # GET /camera/optical-reg/preview and overwritten on every measure.
 OPTICAL_REG_PREVIEW = BASE_DIR / "recordings" / "_optical_reg_preview.jpg"
@@ -161,6 +178,24 @@ def status(request_host: str) -> dict:
     }
 
 
+# Free space ------------------------------------------------------------------
+
+def required_free_bytes() -> int:
+    """How much room start_recording wants before it will capture anything."""
+    hour = config.CAMERA_BITRATE / 8 * 3600 * _GUARD_HOURS
+    return int(max(_GUARD_FLOOR_BYTES, hour * _GUARD_COPIES))
+
+
+def _free_bytes() -> int | None:
+    """Free space where a recording actually lands, or None if it can't be
+    measured. MediaMTX's segments go under the install dir and the finished
+    file goes to the output folder, which the user can point at another
+    volume — the tighter of the two is the one that runs out."""
+    measured = [f for f in (upload_queue.free_bytes(),
+                            upload_queue.free_bytes(BASE_DIR)) if f is not None]
+    return min(measured) if measured else None
+
+
 # Recording lifecycle ---------------------------------------------------------
 
 def start_recording(job_id: str | None, mode: str | None = None,
@@ -172,6 +207,9 @@ def start_recording(job_id: str | None, mode: str | None = None,
         rec_status, _ = state.recording()
         if rec_status != "idle":
             raise RuntimeError("A recording is already in progress")
+        free = _free_bytes()
+        if free is not None and free < required_free_bytes():
+            raise RuntimeError("Not enough free disk space to record")
         mode = mode or config.CAMERA_RECORDING_MODE_DEFAULT
         session_id = job_id or f"manual-{int(time.time())}"
         segments_dir = SEGMENTS_DIR / session_id
@@ -253,9 +291,109 @@ def is_recording_job(job_id: str) -> bool:
 
 # Finalization -----------------------------------------------------------
 
-def _run_ffmpeg(args: list[str]) -> None:
+def _run_ffmpeg(args: list[str], timeout: float | None = 1800) -> None:
     subprocess.run(["ffmpeg", *args], check=True, capture_output=True,
-                   text=True, timeout=1800)
+                   text=True, timeout=timeout)
+
+
+def _assemble(session: dict, segments_dir: Path, mode: str, final_path: Path) -> bool:
+    """Turn one session's segments into final_path. False if there was
+    nothing to assemble; raises whatever ffmpeg raises."""
+    if mode == "timelapse":
+        if not sorted(segments_dir.glob("frame_*.jpg")):
+            log.warning("camera: no timelapse frames captured for %s", session["session_id"])
+            return False
+        # No timeout on an encode: its runtime is proportional to the footage
+        # and the Pi's CPU is slow, so a wall-clock cap can only ever fire on
+        # a legitimate job. The concat below is a stream copy, where a cap is
+        # a real watchdog rather than a guillotine.
+        _run_ffmpeg([
+            "-y", "-framerate", "24",
+            "-i", str(segments_dir / "frame_%06d.jpg"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(final_path),
+        ], timeout=None)
+        return True
+
+    segments = sorted(segments_dir.rglob("*.mp4"))
+    if not segments:
+        log.warning("camera: no recorded segments for %s", session["session_id"])
+        return False
+    concat_list = segments_dir / "concat.txt"
+    concat_list.write_text("".join(f"file '{s.resolve()}'\n" for s in segments))
+    target = final_path if mode == "realtime" else segments_dir / "concat_raw.mp4"
+    _run_ffmpeg(["-y", "-f", "concat", "-safe", "0",
+                "-i", str(concat_list), "-c", "copy", str(target)])
+    if mode == "sped_up":
+        multiplier = session["multiplier"]
+        # setpts alone only re-times the frames — every one of them still goes
+        # through libx264, so a five-hour plot was hours of software encoding
+        # for a video the user asked to be minutes long. The fps filter drops
+        # the frames setpts made redundant *before* the encoder sees them, so
+        # the pass costs what its output is worth rather than what its input
+        # was.
+        _run_ffmpeg([
+            "-y", "-i", str(target),
+            "-vf", f"setpts=PTS/{multiplier},fps={config.CAMERA_FPS}",
+            "-an", str(final_path),
+        ], timeout=None)
+    return True
+
+
+def _keep_failed_segments(session: dict, stamp: str, error: str) -> None:
+    """Park the segments of a failed finalize where they survive, with a note
+    saying what went wrong.
+
+    An unconditional rmtree used to run here, on the failure paths as well as
+    the success one: ffmpeg fell over — out of disk, or killed by its own
+    30-minute timeout — and the source footage it had been assembling was
+    deleted with it, so the recording was simply gone. The segments *are* the
+    recording; they are worth more than the tidiness of the folder.
+    """
+    src: Path = session["segments_dir"]
+    dest = FAILED_SEGMENTS_DIR / f"{session['session_id']}-{stamp}"
+    try:
+        FAILED_SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while dest.exists():  # never overwrite an earlier rescue
+            dest = FAILED_SEGMENTS_DIR / f"{session['session_id']}-{stamp}-{n}"
+            n += 1
+        shutil.move(str(src), str(dest))
+    except Exception:
+        log.exception("camera: could not move the segments of %s aside",
+                      session["session_id"])
+        dest = src
+    try:
+        (dest / "error.txt").write_text(error.strip() + "\n")
+    except OSError:
+        log.warning("camera: could not write the failure note for %s",
+                    session["session_id"])
+    log.error("camera: finalize failed for %s — raw footage kept in %s",
+              session["session_id"], dest)
+
+
+def failed_finalizes() -> list[dict]:
+    """Recordings that never became a video, still on disk as raw segments.
+
+    Read off the directory rather than remembered in memory, so the warning in
+    the recordings panel survives the restart the user is likely to try next.
+    """
+    try:
+        dirs = sorted(p for p in FAILED_SEGMENTS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    rows = []
+    for d in dirs:
+        try:
+            error = (d / "error.txt").read_text().strip()
+        except OSError:
+            error = ""
+        try:
+            size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        except OSError:
+            size = 0
+        rows.append({"name": d.name, "path": str(d), "size_bytes": size,
+                     "error": error[:500]})
+    return rows
 
 
 def _finalize(session: dict) -> None:
@@ -271,48 +409,30 @@ def _finalize(session: dict) -> None:
         # here rather than in stop_recording(), which holds the module lock on
         # the plot worker's thread while it finishes a job.
         time.sleep(1.5)
+    error: str | None = None
     try:
-        if mode == "timelapse":
-            frames = sorted(segments_dir.glob("frame_*.jpg"))
-            if not frames:
-                log.warning("camera: no timelapse frames captured for %s", session["session_id"])
-                return
-            _run_ffmpeg([
-                "-y", "-framerate", "24",
-                "-i", str(segments_dir / "frame_%06d.jpg"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(final_path),
-            ])
-        else:
-            segments = sorted(segments_dir.rglob("*.mp4"))
-            if not segments:
-                log.warning("camera: no recorded segments for %s", session["session_id"])
-                return
-            concat_list = segments_dir / "concat.txt"
-            concat_list.write_text("".join(f"file '{s.resolve()}'\n" for s in segments))
-            target = final_path if mode == "realtime" else segments_dir / "concat_raw.mp4"
-            _run_ffmpeg(["-y", "-f", "concat", "-safe", "0",
-                        "-i", str(concat_list), "-c", "copy", str(target)])
-            if mode == "sped_up":
-                multiplier = session["multiplier"]
-                _run_ffmpeg([
-                    "-y", "-i", str(target),
-                    "-vf", f"setpts=PTS/{multiplier}", "-an", str(final_path),
-                ])
+        produced = _assemble(session, segments_dir, mode, final_path)
     except FileNotFoundError:
-        log.error("camera: ffmpeg is not installed — cannot finalize recording %s",
-                  session["session_id"])
-        return
+        error = "ffmpeg is not installed"
     except subprocess.CalledProcessError as e:
         log.error("camera: ffmpeg failed for %s: %s", session["session_id"],
                   (e.stderr or "")[-2000:])
-        return
-    except Exception:
+        error = (e.stderr or "").strip()[-500:] or f"ffmpeg exited {e.returncode}"
+    except Exception as e:
         log.exception("camera: finalize failed for %s", session["session_id"])
+        error = str(e) or type(e).__name__
+    if error is not None:
+        # A half-written output would otherwise be uploaded as if it were the
+        # recording; the segments kept below are the copy worth recovering.
+        final_path.unlink(missing_ok=True)
+        _keep_failed_segments(session, stamp, error)
         return
-    finally:
-        shutil.rmtree(segments_dir, ignore_errors=True)
 
+    shutil.rmtree(segments_dir, ignore_errors=True)
+    if not produced:
+        return
     upload_queue.enqueue(final_path)
+    upload_queue.enforce_retention(keep=final_path.name)
 
 
 # Timelapse snapshot loop -----------------------------------------------------

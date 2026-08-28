@@ -160,6 +160,7 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Could not connect to the plotter. Check that it is powered on and plugged in.": "cannot_connect",
     "Camera is not enabled": "camera_not_enabled",
     "A recording is already in progress": "recording_in_progress",
+    "Not enough free disk space to record": "no_disk_space",
     "Could not start recording (MediaMTX unreachable)": "camera_unreachable",
     "Could not reach the camera service (MediaMTX)": "camera_unreachable",
     "Invalid autofocus mode": "invalid_af_mode",
@@ -1173,6 +1174,7 @@ class SettingsUpdate(BaseModel):
     camera_output_folder: str | None = None
     camera_rclone_target: str | None = None
     camera_rclone_delete_local: bool | None = None
+    camera_retention_gb: float | None = Field(None, ge=0.0)
     camera_recording_mode_default: Literal["realtime", "timelapse", "sped_up"] | None = None
     camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
     camera_speed_multiplier_default: float | None = Field(None, gt=1.0)
@@ -2467,7 +2469,11 @@ def camera_status(request: Request):
 
 @app.get("/camera/recordings")
 def camera_recordings():
-    return upload_queue.list_recordings()
+    # failed_finalizes is the only place a recording that ffmpeg could not
+    # assemble is ever mentioned — the footage survives as raw segments, but
+    # nothing else in the UI would ever say so.
+    return {**upload_queue.list_recordings(),
+            "failed_finalizes": camera.failed_finalizes()}
 
 
 @app.get("/camera/recordings/{name}")

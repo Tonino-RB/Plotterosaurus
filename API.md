@@ -301,13 +301,19 @@ recording. Only one recording (manual or job-driven) can be active at a time.
 
 | Method | Path | What it does | 409 conditions |
 |---|---|---|---|
-| `POST` | `/api/v1/camera/recording/start` | Start a manual recording (not tied to any job). Body: `{"mode": "realtime"\|"timelapse"\|"sped_up", "timelapse_interval_s": 5.0, "speed_multiplier": 4.0}` — all fields optional, falling back to the configured defaults. | Camera not enabled; a recording is already in progress; MediaMTX unreachable. |
+| `POST` | `/api/v1/camera/recording/start` | Start a manual recording (not tied to any job). Body: `{"mode": "realtime"\|"timelapse"\|"sped_up", "timelapse_interval_s": 5.0, "speed_multiplier": 4.0}` — all fields optional, falling back to the configured defaults. | Camera not enabled; a recording is already in progress; MediaMTX unreachable; not enough free disk space. |
 | `POST` | `/api/v1/camera/recording/pause` | Pause the active recording (no-op if not recording). | — |
 | `POST` | `/api/v1/camera/recording/resume` | Resume a paused recording (no-op if not paused). | — |
 | `POST` | `/api/v1/camera/recording/stop` | Stop and finalize the active recording (no-op if idle). Finalization (segment concatenation, speed post-processing, optional `rclone copy`) runs in the background after this returns. | — |
 | `POST` | `/api/v1/camera/focus` | Live autofocus control. Body: `{"af_mode": "auto"\|"manual"\|"continuous", "lens_position": 0.0}` (`lens_position` only applies in `"manual"` mode; distance (m) = 1/value, 0 = infinity). Applied immediately and persisted to settings. | Camera not enabled; MediaMTX unreachable; invalid `af_mode`. |
 | `GET` | `/api/v1/camera/status` | Returns `{"camera_enabled", "recording_status": "idle"\|"recording"\|"paused", "recording_job_id", "rtsp_url", "hls_url", "webrtc_view_url"}`. The stream URLs are always derived from the request's own host, so they're correct for whatever hostname/IP you reached the server on. | — |
 | `POST` | `/api/v1/optical-reg/calibrate` | One-shot optical-registration calibration, run from **idle** with the pen jogged over a clear patch of paper: plots a cross, moves the carriage a few mm, and learns the camera's `mm_per_px` and rotation (persisted to settings). Returns `{"mm_per_px", "cam_rotation_deg", "fov_mm", "rms_mm"}`. Grabbing frames is a passive RTSP read — the live stream is never interrupted. | Machine not idle; camera not enabled; the cross could not be read; the reading was inconsistent (check focus / lighting / hflip / vflip). |
+
+Starting a recording is refused when the volume holding the recordings is nearly full — capture
+is only part of the cost, since assembling the finished file writes a second copy of it (a third
+in `sped_up` mode). If assembly fails anyway, the raw segments are kept under
+`recordings/_failed_segments/` instead of being deleted, and `GET /camera/recordings` reports them
+as `failed_finalizes`.
 
 Finished recordings land in `camera_output_folder` as `<job_id>.mp4` (or `manual-<timestamp>.mp4`
 for a manual recording), and are additionally copied via `rclone copy <file>
@@ -511,6 +517,7 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "camera_lens_position": 0.0,                  // used only when camera_af_mode is "manual"; distance (m) = 1/value, 0 = infinity
   "camera_output_folder": "recordings",         // local path on the Pi, relative to the install dir unless absolute
   "camera_rclone_target": null,                 // e.g. "gdrive:Plotterosaurus/Recordings" — see "Camera / plot recording" below
+  "camera_retention_gb": 10.0,                  // cap on the local recordings folder; oldest deleted first, 0 keeps everything
   "camera_recording_mode_default": "realtime",  // "realtime" | "timelapse" | "sped_up"
   "camera_timelapse_interval_s_default": 5.0,
   "camera_speed_multiplier_default": 4.0,
@@ -547,6 +554,7 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `camera_lens_position` | number 0–32 |
 | `camera_output_folder` | string (local path) |
 | `camera_rclone_target` | string, e.g. `"gdrive:Plotterosaurus/Recordings"`. Empty disables cloud sync. |
+| `camera_retention_gb` | number ≥ 0 (GB). Total size cap on the local recordings folder, enforced after each finished recording, oldest first; `0` keeps everything. A recording whose upload hasn't landed yet is never deleted. |
 | `camera_recording_mode_default` | `"realtime"` \| `"timelapse"` \| `"sped_up"` |
 | `camera_timelapse_interval_s_default` | number > 0 |
 | `camera_speed_multiplier_default` | number > 1.0 |
