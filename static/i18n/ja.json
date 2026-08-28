@@ -71,6 +71,7 @@
   "settings.language.label": "言語",
   "settings.display.title": "表示",
   "settings.display.unit_label": "長さの単位",
+  "settings.display.unit_auto": "自動",
   "settings.display.unit_mm": "ミリメートル (mm)",
   "settings.display.unit_cm": "センチメートル (cm)",
   "settings.display.unit_in": "インチ (in)",

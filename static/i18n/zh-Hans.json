@@ -71,6 +71,7 @@
   "settings.language.label": "语言",
   "settings.display.title": "显示",
   "settings.display.unit_label": "长度单位",
+  "settings.display.unit_auto": "自动",
   "settings.display.unit_mm": "毫米 (mm)",
   "settings.display.unit_cm": "厘米 (cm)",
   "settings.display.unit_in": "英寸 (in)",

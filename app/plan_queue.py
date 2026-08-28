@@ -19,14 +19,14 @@ from . import optimize_queue, plot_worker, state, svg_complexity, workload
 
 log = logging.getLogger(__name__)
 
-# Statuses worth planning. A draft is included on purpose: it exists so the user
-# can set a job up before committing it, and setting one up without knowing how
-# long it will take is most of the value gone. The cost is bounded — the plan
-# queue is single-slot, niced below the plot worker (see app/workload.py), and
-# cancelled the moment the job is edited or deleted.
+# Statuses worth planning. `ready` is the only not-running status there is, and
+# a job waiting in the queue without knowing how long it will take is most of
+# the value gone. The cost is bounded — the plan queue is single-slot, niced
+# below the plot worker (see app/workload.py), and cancelled the moment the job
+# is edited or deleted.
 #
-# Everything past these two belongs to the plot worker, which is already
-# planning the job itself; re-planning underneath it would just duplicate work.
+# Everything past `ready` belongs to the plot worker, which is already planning
+# the job itself; re-planning underneath it would just duplicate work.
 _PLANNABLE = ("ready",)
 
 

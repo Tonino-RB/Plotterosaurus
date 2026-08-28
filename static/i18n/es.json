@@ -71,6 +71,7 @@
   "settings.language.label": "Idioma",
   "settings.display.title": "Visualización",
   "settings.display.unit_label": "Unidad de longitud",
+  "settings.display.unit_auto": "Automático",
   "settings.display.unit_mm": "Milímetros (mm)",
   "settings.display.unit_cm": "Centímetros (cm)",
   "settings.display.unit_in": "Pulgadas (in)",

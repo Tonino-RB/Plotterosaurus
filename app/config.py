@@ -96,8 +96,14 @@ _SETTINGS: list[_Setting] = [
     _Setting("move_shortcut_x_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
     _Setting("move_shortcut_y_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
     _Setting("move_shortcut_set_origin", bool, False),
-    _Setting("display_unit", str, None,
-             lambda v: v in ("mm", "cm", "in")),
+    # "auto" derives the unit from the browser's locale (app.js
+    # effectiveDisplayUnit). It is a stored value rather than None because
+    # update() below ignores a None — so with None as the sentinel there was
+    # no way to choose automatic again once a unit had been picked. An older
+    # config.json holding null still reads as automatic, since anything that
+    # is not one of the three units falls through to the locale.
+    _Setting("display_unit", str, "auto",
+             lambda v: v in ("auto", "mm", "cm", "in")),
     # Last update the user chose to skip. The update banner stays hidden while
     # this equals the latest remote version; a newer release re-shows it.
     _Setting("skipped_version", str, None),

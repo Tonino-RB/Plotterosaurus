@@ -17,6 +17,16 @@ RestartSec=3
 # out via `sudo`, which needs CAP_SETUID/CAP_SETGID to transition UIDs — those
 # would be filtered out by a narrower bounding set.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+# A ceiling on this service so that an in-process memory spike is this app's
+# problem and not the whole board's. The preview already runs in a killable
+# subprocess with its own 1GB RSS bound; what is left in-process is the vpype
+# ink parse, lxml holding a large document, and uploads (MAX_UPLOAD_BYTES is
+# held whole in memory, once per concurrent request across a 40-thread pool).
+# Without this the kernel OOM killer picks the victim, and it may not be us.
+# 2G of the board's 3.7G: enough headroom that normal work never reaches it,
+# low enough that systemd kills and restarts us before the Pi starts swapping.
+MemoryAccounting=yes
+MemoryMax=2G
 
 [Install]
 WantedBy=multi-user.target

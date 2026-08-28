@@ -1155,7 +1155,7 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesimplify_default: bool | None = None
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
-    display_unit: Literal["mm", "cm", "in"] | None = None
+    display_unit: Literal["auto", "mm", "cm", "in"] | None = None
     move_shortcut_x_mm: float | None = Field(None, ge=0.0, le=2000.0)
     move_shortcut_y_mm: float | None = Field(None, ge=0.0, le=2000.0)
     move_shortcut_set_origin: bool | None = None

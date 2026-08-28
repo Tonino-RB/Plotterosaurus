@@ -71,6 +71,7 @@
   "settings.language.label": "언어",
   "settings.display.title": "표시",
   "settings.display.unit_label": "길이 단위",
+  "settings.display.unit_auto": "자동",
   "settings.display.unit_mm": "밀리미터 (mm)",
   "settings.display.unit_cm": "센티미터 (cm)",
   "settings.display.unit_in": "인치 (in)",

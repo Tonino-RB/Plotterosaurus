@@ -71,6 +71,7 @@
   "settings.language.label": "Taal",
   "settings.display.title": "Weergave",
   "settings.display.unit_label": "Lengte-eenheid",
+  "settings.display.unit_auto": "Automatisch",
   "settings.display.unit_mm": "Millimeter (mm)",
   "settings.display.unit_cm": "Centimeter (cm)",
   "settings.display.unit_in": "Inch (in)",

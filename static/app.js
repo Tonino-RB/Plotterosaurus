@@ -433,12 +433,28 @@ function renderLibrary() {
     libraryList.appendChild(li);
     return;
   }
+  // A promoted copy of another row's optimized variant (see
+  // main._promote_optimized) is an internal snapshot, not a drawing the user
+  // separately added — listing it here read as a new file silently appearing
+  // every time the original "optimized" row was loaded. Its bytes are real
+  // though, and /library counts them in the usage line above, so charge them
+  // to the row they came from rather than dropping them: the sizes on screen
+  // then add up to the total. A copy whose parent is gone has no row to hide
+  // behind, so it is listed on its own instead of vanishing from both.
+  const hostKey = new Map();        // parent svg_id -> key of the row to charge
   for (const e of libraryEntries) {
-    // A promoted copy of another row's optimized variant (see
-    // main._promote_optimized) is an internal snapshot, not a drawing the
-    // user separately added — listing it here read as a new file silently
-    // appearing every time the original "optimized" row was loaded.
     if (e.derived_from) continue;
+    // The optimized row when there is one: that variant is what was promoted.
+    if (e.variant === "optimized" || !hostKey.has(e.svg_id)) hostKey.set(e.svg_id, e.key);
+  }
+  const derivedBytes = new Map();   // row key -> bytes of the copies it hosts
+  for (const e of libraryEntries) {
+    const host = e.derived_from ? hostKey.get(e.derived_from) : null;
+    if (!host) continue;
+    derivedBytes.set(host, (derivedBytes.get(host) || 0) + e.size_bytes);
+  }
+  for (const e of libraryEntries) {
+    if (e.derived_from && hostKey.has(e.derived_from)) continue;
     const li = document.createElement("li");
     li.dataset.svgId = e.svg_id;
     li.dataset.variant = e.variant;
@@ -452,7 +468,7 @@ function renderLibrary() {
     li.innerHTML = `
       <span class="library-name" title="${escapeHtml(e.filename)}">${escapeHtml(e.filename)}</span>
       ${badges.join("")}
-      <span class="library-meta">${escapeHtml(formatBytes(e.size_bytes))}</span>
+      <span class="library-meta">${escapeHtml(formatBytes(e.size_bytes + (derivedBytes.get(e.key) || 0)))}</span>
       <span class="library-actions">
         <button type="button" class="icon-btn library-add" title="${escapeHtml(t("library.add"))}" data-i18n-title="library.add">+</button>
         <button type="button" class="icon-btn library-del" title="${escapeHtml(t("library.delete_title"))}" data-i18n-title="library.delete_title">✕</button>
@@ -3947,7 +3963,7 @@ async function openSettings() {
     settingsOptimizeLinesort.checked = data.optimize_svg_linesort_default !== false;
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
-    settingsDisplayUnit.value = data.display_unit || effectiveDisplayUnit();
+    settingsDisplayUnit.value = data.display_unit || "auto";
     settingsShortcutX.value = String(data.move_shortcut_x_mm ?? 6);
     settingsShortcutY.value = String(data.move_shortcut_y_mm ?? 6);
     settingsShortcutSetOrigin.checked = !!data.move_shortcut_set_origin;

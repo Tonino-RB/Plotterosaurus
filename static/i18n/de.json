@@ -71,6 +71,7 @@
   "settings.language.label": "Sprache",
   "settings.display.title": "Anzeige",
   "settings.display.unit_label": "Längeneinheit",
+  "settings.display.unit_auto": "Automatisch",
   "settings.display.unit_mm": "Millimeter (mm)",
   "settings.display.unit_cm": "Zentimeter (cm)",
   "settings.display.unit_in": "Zoll (in)",
