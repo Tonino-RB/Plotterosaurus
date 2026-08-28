@@ -56,7 +56,8 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Live preview with autofocus/exposure/white-balance/denoise/brightness/contrast/saturation/sharpness controls and resolution/bitrate settings, all in Settings → Camera
 - A job can request recording itself (`record_plot`); it pauses/resumes automatically with the job. Recording can also be started/stopped manually, independent of any job
 - Live RTSP / HLS / WebRTC stream URLs for viewing in VLC, OBS, or Home Assistant while a plot runs
-- Finished recordings are saved locally under `camera_output_folder` and optionally pushed to cloud storage via `rclone copy` (bring your own installed + authenticated `rclone`)
+- Finished recordings are saved locally under `camera_output_folder` and optionally pushed to cloud storage via `rclone copy` (bring your own installed + authenticated `rclone`), one upload at a time, retried with backoff until the remote confirms them — an upload cut short by a restart or a dropped connection is picked back up by a sweep of the folder at startup and every five minutes
+- Settings → Camera → Recording lists what is still on the Pi, with each file's upload percentage, an inline preview, a delete button, and an "upload now" retry. With *delete local after upload* on, that list is empty whenever every recording has landed
 - Opt-in at install time (`ENABLE_CAMERA=1`) — everything above is skipped entirely on installs without a camera. See [Install options](#install-options) and [API.md](API.md#camera--plot-recording)
 
 **Operational**
@@ -113,7 +114,7 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 
 - `rpicam-apps`, `libfreetype6`, `ffmpeg` (apt)
 - [MediaMTX](https://mediamtx.org) — downloaded as a prebuilt arm64 binary to `/opt/mediamtx` on first install and run as its own systemd service, reading the camera directly via its native `rpiCamera` source and serving the RTSP/HLS/WebRTC stream plus on-disk recording segments; `app/camera.py` only drives its local Control API and post-processes with ffmpeg
-- `rclone` is **not** installed by the script — install and authenticate it yourself if you want finished recordings pushed to cloud storage; Plotterosaurus only shells out to `rclone copy` and never stores cloud credentials
+- `rclone` is **not** installed by the script — install and authenticate it yourself if you want finished recordings pushed to cloud storage; Plotterosaurus only shells out to `rclone copy` and never stores cloud credentials (see `app/upload_queue.py` for the retry/sweep behaviour around it)
 
 **System files** (written / overwritten on every run):
 

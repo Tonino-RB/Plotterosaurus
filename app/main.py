@@ -26,7 +26,7 @@ from lxml import etree
 from . import (
     camera, config, export, ink_cache, layer_group, notify, optimize_expert_queue,
     optimize_queue, placement, plan_queue, plot_worker, state, svg_complexity,
-    svg_optimize, svg_utils, updates,
+    svg_optimize, svg_utils, updates, upload_queue,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -160,6 +160,7 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Could not start recording (MediaMTX unreachable)": "camera_unreachable",
     "Could not reach the camera service (MediaMTX)": "camera_unreachable",
     "Invalid autofocus mode": "invalid_af_mode",
+    "Invalid recording name": "invalid_recording_name",
 }
 
 
@@ -176,6 +177,7 @@ async def lifespan(_app: FastAPI):
     optimize_queue.start()
     plan_queue.start()
     optimize_expert_queue.start()
+    upload_queue.start()
     optimize_queue.bootstrap_from_disk()
     plan_queue.bootstrap_from_state()
     camera.apply_camera_settings()
@@ -193,6 +195,7 @@ async def lifespan(_app: FastAPI):
         plan_queue.shutdown()
         optimize_queue.shutdown()
         optimize_expert_queue.shutdown()
+        upload_queue.shutdown()
         drain_task.cancel()
 
 
@@ -2432,6 +2435,49 @@ def camera_focus(req: CameraFocusRequest):
 @app.get("/camera/status")
 def camera_status(request: Request):
     return camera.status(request.url.hostname or "localhost")
+
+
+# Local recordings + their cloud uploads ------------------------------------
+# The output folder is the upload queue's work list (see app/upload_queue.py),
+# so listing it is also the honest answer to "did my recordings make it to the
+# cloud" — with "delete local after upload" on, a folder that keeps a file is
+# a folder whose upload hasn't landed yet.
+
+@app.get("/camera/recordings")
+def camera_recordings():
+    return upload_queue.list_recordings()
+
+
+@app.get("/camera/recordings/{name}")
+def camera_recording_file(name: str):
+    try:
+        path = upload_queue.path_for(name)
+    except ValueError as e:
+        raise _coded(404, _WORKER_ERROR_CODES[str(e)])
+    # Range requests are what make the preview seekable rather than a
+    # download-the-whole-thing-first player; Starlette's FileResponse serves
+    # them itself.
+    return FileResponse(str(path), media_type="video/mp4", filename=name,
+                        content_disposition_type="inline")
+
+
+@app.post("/camera/recordings/{name}/upload")
+def camera_recording_upload(name: str):
+    try:
+        upload_queue.path_for(name)
+    except ValueError as e:
+        raise _coded(404, _WORKER_ERROR_CODES[str(e)])
+    upload_queue.retry(name)
+    return {"ok": True}
+
+
+@app.delete("/camera/recordings/{name}")
+def camera_recording_delete(name: str):
+    try:
+        upload_queue.delete(name)
+    except ValueError as e:
+        raise _coded(404, _WORKER_ERROR_CODES[str(e)])
+    return {"ok": True}
 
 
 @app.post("/api/v1/camera/recording/start", dependencies=[Depends(require_api_key)])

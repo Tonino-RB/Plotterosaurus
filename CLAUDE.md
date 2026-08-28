@@ -49,6 +49,7 @@ Key module layout (`app/`):
 | `plan_queue.py` | Single-worker FIFO queue that pre-computes each ready job's time/distance estimate in the background |
 | `workload.py` | The shared budget: one heavy background job at a time across the three background queues, all scheduled below the plot worker's own priority |
 | `camera.py` | Plot recording via a Pi Camera Module 3 + MediaMTX (opt-in, `ENABLE_CAMERA=1`) |
+| `upload_queue.py` | Pushes finished recordings to the `rclone` target, one at a time, retried with backoff; a sweep of the output folder at startup and every five minutes is what makes an interrupted upload resume. Niced like the other background workers but does not take `workload`'s heavy slot — it is network-bound, not CPU-bound |
 | `state.py` | In-memory job-list state + WebSocket broadcast. One not-running status, `ready`; `next_ready_job` picks the top one and that is the only thing Plot consults |
 | `config.py` | Plotter/camera/webhook/display settings, persisted to `config.json` |
 | `updates.py` | Self-update: remote version check + guarded apply (opt-in) |

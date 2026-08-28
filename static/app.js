@@ -87,6 +87,9 @@ const cameraSpeedMultiplier = $("camera-speed-multiplier");
 const cameraOutputFolder = $("camera-output-folder");
 const cameraRcloneTarget = $("camera-rclone-target");
 const cameraRcloneDeleteLocal = $("camera-rclone-delete-local");
+const cameraRecordingsList = $("camera-recordings-list");
+const cameraRecordingsNote = $("camera-recordings-note");
+const cameraRecordingsRefresh = $("camera-recordings-refresh");
 const opticalRegMarkX = $("optical-reg-mark-x");
 const opticalRegMarkY = $("optical-reg-mark-y");
 const opticalRegMarkSize = $("optical-reg-mark-size");
@@ -4294,6 +4297,10 @@ cameraSettingsBtn.addEventListener("click", openCameraSettings);
 function closeCameraSettings() {
   cameraSettingsModal.hidden = true;
   cameraPreviewFrame.src = "";
+  stopRecordingsPolling();
+  // The open player goes with the modal's markup; clearing this is what lets
+  // polling start again the next time the modal is opened.
+  recordingPreviewOpen = null;
 }
 $("camera-settings-cancel").addEventListener("click", closeCameraSettings);
 cameraSettingsModal.addEventListener("click", (e) => {
@@ -4362,6 +4369,7 @@ async function openCameraSettings() {
       cameraPreviewFrame.src = status.webrtc_view_url + "?controls=false";
     }
   } catch (e) {}
+  startRecordingsPolling();
   cameraSettingsModal.hidden = false;
 }
 
@@ -4414,6 +4422,158 @@ async function saveCameraSettings() {
   }
 }
 $("camera-settings-save").addEventListener("click", saveCameraSettings);
+
+// ───── Recordings on the Pi ──────────────────────────────────────────────
+//
+// The local recordings folder doubles as the upload queue's work list (see
+// app/upload_queue.py), so this panel is also the answer to "did my plots
+// make it to the cloud": with "delete local after upload" on, a row that is
+// still here is a row whose upload has not landed yet, and it says why.
+//
+// Polled only while the camera settings modal is open — the healthy steady
+// state is an empty list, which is not worth a request every two seconds from
+// a tab nobody is looking at.
+
+let recordingsTimer = null;
+// Filename whose inline player is open. Polling stops while one is, because a
+// re-render replaces the <video> and would restart playback from zero.
+let recordingPreviewOpen = null;
+
+function startRecordingsPolling() {
+  stopRecordingsPolling();
+  loadRecordings();
+  recordingsTimer = setInterval(loadRecordings, 2000);
+}
+
+function stopRecordingsPolling() {
+  if (recordingsTimer !== null) clearInterval(recordingsTimer);
+  recordingsTimer = null;
+}
+
+async function loadRecordings() {
+  if (recordingPreviewOpen) return;
+  try {
+    const res = await fetch("/camera/recordings");
+    if (!res.ok) return;
+    renderRecordings(await res.json());
+  } catch (e) {
+    console.warn("recordings fetch failed", e);
+  }
+}
+
+function recordingStatusText(r) {
+  switch (r.upload_status) {
+    case "queued": return t("camera.recording.files_status_queued");
+    case "uploading": return t("camera.recording.files_status_uploading", {
+      percent: r.percent,
+      done: formatBytes(r.uploaded_bytes),
+      total: formatBytes(r.size_bytes),
+    });
+    case "uploaded": return t("camera.recording.files_status_uploaded");
+    case "failed": return t("camera.recording.files_status_failed", {
+      retry: formatDuration(r.retry_in_s),
+      error: r.error || "",
+    });
+    case "local_only": return t("camera.recording.files_status_local_only");
+    default: return t("camera.recording.files_status_idle");
+  }
+}
+
+function renderRecordings(data) {
+  if (!data.rclone_target) {
+    cameraRecordingsNote.textContent = t("camera.recording.files_no_target");
+  } else if (!data.rclone_installed) {
+    cameraRecordingsNote.textContent = t("camera.recording.files_no_rclone");
+  } else {
+    cameraRecordingsNote.textContent = data.delete_local
+      ? t("camera.recording.files_delete_note")
+      : t("camera.recording.files_keep_note");
+  }
+
+  cameraRecordingsList.innerHTML = "";
+  const rows = data.recordings || [];
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "recordings-empty";
+    empty.textContent = t("camera.recording.files_empty");
+    cameraRecordingsList.appendChild(empty);
+    return;
+  }
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "recording-row";
+    row.dataset.name = r.name;
+    const failed = r.upload_status === "failed";
+    const inFlight = r.upload_status === "uploading" || r.upload_status === "uploaded";
+    const canUploadNow = data.rclone_target && !inFlight;
+    const when = new Date(r.modified * 1000).toLocaleString();
+    row.innerHTML = `
+      <div class="recording-line">
+        <span class="recording-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span>
+        <span class="recording-meta">${escapeHtml(formatBytes(r.size_bytes))} · ${escapeHtml(when)}</span>
+      </div>
+      ${inFlight ? `<div class="progress-bar"><div class="progress-fill" style="width:${r.percent}%"></div></div>` : ""}
+      <div class="recording-line">
+        <span class="recording-status${failed ? " error" : ""}">${escapeHtml(recordingStatusText(r))}</span>
+        <span class="recording-actions">
+          <button type="button" class="neutral recording-preview">${escapeHtml(t("camera.recording.files_preview"))}</button>
+          ${canUploadNow ? `<button type="button" class="neutral recording-upload">${escapeHtml(t("camera.recording.files_upload_now"))}</button>` : ""}
+          <button type="button" class="danger recording-delete">${escapeHtml(t("camera.recording.files_delete"))}</button>
+        </span>
+      </div>`;
+    cameraRecordingsList.appendChild(row);
+  }
+}
+
+// Delegated once, so the two-second re-render never stacks duplicate listeners.
+cameraRecordingsList.addEventListener("click", async (ev) => {
+  const row = ev.target.closest(".recording-row");
+  if (!row) return;
+  const name = row.dataset.name;
+
+  if (ev.target.closest(".recording-preview")) {
+    const open = row.querySelector(".recording-video");
+    if (open) {
+      open.remove();
+      recordingPreviewOpen = null;
+      startRecordingsPolling();
+      return;
+    }
+    const video = document.createElement("video");
+    video.className = "recording-video";
+    video.controls = true;
+    video.preload = "metadata";
+    video.src = `/camera/recordings/${encodeURIComponent(name)}`;
+    row.appendChild(video);
+    recordingPreviewOpen = name;
+    stopRecordingsPolling();
+    return;
+  }
+
+  if (ev.target.closest(".recording-upload")) {
+    await fetch(`/camera/recordings/${encodeURIComponent(name)}/upload`, { method: "POST" });
+    loadRecordings();
+    return;
+  }
+
+  if (ev.target.closest(".recording-delete")) {
+    if (!confirm(t("camera.recording.files_confirm_delete", { name }))) return;
+    if (recordingPreviewOpen === name) {
+      recordingPreviewOpen = null;
+      startRecordingsPolling();
+    }
+    await fetch(`/camera/recordings/${encodeURIComponent(name)}`, { method: "DELETE" });
+    loadRecordings();
+  }
+});
+
+cameraRecordingsRefresh.addEventListener("click", () => {
+  // An explicit refresh rebuilds every row and so tears down an open player.
+  // Forget it rather than leaving polling wedged off against a <video> that
+  // no longer exists.
+  recordingPreviewOpen = null;
+  startRecordingsPolling();
+});
 
 function renderOpticalRegCalibrationStatus() {
   opticalRegCalibrateStatus.className = "muted";

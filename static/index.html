@@ -783,6 +783,15 @@
             <input type="checkbox" id="camera-rclone-delete-local" />
             <span data-i18n="camera.recording.rclone_delete_local">Delete local recording once the upload to the rclone target is confirmed</span>
           </label>
+
+          <div class="recordings-panel">
+            <div class="recordings-head">
+              <span class="field-label" data-i18n="camera.recording.files_title">Recordings on the Pi</span>
+              <button id="camera-recordings-refresh" class="neutral" type="button" data-i18n="camera.recording.files_refresh">Refresh</button>
+            </div>
+            <p id="camera-recordings-note" class="muted"></p>
+            <div id="camera-recordings-list"></div>
+          </div>
         </div>
       </section>
 

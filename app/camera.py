@@ -6,8 +6,8 @@ serves the live RTSP/HLS/WebRTC stream, and writes recording segments to
 disk. This module never touches the camera or an encoder itself — it only
 drives MediaMTX's local HTTP Control API (127.0.0.1:9997, no auth, see
 https://mediamtx.org/docs/usage/control-api) and post-processes the segment
-files MediaMTX produces with ffmpeg, optionally handing the result to
-`rclone copy`.
+files MediaMTX produces with ffmpeg, handing the result to
+app/upload_queue.py when a cloud target is configured.
 
 Realtime and sped-up modes use MediaMTX's native continuous segment
 recording (`record`/`recordPath`), toggled on/off for pause/resume — each
@@ -33,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config, state
+from . import config, state, upload_queue
 
 log = logging.getLogger(__name__)
 
@@ -253,14 +253,6 @@ def is_recording_job(job_id: str) -> bool:
 
 # Finalization -----------------------------------------------------------
 
-def _output_dir() -> Path:
-    out_dir = Path(config.CAMERA_OUTPUT_FOLDER)
-    if not out_dir.is_absolute():
-        out_dir = BASE_DIR / out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
-
 def _run_ffmpeg(args: list[str]) -> None:
     subprocess.run(["ffmpeg", *args], check=True, capture_output=True,
                    text=True, timeout=1800)
@@ -272,7 +264,7 @@ def _finalize(session: dict) -> None:
     # Stamp the time into the name: a job recording is keyed by job_id, and
     # re-plotting a job would otherwise overwrite the previous take.
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(session["started_at"]))
-    final_path = _output_dir() / f"{session['session_id']}-{stamp}.mp4"
+    final_path = upload_queue.output_dir() / f"{session['session_id']}-{stamp}.mp4"
     if mode != "timelapse":
         # Let MediaMTX flush the segment part that was in flight when
         # recording stopped (recordPartDuration defaults to 1s). Waited for
@@ -320,25 +312,7 @@ def _finalize(session: dict) -> None:
     finally:
         shutil.rmtree(segments_dir, ignore_errors=True)
 
-    if config.CAMERA_RCLONE_TARGET:
-        threading.Thread(target=_rclone_copy, args=(final_path,), daemon=True).start()
-
-
-def _rclone_copy(path: Path) -> None:
-    if not shutil.which("rclone"):
-        log.warning("camera: rclone not installed — skipping cloud sync for %s", path)
-        return
-    try:
-        subprocess.run(["rclone", "copy", str(path), config.CAMERA_RCLONE_TARGET],
-                       check=True, capture_output=True, text=True, timeout=1800)
-    except Exception:
-        log.exception("camera: rclone copy failed for %s", path)
-        return
-    if config.CAMERA_RCLONE_DELETE_LOCAL:
-        try:
-            path.unlink()
-        except OSError:
-            log.exception("camera: failed to delete local recording %s after upload", path)
+    upload_queue.enqueue(final_path)
 
 
 # Timelapse snapshot loop -----------------------------------------------------

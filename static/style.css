@@ -1198,3 +1198,33 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
   color: var(--text-soft);
   margin-top: 0.4rem;
 }
+
+/* Recordings panel (camera settings → Recording). With "delete local after
+   upload" on, an empty list is the healthy state — so the list has to make an
+   upload that hasn't landed obvious rather than looking like nothing at all. */
+.recordings-panel { margin-top: 1rem; border-top: 1px solid var(--border-soft); padding-top: 0.75rem; }
+.recordings-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.recordings-head button { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+#camera-recordings-note { margin: 0.35rem 0 0.6rem 0; }
+.recording-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.5rem;
+  background: var(--surface-alt);
+}
+.recording-line { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.recording-name {
+  font-size: 0.85rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.recording-meta { font-size: 0.75rem; color: var(--text-faint); flex: none; }
+.recording-row .progress-bar { margin: 0.4rem 0; height: 6px; }
+.recording-status { font-size: 0.78rem; color: var(--text-soft); }
+.recording-status.error { color: #FF4D4D; }
+.recording-actions { display: flex; gap: 0.3rem; flex: none; }
+.recording-actions button { padding: 0.15rem 0.5rem; font-size: 0.75rem; }
+.recording-video { display: block; width: 100%; margin-top: 0.5rem; border-radius: 6px; }
+.recordings-empty { padding: 0.9rem; text-align: center; color: var(--text-faint); font-size: 0.85rem; }
