@@ -1,10 +1,37 @@
 # Plotterosaurus
 
-> **Status: beta (v0.3.0-beta).** Plotterosaurus is a personal fork of [Plotter Hub](https://github.com/Synendo/PlotterHub) — version numbering restarted from `0.1.0` to reflect that this is a separate, actively-changing line rather than a continuation of upstream's `1.x` releases. Expect breaking changes between betas.
+> **Status: v1.0.0 — first public release.** Plotterosaurus is a fork of [Plotter Hub](https://github.com/Synendo/PlotterHub), with version numbering restarted at `1.0.0` to reflect that this is a separate line rather than a continuation of upstream's releases.
+>
+> **This is experimental software that drives a machine with moving parts. Read the [Disclaimer](#disclaimer) before you run it.**
 
 A self-hosted plot server for the iDraw H SE A3 and AxiDraw-class pen plotters. Submit SVGs over the network and the Pi drives the plotter locally via the official AxiDraw Python API, so your workstation doesn't need to stay connected for the duration of the plot.
 
 Open `http://plotterosaurus.local` (or whatever your Pi's hostname is) and you get a drag-and-drop UI with layer-by-layer plotting, pen-change pauses, paper-size presets, and a live pen-position cursor.
+
+## Disclaimer
+
+**Plotterosaurus is experimental software, provided free of charge, with no warranty of any kind. You run it entirely at your own risk.**
+
+It commands a motorised machine over a serial link. It can move the gantry, drive the pen carriage into the ends of its travel, lower and raise the pen, and keep the motors energised. Software this young, on hardware this varied, gets things wrong.
+
+By installing or using it you accept that **the author is not liable for any damage or injury of any kind**, including but not limited to:
+
+- **Injury to you or anyone else** — trapped fingers, hair or clothing caught in a moving gantry, or anything else that happens near a machine in motion. Never reach into the plotter while a job is running, and keep children and pets away from it.
+- **Damage to your plotter** — crashes into the travel limits, a pen driven into the bed, stalled or overheating motors, or wear from a badly chosen speed or pen height.
+- **Damage to pens, paper, artwork or anything else in the machine**, including work spoiled by a misplaced, clipped or mis-registered plot.
+- **Damage to the Raspberry Pi, the SD card, or any other equipment**, and any data lost from them.
+- **Lost work or lost time** — corrupted job queues, failed plots, or a job that runs for hours and produces nothing usable.
+
+Some specific things to be aware of:
+
+- **Watch the first run of any new setup.** Confirm the origin, and be ready to reach the power switch. Do not leave a plot unattended until you trust the setup.
+- **The pen-height and speed settings command the hardware directly.** Values outside what your machine tolerates can drive the pen into the paper or the bed.
+- **Placement is decided in software.** Check the on-screen preview and the machine-bounds warning before you commit good paper to a plot — see [Known limitations](#known-limitations) for the cases where artwork can end up clipped or off the page.
+- **There is no login.** Anyone who can reach the web port can move the machine. See [Network and access](#network-and-access).
+
+This software is not certified for any purpose, and is not suitable for any application where a failure could cause harm. If you are not comfortable with the above, do not use it.
+
+See [LICENSE](LICENSE) for the formal terms — the MIT licence disclaims all warranties and all liability, and this section is the plain-language version of that.
 
 ## Background
 
@@ -12,7 +39,7 @@ I didn't like that my iDraw H SE A3 plotter had to stay connected to my laptop t
 
 I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't support the physical pause button on my iDraw. AxiDraw does recognize button presses, so Plotterosaurus supports it: press the button once to pause, press it a second time to resume the plot. The same button also continues to the next layer when the plot is paused for a pen change.
 
-**Disclaimer:** this code was completely created by [Claude Code](https://claude.com/claude-code) (Claude Opus 4.7-4.8, 1M-context).
+**How it was written:** this code was completely created by [Claude Code](https://claude.com/claude-code) (Claude Opus 4.7-4.8, 1M-context).
 
 ## Features
 
