@@ -114,3 +114,46 @@ def test_placeholders_survive_translation(lang):
 def test_no_empty_strings(lang):
     blank = sorted(k for k, v in _catalogs()[lang].items() if not str(v).strip())
     assert not blank, f"{lang}.json has empty values: {blank}"
+
+
+# Keys whose English value is the right answer in most languages, and why.
+# Every entry here has to be a name, not a sentence — if you are tempted to add
+# a phrase, translate the phrase instead.
+SAME_AS_ENGLISH_OK = {
+    "layer_type.svg": "a file format, not a word",
+    "export.fmt_pdf": "a format name",
+    "export.fmt_hpgl": "a format name and its file extension",
+    "export.fmt_gcode": "a format name and its file extension",
+    "apierror.worker_error": "a bare {detail} placeholder — the server supplies the text",
+    "camera.recording.mode_timelapse": "a loanword in es/fr/it/nl/pt, and the "
+                                       "catalogs that do have a native word "
+                                       "(de/ja/ko/zh-Hans) already use it",
+}
+
+# One or two catalogs sharing a word with English is a cognate: "Pause" really
+# is the German word, "Normal" really is the Spanish one. Half of them agreeing
+# is nobody having translated the string at all.
+MOSTLY_ENGLISH = 5
+
+
+def test_no_key_ships_as_raw_english():
+    """A key present everywhere but still holding its English text is invisible
+    to every check above: key parity passes, placeholder parity passes, nothing
+    is empty. That is how the whole optical-registration feature shipped in
+    English in eight of the nine catalogs — the strings existed, so the suite
+    stayed green.
+    """
+    catalogs = _catalogs()
+    en = catalogs[FALLBACK]
+    others = {lang: cat for lang, cat in catalogs.items() if lang != FALLBACK}
+    offenders = {}
+    for key, english in en.items():
+        if key in SAME_AS_ENGLISH_OK:
+            continue
+        same = sorted(l for l, cat in others.items() if cat.get(key) == english)
+        if len(same) >= MOSTLY_ENGLISH:
+            offenders[key] = same
+    assert not offenders, (
+        "still the English text in most catalogs — translate these, or add the "
+        "key to SAME_AS_ENGLISH_OK with a reason: "
+        + "; ".join(f"{k} ({', '.join(v)})" for k, v in sorted(offenders.items())))
