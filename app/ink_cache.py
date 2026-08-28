@@ -29,6 +29,7 @@ this hardware waiting means a blank canvas for over a minute.
 import logging
 import queue
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -41,7 +42,22 @@ log = logging.getLogger(__name__)
 _CACHE_MAX = 32
 _cache: "OrderedDict[tuple, dict[int, tuple]]" = OrderedDict()
 _pending: set = set()
-_lock = threading.Lock()
+# A Condition rather than a plain Lock so a caller that genuinely cannot carry
+# on without an answer can wait for the worker instead of measuring the file
+# itself on whatever thread it happens to be on — see rect_for_blocking.
+_lock = threading.Condition()
+
+# Files whose measurement raised, as {key: (attempts, monotonic time)}. A
+# failure is not the same answer as an empty document: caching {} for one would
+# leave a drawing whose parse lost a race to a temp-file collision, or hit a
+# momentary memory pinch, permanently reading as "measured, nothing there" with
+# no way to retry. So a failure is retried, but not freely — each attempt is a
+# full vpype parse, and the UI re-asks on every state broadcast. After
+# _FAIL_ATTEMPTS tries the empty result is cached for real, because by then the
+# document itself is the likeliest explanation.
+_FAIL_ATTEMPTS = 3
+_FAIL_RETRY_S = 300.0
+_failed: "OrderedDict[tuple, tuple[int, float]]" = OrderedDict()
 
 _work: "queue.Queue[tuple]" = queue.Queue()
 _worker: threading.Thread | None = None
@@ -103,13 +119,26 @@ def _run() -> None:
                 measurements = svg_utils.measure_layers(Path(key[0]))
         except Exception:
             log.exception("ink_cache: could not measure %s", key[0])
-            measurements = {}
+            with _lock:
+                attempts = _failed.get(key, (0, 0.0))[0] + 1
+                _pending.discard(key)
+                if attempts < _FAIL_ATTEMPTS:
+                    _failed[key] = (attempts, time.monotonic())
+                    _failed.move_to_end(key)
+                    while len(_failed) > _CACHE_MAX:
+                        _failed.popitem(last=False)
+                    _lock.notify_all()
+                    continue
+                _failed.pop(key, None)
+                measurements = {}
         with _lock:
             _cache[key] = measurements
             _cache.move_to_end(key)
             while len(_cache) > _CACHE_MAX:
                 _cache.popitem(last=False)
+            _failed.pop(key, None)
             _pending.discard(key)
+            _lock.notify_all()
 
 
 def _ensure_worker() -> None:
@@ -120,17 +149,27 @@ def _ensure_worker() -> None:
             _worker.start()
 
 
-def request(path: Path) -> None:
+def request(path: Path, force: bool = False) -> None:
     """Measure ``path`` in the background if it has not been measured already.
 
     Idempotent and cheap to call repeatedly — which matters, because the UI
     does exactly that.
+
+    ``force`` re-attempts a file inside the failure back-off window. The
+    back-off is there because the UI re-asks on every state broadcast; a
+    caller that asked once, because a person pressed a button, is not what it
+    is defending against, and refusing it an attempt turns one unlucky parse
+    into five minutes of a plot that will not start.
     """
     key = _key(path)
     if key is None:
         return
     with _lock:
         if key in _cache or key in _pending:
+            return
+        failure = _failed.get(key)
+        if (not force and failure is not None
+                and time.monotonic() - failure[1] < _FAIL_RETRY_S):
             return
         _pending.add(key)
     _ensure_worker()
@@ -156,7 +195,48 @@ def rect_for(path: Path, layer_indices) -> tuple[bool, tuple | None]:
     if measurements is None:
         request(path)
         return False, None
-    return True, svg_utils.union_rect(
+    return True, _union(measurements, layer_indices)
+
+
+def rect_for_blocking(path: Path, layer_indices) -> tuple[bool, tuple | None]:
+    """``rect_for``, but waits for the measurement rather than reporting it
+    not ready.
+
+    For the few callers that cannot carry on without an answer: the pre-flight
+    check that decides whether a job is safe to start plotting, and the
+    jog/nudge guards that decide whether a move would push ink off the page.
+    Anything on a render path should keep using ``rect_for`` and ask again.
+
+    The waiting is the point. These callers used to measure the file inline
+    instead, on whatever thread they were on — a full vpype parse of the whole
+    document at normal priority, outside `workload`'s single heavy slot, next
+    to a pen that was very possibly moving. Worse, the UI had usually queued a
+    measurement of the same file already, so the work was done twice. Here the
+    one worker does it once, niced and holding the heavy slot, and every
+    caller shares the result.
+
+    ``(False, None)`` still comes back when the measurement failed outright,
+    since there is then nothing to wait for.
+    """
+    key = _key(path)
+    if key is None:
+        return False, None
+    request(path, force=True)
+    with _lock:
+        # Either the answer arrived, or the worker gave up on this file (it
+        # discards the key from _pending in both cases) — a measurement that
+        # is never coming must not park the caller here forever.
+        _lock.wait_for(lambda: key in _cache or key not in _pending)
+        measurements = _cache.get(key)
+        if measurements is not None:
+            _cache.move_to_end(key)
+    if measurements is None:
+        return False, None
+    return True, _union(measurements, layer_indices)
+
+
+def _union(measurements: dict, layer_indices) -> tuple | None:
+    return svg_utils.union_rect(
         (measurements.get(i) or {}).get("rect") for i in layer_indices)
 
 

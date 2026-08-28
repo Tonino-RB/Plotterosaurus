@@ -55,6 +55,37 @@ def deprioritize() -> None:
         log.debug("workload: could not lower thread priority", exc_info=True)
 
 
+def run_background(fn, *args, **kwargs):
+    """Run ``fn`` on a throwaway thread at background priority, and hand the
+    caller back its result (or re-raise what it raised).
+
+    For heavy work that arrives on a thread the caller does not own — a
+    FastAPI threadpool thread, say. Such a thread cannot simply call
+    ``deprioritize`` on itself: niceness is one-way for an unprivileged
+    process, so the nice would outlive the request and the pool would hand
+    that permanently-slowed thread to every request after it. A thread created
+    for this one call takes its niceness with it when it exits.
+
+    Synchronous on purpose. The caller is blocked either way; the point is
+    only that the CPU is spent below the plotter's priority, not beside it.
+    """
+    result: dict = {}
+
+    def _target() -> None:
+        deprioritize()
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:      # noqa: BLE001 — re-raised below
+            result["error"] = exc
+
+    worker = threading.Thread(target=_target, name="workload-bg", daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 @contextlib.contextmanager
 def heavy(label: str = ""):
     """Hold the single heavy-work slot for the duration of the block."""

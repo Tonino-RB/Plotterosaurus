@@ -859,12 +859,22 @@ def _job_ink_bounds(job: dict, svg_path: Path
     check that re-measured the whole document itself is the multi-second delay
     a user feels between clicking "confirm" and the carriage actually moving.
 
+    On a cold cache it waits for ink_cache's worker rather than parsing the
+    document here (see rect_for_blocking): every caller of this is a safety
+    check that has to have a real answer, but none of them is entitled to run
+    a minute of vpype at normal priority beside a moving pen. Raises if the
+    measurement failed — an unreadable document is not the same answer as an
+    empty one, and the guards downstream treat "no ink" as "nothing to
+    protect".
+
     Deliberately the *un-optimized* source SVG: optimize_svg only simplifies
     paths, never the extent they cover, so the two agree on everything that
     matters here and the cache is shared with the placement/jog checks.
     """
     layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
-    measured, cached_rect = ink_cache.rect_for(svg_path, layer_indices)
+    measured, cached_rect = ink_cache.rect_for_blocking(svg_path, layer_indices)
+    if not measured:
+        raise RuntimeError(f"Could not measure the drawing's ink ({svg_path.name})")
     return svg_utils.ink_bounds_mm(
         svg_path, layer_indices,
         job["paper_width_mm"], job["paper_height_mm"],
@@ -876,7 +886,7 @@ def _job_ink_bounds(job: dict, svg_path: Path
         transform_offset_x_mm=job.get("transform_offset_x_mm", 0.0),
         transform_offset_y_mm=job.get("transform_offset_y_mm", 0.0),
         machine_auto_rotate=config.MACHINE_AUTO_ROTATE,
-        rect=cached_rect, rect_known=measured,
+        rect=cached_rect, rect_known=True,
     )
 
 
@@ -2360,8 +2370,22 @@ def _run_job(job_id: str) -> None:
     # and which pyaxidraw clips at plot time same as always if it runs past
     # the edge — that's a deliberate crop, not blocked here (see
     # _delta_correction_mm).
+    #
+    # The check needs the drawing's measured ink, and on a cold ink cache —
+    # right after a restart, which is also when a half-plotted sheet is most
+    # likely still on the bed — that means waiting for a full vpype read of
+    # the document. Say so first: the job still reads `ready` here, so
+    # without this the card sits silent for up to a minute with nothing to
+    # explain it, in a UI that names every other stage it is blocked on.
+    # plan_status is restored either way; the run's own planning phase below
+    # sets it properly from there.
     manual_x, manual_y = state.manual_origin_offset()
-    correction = _delta_correction_mm(job, svg_path, manual_x, manual_y)
+    prior_plan_status = job.get("plan_status")
+    state.update_job(job_id, plan_status="measuring")
+    try:
+        correction = _delta_correction_mm(job, svg_path, manual_x, manual_y)
+    finally:
+        state.update_job(job_id, plan_status=prior_plan_status)
     if correction is not None:
         cx, cy = correction
         state.update_job(job_id, status="failed",

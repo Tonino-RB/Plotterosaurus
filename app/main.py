@@ -27,7 +27,7 @@ from lxml import etree
 from . import (
     camera, config, export, ink_cache, layer_group, notify, optimize_expert_queue,
     optimize_queue, placement, plan_queue, plot_worker, state, svg_complexity,
-    svg_optimize, svg_utils, updates, upload_queue,
+    svg_optimize, svg_utils, updates, upload_queue, workload,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -397,7 +397,9 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     plotter directly.
 
     Synchronous on purpose — FastAPI runs it in a worker thread, so the
-    blocking vpype/cairosvg call doesn't stall the event loop.
+    blocking vpype/cairosvg call doesn't stall the event loop. That thread is
+    not the plotter's, though, and nothing about the threadpool honours the
+    shared budget, so the conversion itself is offloaded — see _offload_export.
     """
     job = state.get_job(job_id)
     if job is None:
@@ -427,7 +429,8 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
         convert_src = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.placed-src.svg"
         scratch.append(convert_src)
         try:
-            export.build_placed_svg(job, src, convert_src, apply_skew=apply_skew)
+            _offload_export(export.build_placed_svg, job, src, convert_src,
+                            apply_skew=apply_skew)
         except export.ExportError as e:
             _unlink_all(scratch)
             raise _coded(422, "export_failed", message=str(e))
@@ -437,8 +440,8 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     scratch.append(out)
 
     try:
-        export.export(convert_src, out, fmt,
-                      transparent=(fmt == "png" and bg == "transparent"))
+        _offload_export(export.export, convert_src, out, fmt,
+                        transparent=(fmt == "png" and bg == "transparent"))
     except export.ExportError as e:
         _unlink_all(scratch)
         raise _coded(422, "export_failed", message=str(e))
@@ -450,6 +453,21 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     return FileResponse(str(out), media_type=export.media_type(fmt),
                         filename=f"{stem}{suffix}.{ext}",
                         background=BackgroundTask(_unlink_all, scratch))
+
+
+def _offload_export(fn, *args, **kwargs):
+    """Run one export conversion as background work, and wait for it.
+
+    An export is a full vpype read or a cairosvg rasterization — seconds of
+    CPU on a real drawing — and a sync route runs it on FastAPI's threadpool,
+    which neither takes `workload`'s single heavy slot nor sits below the plot
+    worker's priority. Several un-niced seconds beside a moving pen is exactly
+    what that budget exists to prevent everywhere else; a downloaded file can
+    wait its turn. See workload.run_background for why the pooled thread can't
+    just nice itself.
+    """
+    with workload.heavy("export"):
+        return workload.run_background(fn, *args, **kwargs)
 
 
 def _unlink_all(paths: list[Path]) -> None:

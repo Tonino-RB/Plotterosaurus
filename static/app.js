@@ -1043,6 +1043,12 @@ function previewStatusKey(job, ctx) {
   const svgInfo = (serverState.svgs || {})[job.svg_id];
   // Nothing on screen yet — the case that looked like a crash.
   if (!ctx.svg) return "preview.status.loading";
+  // The plot worker's pre-flight bounds check, waiting on the same ink
+  // measurement the readout below waits on — but from the server side, where
+  // this card's own copy of the ink can be current while the server's cache
+  // is cold (a restart empties it). The job still reads "ready" throughout,
+  // so this is the only thing that names it.
+  if (job.plan_status === "measuring") return "preview.status.measuring";
   if (job.optimize_svg && svgInfo) {
     if (svgInfo.status === "optimizing") return "preview.status.optimizing";
     if (svgInfo.status === "pending") return "preview.status.queued_optimize";
