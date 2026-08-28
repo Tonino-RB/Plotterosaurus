@@ -644,6 +644,15 @@ def compute_preview(job: dict, svg_path: Path,
     Cached by ``_preview_cache`` and serialized via ``_preview_lock`` so the
     plan queue and the plot worker can both call this without racing on
     duplicate work or two simultaneous CPU-bound subprocesses.
+
+    One known bias, documented rather than corrected: every selected layer is
+    measured as a single document, while a job with pause-between-layers on
+    runs N separate ``plot_run``s (see _run_staged_loop_impl), each of which
+    travels out from the origin and homes again. So the figure is low for a
+    multi-layer job by roughly N round trips at pen-up speed — tens of seconds
+    on A3, well under a percent of a multi-hour plot, and not worth a second
+    simulation per layer to recover. The progress bar is unaffected: it counts
+    banked plotting spans only, so pen-change wall time is already excluded.
     """
     selections = [s for s in job["layer_selections"] if s.get("selected", True)]
     if not selections:
