@@ -265,6 +265,93 @@ def test_queue_arranges_for_the_margin_box_not_the_sheet():
         state.clear_svg_status(f"{svg_id}:grid")
 
 
+def _grid_task(svg_id: str, **overrides) -> "optimize_queue._Task":
+    """A grid-enabled task for ``svg_id``, with the source SVG in place."""
+    from app import main
+
+    (main.UPLOAD_DIR / f"{svg_id}.svg").write_bytes(
+        (FIXTURES / "multi-layer.svg").read_bytes())
+    job = {
+        "svg_id": svg_id, "grid_enabled": True, "grid_copies": 4,
+        "grid_gutter_mm": 0.0,
+        "paper_width_mm": 297.0, "paper_height_mm": 420.0,
+        "margin_left_mm": 0.0, "margin_right_mm": 0.0,
+        "margin_top_mm": 0.0, "margin_bottom_mm": 0.0,
+        "optimize_svg": True,
+        "optimize_svg_linemerge": True, "optimize_svg_linesimplify": False,
+        "optimize_svg_linesort": False, "optimize_svg_reloop": False,
+        "optimize_svg_tolerance_mm": 0.1,
+        **overrides,
+    }
+    settings = optimize_queue.settings_from_job(job)
+    return optimize_queue._Task(svg_id, settings,
+                                optimize_queue.settings_key(settings), "job")
+
+
+def _cleanup(svg_id: str) -> None:
+    from app import main
+
+    for f in main.UPLOAD_DIR.glob(f"{svg_id}*"):
+        f.unlink()
+    state.clear_svg_status(svg_id)
+    state.clear_svg_status(f"{svg_id}:grid")
+
+
+def test_a_failed_tiling_fails_the_task(monkeypatch):
+    """Falling back to the un-tiled file would put one copy on the sheet and
+    call it a success — on a plotter that spends the paper and the pen time
+    before the user can see anything went wrong."""
+    svg_id = "_grid_boom"
+    task = _grid_task(svg_id)
+
+    def boom(*a, **kw):
+        raise svg_optimize.OptimizeError("vpype fell over")
+
+    monkeypatch.setattr(svg_optimize, "grid_svg", boom)
+    try:
+        optimize_queue._process(task)
+        assert task.ok is False
+        assert "could not tile the sheet" in task.error
+        st = state.get_svg_status(f"{svg_id}:grid")
+        assert st and st["status"] == "failed"
+    finally:
+        _cleanup(svg_id)
+
+
+def test_a_failed_optimize_phase_settles_the_grid_status(monkeypatch):
+    """Phase 1 failing never reaches phase 2, so the ':grid' entry _enqueue set
+    to 'pending' used to sit there for good — read by app.js as "still
+    building", and persisted to state.json so a restart brought it back."""
+    svg_id = "_grid_stuck"
+    task = _grid_task(svg_id)
+    # Stand in for _enqueue, which sets this before the task is dispatched.
+    state.set_svg_status(f"{svg_id}:grid", "pending", settings_key=task.grid_key)
+
+    def boom(*a, **kw):
+        raise svg_optimize.OptimizeError("no geometry")
+
+    monkeypatch.setattr(svg_optimize, "optimize_svg", boom)
+    try:
+        optimize_queue._process(task)
+        assert task.ok is False
+        st = state.get_svg_status(f"{svg_id}:grid")
+        assert st and st["status"] == "failed"
+    finally:
+        _cleanup(svg_id)
+
+
+def test_a_cancelled_task_leaves_no_grid_status_behind():
+    svg_id = "_grid_cancel"
+    task = _grid_task(svg_id)
+    state.set_svg_status(f"{svg_id}:grid", "pending", settings_key=task.grid_key)
+    task.cancelled = True
+    try:
+        optimize_queue._process(task)
+        assert state.get_svg_status(f"{svg_id}:grid") is None
+    finally:
+        _cleanup(svg_id)
+
+
 def test_patch_persists_and_clamps_grid_fields(client, job_from_svg):
     job = job_from_svg(FIXTURES / "multi-layer.svg")
     res = client.patch(f"/jobs/{job['job_id']}",

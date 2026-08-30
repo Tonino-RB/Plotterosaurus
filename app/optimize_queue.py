@@ -458,6 +458,39 @@ def _loop() -> None:
 
 
 def _process(task: _Task) -> None:
+    try:
+        _process_phases(task)
+    finally:
+        _settle_grid_status(task)
+
+
+def _settle_grid_status(task: _Task) -> None:
+    """Leave no ``{svg_id}:grid`` entry sitting at pending/tiling.
+
+    Every failure and cancellation exit from ``_process_phases`` returns without
+    reaching phase 2, and so without touching the entry ``_enqueue`` set to
+    "pending". app.js reads anything that is neither ready nor failed as still
+    building: the card's preview never reloads and its pill reads "waiting to
+    build grid…" indefinitely. The entry persists to state.json too, so a
+    restart brings the stuck pill back with it.
+    """
+    if task.grid is None:
+        return
+    gsid = _grid_status_id(task.svg_id)
+    st = state.get_svg_status(gsid)
+    if not st or st.get("status") not in ("pending", "tiling"):
+        return
+    if task.cancelled or not _src_path(task.svg_id).exists():
+        # Nothing to report against: the work was withdrawn, or the drawing it
+        # belonged to is gone (whose optimize entry _process_phases just cleared
+        # for the same reason).
+        state.clear_svg_status(gsid)
+    else:
+        state.set_svg_status(gsid, "failed", settings_key=task.grid_key,
+                             error=task.error or "internal error")
+
+
+def _process_phases(task: _Task) -> None:
     if task.cancelled:
         return
     src = _src_path(task.svg_id)
@@ -525,15 +558,21 @@ def _process(task: _Task) -> None:
     state.set_svg_status(task.svg_id, "ready", settings_key=task.settings_key)
 
     # Phase 2 — tile the optimized file into a grid (see app/svg_optimize.grid_svg).
-    # A grid failure does not fail the task: plot / preview fall back to the
-    # un-tiled file via plot_worker._effective_svg_path.
+    # A grid failure fails the whole task. Falling back to the un-tiled file
+    # would put one copy on the sheet and report success, which on a plotter
+    # costs the user the sheet and the pen time before they can see it went
+    # wrong; the plot worker turns a failed task into a failed job instead.
     if task.grid is not None and not task.cancelled:
-        _run_grid_phase(task, opt)
+        if not _run_grid_phase(task, opt):
+            task.ok = False
+            return
 
     task.ok = True
 
 
-def _run_grid_phase(task: _Task, pre_grid: Path) -> None:
+def _run_grid_phase(task: _Task, pre_grid: Path) -> bool:
+    """Tile ``pre_grid`` into ``{svg_id}.grid.svg``. Returns whether it worked;
+    on failure ``task.error`` says why, in the words the job's card will show."""
     copies, gutter, cut_marks, pw, ph, ml, mr, mt, mb = task.grid
     grid_path = _grid_path(task.svg_id)
     gsid = _grid_status_id(task.svg_id)
@@ -563,16 +602,20 @@ def _run_grid_phase(task: _Task, pre_grid: Path) -> None:
             # the upload's, and matching it against a source label would move
             # it into an artwork layer's position (see svg_utils.add_cut_marks).
             svg_utils.add_cut_marks(grid_path, cols, rows, cell_w, cell_h, gutter)
-    except Exception as e:  # noqa: BLE001 — grid is best-effort
+    except Exception as e:  # noqa: BLE001 — any failure here is the job's
         grid_path.unlink(missing_ok=True)
         if task.cancelled:
+            task.error = "cancelled"
             state.clear_svg_status(gsid)
-            return
+            return False
         log.warning("optimize_queue: grid phase failed for %s: %s", task.svg_id, e)
+        task.error = f"could not tile the sheet: {e}"
         state.set_svg_status(gsid, "failed", settings_key=task.grid_key, error=str(e))
-        return
+        return False
     if task.cancelled:
+        task.error = "cancelled"
         grid_path.unlink(missing_ok=True)
         state.clear_svg_status(gsid)
-        return
+        return False
     state.set_svg_status(gsid, "ready", settings_key=task.grid_key)
+    return True
