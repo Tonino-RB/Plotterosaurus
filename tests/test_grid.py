@@ -174,17 +174,17 @@ def test_staged_plot_filters_a_gridded_layer_to_all_its_copies(tmp_path):
     svg_utils.filter_to_layers(tiled, [1], stage, include_orphans=False)
     kept = svg_utils.parse_layers(stage)
     assert [l["label"] for l in kept["layers"]] == [base["layers"][1]["label"]]
-    per_copy = base_layer_subpaths(src, 1)
+    per_copy = base_layer_subpaths(src, 1, tmp_path)
     assert kept["subpath_count"] == per_copy * cols * rows
 
 
-def base_layer_subpaths(src: Path, index: int) -> int:
-    tmp = src.parent / f".{src.stem}.one.svg"
-    try:
-        svg_utils.filter_to_layers(src, [index], tmp, include_orphans=False)
-        return svg_utils.parse_layers(tmp)["subpath_count"]
-    finally:
-        tmp.unlink(missing_ok=True)
+def base_layer_subpaths(src: Path, index: int, tmp_path: Path) -> int:
+    # Scratch goes in tmp_path, never beside the fixture: an interrupted run
+    # would otherwise leave an untracked dotfile in tests/fixtures/, which the
+    # rest of the suite treats as read-only.
+    tmp = tmp_path / f"{src.stem}.one.svg"
+    svg_utils.filter_to_layers(src, [index], tmp, include_orphans=False)
+    return svg_utils.parse_layers(tmp)["subpath_count"]
 
 
 def test_queue_produces_both_derivatives_and_records_grid_status(tmp_path):
@@ -510,6 +510,35 @@ def test_an_upload_scan_leaves_a_live_grid_status_alone():
         assert state.get_svg_status(f"{svg_id}:grid") is not None
     finally:
         optimize_queue.cancel(svg_id)
+
+
+def test_svg_meta_reports_the_source_size_beside_the_tiled_one(client, job_from_svg):
+    """svg-meta describes whatever the job would plot, which for a grid job is
+    the tiled sheet. The card's arrangement readout needs the drawing's own
+    size — computing it from the sheet picks a different columns x rows than
+    the one the server tiled to."""
+    from app import main as _main
+
+    job = job_from_svg(FIXTURES / "multi-layer.svg",
+                       grid_enabled=True, paper_width_mm=297.0,
+                       paper_height_mm=420.0)
+    grid_file = _main.UPLOAD_DIR / f"{job['svg_id']}.grid.svg"
+    svg_optimize.grid_svg(_main.UPLOAD_DIR / f"{job['svg_id']}.svg",
+                          grid_file, 2, 2, 148.5, 210.0, 0.0)
+    state.set_svg_status(
+        f"{job['svg_id']}:grid", "ready",
+        settings_key=optimize_queue.grid_settings_key(
+            optimize_queue.settings_from_job(job)))
+    try:
+        body = client.get(f"/jobs/{job['job_id']}/svg-meta").json()
+        # The served document is the sheet...
+        assert body["width_mm"] == pytest.approx(297.0, abs=0.5)
+        # ...and the drawing it was tiled from is still reported beside it.
+        assert body["source_width_mm"] == pytest.approx(100.0)
+        assert body["source_height_mm"] == pytest.approx(75.0)
+    finally:
+        grid_file.unlink(missing_ok=True)
+        state.clear_svg_status(f"{job['svg_id']}:grid")
 
 
 def test_gridded_document_places_onto_its_sheet(tmp_path):

@@ -81,6 +81,48 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     os.replace(tmp, dst)
 
 
+def _run_vpype(cmd: list[str], tmp: Path, dst: Path, label: str) -> None:
+    """Run one cancellable vpype pipeline that writes ``tmp``, then publish it
+    as ``dst``. Raises ``OptimizeError`` on failure or empty output.
+
+    Shared by ``optimize_svg`` and ``grid_svg``, which otherwise carried this
+    same block twice: the two have to stay in step with ``cancel_current()``'s
+    ``_current_proc`` contract and with the ``.partial`` naming rule ``_partial``
+    documents, and a fix applied to one copy silently missed the other.
+
+    ``run_expert`` is deliberately not a caller — it streams vpype's output line
+    by line and enforces its own timeout, which is a different shape.
+    """
+    log.info("%s: %s", label, " ".join(cmd))
+    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env)
+    with _proc_lock:
+        global _current_proc
+        _current_proc = proc
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        with _proc_lock:
+            _current_proc = None
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        msg = (stderr.strip() or stdout.strip() or
+               f"vpype exited with code {proc.returncode}")
+        # Keep it short — multi-line tracebacks just bloat the UI error pill.
+        # vpype puts the message itself last, under any traceback above it.
+        last_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
+        raise OptimizeError(last_line)
+    if not tmp.exists():
+        # See normalize_layers: vpype exits 0 and writes nothing when the
+        # document holds no plottable geometry. Raising the queue's own error
+        # type means _process reports it as a failed optimization rather than
+        # letting a FileNotFoundError escape as "internal error".
+        raise OptimizeError("the document contains no plottable geometry")
+    # Only now does the finished file become visible under its real name.
+    os.replace(tmp, dst)
+
+
 def optimize_svg(
     src: Path,
     dst: Path,
@@ -110,33 +152,7 @@ def optimize_svg(
         return
     tmp = _partial(dst)
     cmd = build_pipeline(src, tmp, tolerance_mm, linemerge, linesimplify, linesort, reloop)
-    log.info("optimize: %s", " ".join(cmd))
-    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, env=env)
-    with _proc_lock:
-        global _current_proc
-        _current_proc = proc
-    try:
-        stdout, stderr = proc.communicate()
-    finally:
-        with _proc_lock:
-            _current_proc = None
-    if proc.returncode != 0:
-        tmp.unlink(missing_ok=True)
-        msg = (stderr.strip() or stdout.strip() or
-               f"vpype exited with code {proc.returncode}")
-        # Keep it short — multi-line tracebacks just bloat the UI error pill.
-        first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
-        raise OptimizeError(first_line)
-    if not tmp.exists():
-        # See normalize_layers: vpype exits 0 and writes nothing when the
-        # document holds no plottable geometry. Raising the queue's own error
-        # type means _process reports it as a failed optimization rather than
-        # letting a FileNotFoundError escape as "internal error".
-        raise OptimizeError("the document contains no plottable geometry")
-    # Only now does the optimized file become visible under its real name.
-    os.replace(tmp, dst)
+    _run_vpype(cmd, tmp, dst, "optimize")
 
 
 def arrangement(copies: int, paper_w_mm: float, paper_h_mm: float,
@@ -216,27 +232,7 @@ def grid_svg(src: Path, dst: Path, cols: int, rows: int,
         "end",
         "write", str(tmp),
     ]
-    log.info("grid: %s", " ".join(cmd))
-    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, env=env)
-    with _proc_lock:
-        global _current_proc
-        _current_proc = proc
-    try:
-        stdout, stderr = proc.communicate()
-    finally:
-        with _proc_lock:
-            _current_proc = None
-    if proc.returncode != 0:
-        tmp.unlink(missing_ok=True)
-        msg = (stderr.strip() or stdout.strip() or
-               f"vpype exited with code {proc.returncode}")
-        first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
-        raise OptimizeError(first_line)
-    if not tmp.exists():
-        raise OptimizeError("the document contains no plottable geometry")
-    os.replace(tmp, dst)
+    _run_vpype(cmd, tmp, dst, "grid")
 
 
 def normalize_layers(src: Path, dst: Path) -> bool:
