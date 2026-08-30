@@ -418,11 +418,53 @@ def machine_bounds_mm() -> tuple[float, float]:
     and no table can second-guess it.
 
     This is the single answer every bounds question has to use: the driver's
-    clip limits (_apply_bed_size), the jog/nudge guards, and the card's
+    clip limits (_apply_bed_size), the jog/nudge readings, and the card's
     paper-too-big warning.
     """
     machine = config.active_machine()
     return machine["width_mm"], machine["height_mm"]
+
+
+def _carriage_on_bed_mm() -> tuple[float, float]:
+    """Where the carriage stands in real bed coordinates, in motor space.
+
+    The three position values are measured from the *declared* origin, which
+    isn't necessarily the machine's own corner (see set_origin), so placing the
+    carriage on the bed means adding all three back together: the base, the
+    idle Move offset, and any pen-change nudge standing on top of it.
+
+    All three are true/physical mm (see _jog_carriage), so on a skewed machine
+    the position the driver actually reaches isn't their raw sum — run it
+    through the same correction _jog_carriage applies, or the answer describes a
+    place the driver was never asked for.
+    """
+    base_x, base_y = state.origin_base()
+    manual_x, manual_y = state.manual_origin_offset()
+    nudge_x, nudge_y = state.origin_nudge()
+    machine = config.active_machine()
+    return axis_skew.skew_delta(
+        base_x + manual_x + nudge_x, base_y + manual_y + nudge_y,
+        machine["skew_deg"], machine.get("skew_true_axis", "x"))
+
+
+def refresh_origin_bed_status() -> None:
+    """Recompute how far past the bed's far edge the carriage stands, and
+    publish it for the top control bar's warning.
+
+    Advisory, not a guard. Standing past the far edge used to be refused
+    outright on both the jog and the nudge, which made the pen impossible to
+    aim on any sheet placed near the rail; now the move goes through and the
+    plot is clipped at the real bed edge instead (see _apply_bed_size), with
+    this reading as the thing that says so.
+
+    Called from every place that moves the carriage or redefines the origin,
+    and from the settings route when the machine profile changes — a smaller
+    bed can put an already-parked carriage outside it without anything moving.
+    """
+    motor_x, motor_y = _carriage_on_bed_mm()
+    bed_w_mm, bed_h_mm = machine_bounds_mm()
+    state.set_origin_past_bed(max(0.0, motor_x - bed_w_mm),
+                              max(0.0, motor_y - bed_h_mm))
 
 
 def _bed_travel_params() -> tuple[str, str, float, float]:
@@ -445,10 +487,47 @@ def _apply_bed_size(ad: axidraw.AxiDraw) -> None:
     """Make machine_bounds_mm() a real travel-bounds limit: override the
     driver's own per-model params.x_travel_*/y_travel_* (read by
     AxiDraw.update_options() to build self.bounds, which clips out-of-bounds
-    pen-down moves)."""
+    pen-down moves).
+
+    The whole bed, measured from wherever the carriage is standing — which is
+    what the carriage-moving callers (_jog_carriage, _plot_cross) want, since
+    each one re-seeds the driver's position trackers itself before moving.
+    _apply_plot_bounds is the version for a plot.
+    """
     x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
     setattr(ad.params, x_attr, bed_x_in)
     setattr(ad.params, y_attr, bed_y_in)
+
+
+def _apply_plot_bounds(ad: axidraw.AxiDraw) -> None:
+    """Bound a *plot* by the travel remaining in front of the carriage, so the
+    driver's clipping lands on the real bed edge.
+
+    connect() seeds the driver's position trackers at (0, 0), which is also its
+    bounds minimum, so left at the full bed the driver believes it has a whole
+    bed of travel starting from wherever the carriage happens to stand — with an
+    outstanding jog of 50 mm it would drive 50 mm past the real far rail without
+    noticing. Subtracting the carriage's own position is what closes that gap.
+
+    That clipping is now the only thing between an aimed-past-the-edge plot and
+    the end stops: the jog and nudge guards that used to refuse such a position
+    outright are gone (they made the pen impossible to aim at a sheet placed
+    near the rail — see refresh_origin_bed_status), and so is the pre-flight
+    check that used to fail the job over a leftover jog.
+
+    Clamped at both ends. Zero is the floor: a carriage parked outside the bed
+    leaves nothing to plot into, and a negative travel bound would turn the
+    driver's own bounds arithmetic into nonsense instead of clipping
+    everything. The full bed is the ceiling: a position that comes out negative
+    means the carriage is believed to sit behind the machine's own corner,
+    which is a broken assumption about the origin rather than real travel to
+    hand out, and granting extra reach on the strength of it is the one
+    direction this must never round.
+    """
+    x_attr, y_attr, bed_x_in, bed_y_in = _bed_travel_params()
+    motor_x, motor_y = _carriage_on_bed_mm()
+    setattr(ad.params, x_attr, max(0.0, bed_x_in - max(0.0, motor_x) / 25.4))
+    setattr(ad.params, y_attr, max(0.0, bed_y_in - max(0.0, motor_y) / 25.4))
 
 
 class _LiveAdjustAxiDraw(axidraw.AxiDraw):
@@ -512,7 +591,7 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         # rotation) and the physical plot disagree. We always hand pyaxidraw a
         # document that's already in its final orientation, so disable this.
         ad.options.no_rotate = True
-        _apply_bed_size(ad)
+        _apply_plot_bounds(ad)
         skew_machine = config.active_machine()
         _current_skew = (skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"),
                          job["paper_width_mm"], job["paper_height_mm"], _run_absorb_scale)
@@ -889,21 +968,18 @@ def _job_ink_bounds(job: dict, svg_path: Path
     drawable is selected.
 
     The upload path already primed ink_cache for this file (see main.py), so
-    this is normally a dict lookup rather than a vpype parse — a nudge/jog
-    check that re-measured the whole document itself is the multi-second delay
-    a user feels between clicking "confirm" and the carriage actually moving.
+    this is normally a dict lookup rather than a vpype parse.
 
     On a cold cache it waits for ink_cache's worker rather than parsing the
-    document here (see rect_for_blocking): every caller of this is a safety
-    check that has to have a real answer, but none of them is entitled to run
-    a minute of vpype at normal priority beside a moving pen. Raises if the
-    measurement failed — an unreadable document is not the same answer as an
-    empty one, and the guards downstream treat "no ink" as "nothing to
-    protect".
+    document here (see rect_for_blocking): the caller needs a real answer, but
+    isn't entitled to run a minute of vpype at normal priority beside a moving
+    pen. Raises if the measurement failed — an unreadable document is not the
+    same answer as an empty one, and the caller treats "no ink" as "nothing to
+    fit".
 
     Deliberately the *un-optimized* source SVG: optimize_svg only simplifies
     paths, never the extent they cover, so the two agree on everything that
-    matters here and the cache is shared with the placement/jog checks.
+    matters here and the cache is shared with the placement measurements.
     """
     layer_indices = [s["index"] for s in job["layer_selections"] if s.get("selected", True)]
     measured, cached_rect = ink_cache.rect_for_blocking(svg_path, layer_indices)
@@ -951,58 +1027,6 @@ def _absorb_scale_for_run(job: dict) -> float:
         job["paper_width_mm"], job["paper_height_mm"])
 
 
-def _delta_correction_mm(job: dict, svg_path: Path,
-                         dx_mm: float, dy_mm: float) -> tuple[float, float] | None:
-    """How far a delta on top of the job's own placement (a manual jog and/or
-    an origin nudge) needs to move, on top of what it already is, so it's no
-    *worse* than the job's own placement alone (delta = 0). Returns
-    (correction_dx, correction_dy) — add these to the current delta — or
-    None if the delta isn't making things worse than the design's own
-    baseline already was.
-
-    The job's own transform (offset/scale/rotation/fit_content) is the fixed
-    baseline and is *never* itself the reason to block: content placed
-    partly (or entirely) off the page by the design's own settings is a
-    deliberate choice, visible in the preview — pyaxidraw just clips it at
-    plot time, same as always. Only a delta that pushes the placement
-    *further* off the page than that baseline already was is worth stopping
-    for, since the delta itself is invisible in the preview (a manual jog
-    moves the physical carriage; an origin nudge is dialed in blind between
-    layers) — the user has no way to see it coming. Comparing against the
-    baseline's own overflow (rather than demanding a perfect fit) is what
-    keeps an already off-page design from being blocked by a zero, or even a
-    corrective, delta.
-
-    Measures the *actual drawn geometry* of the job's selected layers (see
-    svg_utils.ink_bounds_mm), not the SVG document's canvas size — a design
-    is commonly much smaller than its own canvas, and checking against the
-    canvas left zero slack for perfectly reasonable jogs/nudges on any
-    design that happens to fill its canvas edge-to-edge. Uses the
-    *un-optimized* source SVG: optimize_svg only simplifies paths, it never
-    changes the actual drawn extent in any way that would matter here."""
-    ink_bounds = _job_ink_bounds(job, svg_path)
-    if ink_bounds is None:
-        return None  # nothing drawable selected — nothing to protect
-    base_left, base_top, base_right, base_bottom = ink_bounds
-
-    def axis_correction(base_min: float, base_max: float, page_max: float, delta: float) -> float:
-        base_neg = max(0.0, -base_min)
-        base_pos = max(0.0, base_max - page_max)
-        cur_neg = max(0.0, -(base_min + delta))
-        cur_pos = max(0.0, (base_max + delta) - page_max)
-        if cur_neg > base_neg + 1e-6:
-            return (-base_min - base_neg) - delta
-        if cur_pos > base_pos + 1e-6:
-            return (page_max + base_pos - base_max) - delta
-        return 0.0
-
-    corr_x = axis_correction(base_left, base_right, job["paper_width_mm"], dx_mm)
-    corr_y = axis_correction(base_top, base_bottom, job["paper_height_mm"], dy_mm)
-    if corr_x == 0.0 and corr_y == 0.0:
-        return None
-    return corr_x, corr_y
-
-
 def _move_fits_bed(dx_mm: float, dy_mm: float) -> bool:
     """Is this single move short enough for the driver to carry out in full?
 
@@ -1016,8 +1040,8 @@ def _move_fits_bed(dx_mm: float, dy_mm: float) -> bool:
     What does not fit is a move longer than the bed itself. ad.move() clips
     the motion at the bounds but still records the *unclipped* target as the
     new position, so the app would go on believing a displacement the carriage
-    never made — leaving the readout, the pre-flight check and Return to
-    Origin all measuring from a place the pen is not. Nothing else bounded
+    never made — leaving the readout, the bed warning, the plot's own clip
+    bounds and Return to Origin all measuring from a place the pen is not. Nothing else bounded
     this: the far-edge guards below are absolute, and below the origin there
     was only a confirmation, so any distance at all could be entered there.
 
@@ -1202,11 +1226,15 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
     and _run_calibration_phase render their absolute coordinates from the
     job's own offset alone, deliberately not adding the nudge again on top.
 
-    Rejected outright — nothing is moved or stored — if the resulting delta
-    would push the paper past the machine bed's far edge, or the content's
-    bounding box past the page edge. A delta that lands *above/left of* the
-    origin needs confirm_below_origin (see manual_jog for why that one is a
-    confirmation rather than a refusal)."""
+    Rejected outright — nothing is moved or stored — only if the move is longer
+    than the bed and so could not be carried out in full (see _move_fits_bed).
+    Landing past the bed's far edge, or with the artwork off the page, is
+    allowed: the first is reported as a warning and clipped at plot time (see
+    refresh_origin_bed_status and _apply_plot_bounds), and the second isn't this
+    control's business at all — a nudge aims the pen, it doesn't move artwork
+    relative to the page. A delta that lands *above/left of* the origin needs
+    confirm_below_origin (see manual_jog for why that one is a confirmation
+    rather than a refusal)."""
     job = state.active_job()
     if job is None or job["status"] != "awaiting_pen_change":
         raise RuntimeError("Origin nudge only available at a pen-change pause")
@@ -1214,62 +1242,35 @@ def nudge_origin(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False)
         raise RuntimeError("Plotter busy")
     x, y = state.origin_nudge()
     new_x, new_y = x + dx_mm, y + dy_mm
-    # The delta the run actually plots at is the idle manual jog plus this
-    # nudge (nothing re-homes the carriage between them), so both guards below
-    # have to see both — checking the nudge alone lets two individually-fine
-    # deltas add up to one that runs off the page, or into the rail.
-    base_x, base_y = state.origin_base()
     manual_x, manual_y = state.manual_origin_offset()
 
-    # Overshoot on the far side runs the carriage into its own end stops, so
-    # the paper's origin corner has to stay inside the bed's travel envelope.
-    # Measured in real bed coordinates — the declared origin (see set_origin)
-    # is not necessarily the machine's own corner, and the manual jog is still
-    # physically applied — so all three add up to where the carriage would
-    # actually stand. (Overshoot of the *page* is comparatively benign —
-    # pyaxidraw clips it, same as artwork that runs past the page edge, see
-    # _delta_correction_mm — so this only guards the bed's own outer extent,
-    # not the paper size on top of it.) A single nudge longer than the bed is
-    # refused alongside it, for the different reason in _move_fits_bed.
-    #
-    # base/manual/nudge are all true/physical mm (see _jog_carriage), so on a
-    # skewed machine the real motor-space position they add up to isn't their
-    # raw sum — run that sum through the same correction _jog_carriage would
-    # apply before comparing it to the bed, or a string of individually-fine
-    # nudges could drift the real carriage past an end stop this guard never
-    # sees, because it was checking a position the driver was never asked for.
-    skew_machine = config.active_machine()
-    motor_x, motor_y = axis_skew.skew_delta(
-        base_x + manual_x + new_x, base_y + manual_y + new_y,
-        skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"))
-    bed_w_mm, bed_h_mm = machine_bounds_mm()
-    if (motor_x > bed_w_mm or motor_y > bed_h_mm
-            or not _move_fits_bed(dx_mm, dy_mm)):
+    # A nudge longer than the bed can't be carried out in full, and the driver
+    # would report the unclipped target anyway — see _move_fits_bed. That is a
+    # statement about the move, not about where it lands, which is why it is
+    # still a refusal when the far-edge check below it no longer is.
+    if not _move_fits_bed(dx_mm, dy_mm):
         raise RuntimeError("Nudge rejected: would move past the machine bed edge.")
+    # Landing past the bed's far edge used to be refused here as well. It isn't
+    # any more: a sheet taped near the rail made the pen impossible to aim, and
+    # the plot is clipped at the real edge now instead (_apply_plot_bounds), so
+    # overshoot costs ink rather than end stops. refresh_origin_bed_status below
+    # is what tells the user it happened.
+    #
     # Measured from the page corner (the declared origin plus the manual jog
     # still standing on top of it), not from this run's own starting point —
-    # "above or left of the origin" is a statement about the paper, and the
-    # bed guard directly above already reasons in that same absolute frame.
-    # Testing the nudge alone let an outstanding leftward jog swallow the
-    # prompt, confirming nothing while the pen sat off the sheet.
+    # "above or left of the origin" is a statement about the paper. Testing the
+    # nudge alone let an outstanding leftward jog swallow the prompt, confirming
+    # nothing while the pen sat off the sheet.
     if ((manual_x + new_x < 0 or manual_y + new_y < 0)
             and not confirm_below_origin):
         raise RuntimeError("Nudge would go above or left of the origin")
-    x, y = new_x, new_y
 
-    svg_path = _uploads() / f"{job['svg_id']}.svg"
-    correction = _delta_correction_mm(job, svg_path, manual_x + x, manual_y + y)
-    if correction is not None:
-        cx, cy = correction
-        raise RuntimeError(
-            f"Nudge rejected: would push the artwork off the page. Nudge back by "
-            f"({cx:+.1f}, {cy:+.1f}) mm to bring it back onto the page."
-        )
     # Move first, record second: a nudge the plotter refused (it is off, or
     # unplugged) must not leave a stored offset behind for the walk-back at
     # the end of the run to act on. See manual_jog for the same ordering.
     _jog_carriage(dx_mm, dy_mm)
-    state.set_origin_nudge(x, y)
+    state.set_origin_nudge(new_x, new_y)
+    refresh_origin_bed_status()
 
 
 def _undo_origin_nudge() -> None:
@@ -1294,8 +1295,8 @@ def _undo_origin_nudge() -> None:
     to the manual jog instead of dropped: the carriage is still standing where
     the nudge put it, so the displacement is real whether or not anything
     records it, and the manual jog is the session-level "how far the carriage
-    is from the declared origin" that the readout shows, that _run_job's
-    pre-flight check measures, and that manual_jog_home can walk back.
+    is from the declared origin" that the readout shows, that the bed warning
+    and the plot's clip bounds measure, and that manual_jog_home can walk back.
     Clearing it outright would leave exactly the same physical drift with
     nothing left pointing at it."""
     x, y = state.origin_nudge()
@@ -1307,6 +1308,7 @@ def _undo_origin_nudge() -> None:
             manual_x, manual_y = state.manual_origin_offset()
             state.set_manual_origin_offset(manual_x + x, manual_y + y)
     state.set_origin_nudge(0.0, 0.0)
+    refresh_origin_bed_status()
 
 
 def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -> None:
@@ -1317,9 +1319,8 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
     the net displacement in session state so manual_jog_home knows how far
     to walk back.
 
-    Rejected outright — nothing is moved or stored — if it would run the
-    carriage past the machine bed's far edge, or that is simply longer than
-    the bed and so could not be carried out in full (see _move_fits_bed).
+    Rejected outright — nothing is moved or stored — only if the move is longer
+    than the bed and so could not be carried out in full (see _move_fits_bed).
     Landing *above/left of* the origin is allowed, but only with
     confirm_below_origin: it puts the page's top-left corner off the paper the
     plot was aimed at, and the bed's own near edge is only an assumption
@@ -1327,56 +1328,49 @@ def manual_jog(dx_mm: float, dy_mm: float, confirm_below_origin: bool = False) -
     happened to sit at startup, not a place the machine knows) — so it's the
     user's call to make, not ours to refuse.
 
-    Deliberately doesn't also check the next ready job's artwork bounds the
-    way nudge_origin does: this is a free physical-alignment tool (walking
-    the pen to a mark on the actual paper), and most designs are plotted
-    edge-to-edge, leaving zero slack for *any* jog — checking content bounds
-    here would make the tool unusable for exactly the common case it exists
-    for. _run_job's pre-flight check is the real backstop: it catches a
-    leftover jog that's actually a problem right before a plot starts,
-    with a precise correction and a one-click fix in the UI."""
+    Landing past the bed's *far* edge is allowed outright, and reported: this is
+    a free physical-alignment tool (walking the pen to a mark on the actual
+    paper), so refusing it made the pen impossible to aim at a sheet placed near
+    the rail. What used to be a refusal here is now the warning published by
+    refresh_origin_bed_status, and the plot itself is clipped at the real bed
+    edge by _apply_plot_bounds rather than driven into the end stops.
+
+    Deliberately doesn't check the next ready job's artwork bounds: most designs
+    are plotted edge-to-edge, leaving zero slack for *any* jog, so that check
+    made the tool unusable for exactly the common case it exists for."""
     with _worker_lock:
         _claim_idle_machine()
         x, y = state.manual_origin_offset()
         new_x, new_y = x + dx_mm, y + dy_mm
 
-        # The offset is measured from the declared origin (see set_origin),
-        # which isn't necessarily the machine's own corner — so the far-edge
-        # guard has to add the two back together to get a real bed coordinate.
-        # Past that edge the carriage hits its own end stops, so it's a hard
-        # refusal, as is a move too long for the driver to execute in full
-        # (see _move_fits_bed). base/offset are true/physical mm, so on a
-        # skewed machine the real motor-space position is this sum run
-        # through the same correction _jog_carriage applies — see the same
-        # note in nudge_origin.
-        base_x, base_y = state.origin_base()
-        skew_machine = config.active_machine()
-        motor_x, motor_y = axis_skew.skew_delta(
-            base_x + new_x, base_y + new_y,
-            skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"))
-        bed_w_mm, bed_h_mm = machine_bounds_mm()
-        if (motor_x > bed_w_mm or motor_y > bed_h_mm
-                or not _move_fits_bed(dx_mm, dy_mm)):
+        # A move longer than the bed can't be executed in full, and the driver
+        # reports the unclipped target regardless (see _move_fits_bed) — which
+        # would point the readout, the position model and Return to Origin at a
+        # place the carriage never reached. A statement about the move itself,
+        # so it stays a refusal even though landing past the far edge no longer
+        # is; that one is reported by refresh_origin_bed_status below.
+        if not _move_fits_bed(dx_mm, dy_mm):
             raise RuntimeError("Jog rejected: would move past the machine bed edge.")
         if (new_x < 0 or new_y < 0) and not confirm_below_origin:
             raise RuntimeError("Jog would go above or left of the origin")
 
         # Move first, record second. The offset is what the readout shows,
-        # what the pre-flight check measures and what Return to Origin walks
-        # back, so recording a move the plotter refused (powered off, cable
+        # what the bed warning and the plot's clip bounds measure, and what
+        # Return to Origin walks back, so recording a move the plotter refused (powered off, cable
         # pulled — _jog_carriage raises) would point all three at a place the
         # carriage never went, and Return to Origin would then drive it that
         # far away from the real origin. manual_jog_home has always been this
         # way round; these two were not.
         _jog_carriage(dx_mm, dy_mm)
         state.set_manual_origin_offset(new_x, new_y)
+        refresh_origin_bed_status()
 
 
 def set_origin() -> None:
     """Declare wherever the carriage currently sits to be the page's top-left
     corner. Nothing moves: the accumulated manual jog is folded into the
     origin base and the offset resets to zero, so from here on the readout,
-    the preview overlay and _run_job's pre-flight check all measure from this
+    the preview overlay and the plot's own clip bounds all measure from this
     spot — a plot started now puts the design's own (0, 0) right under the pen
     instead of treating the jog as a shift away from the page corner.
 
@@ -1384,8 +1378,9 @@ def set_origin() -> None:
     is already baked into the plot that's underway, and moving the page corner
     out from under it would desynchronise the remaining stages. Touches no
     hardware, so unlike manual_jog it has nothing to guard against — the
-    carriage is where it already was, and the offset it leaves behind (zero)
-    is trivially inside the bed."""
+    carriage is where it already was. It doesn't refresh the bed reading either:
+    folding the offset into the base leaves their sum, which is the only thing
+    refresh_origin_bed_status measures, exactly as it was."""
     with _worker_lock:
         _claim_idle_machine()
         x, y = state.manual_origin_offset()
@@ -1429,6 +1424,7 @@ def manual_jog_home() -> None:
             return
         _jog_carriage(-x, -y)
         state.set_manual_origin_offset(0.0, 0.0)
+        refresh_origin_bed_status()
 
 
 def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
@@ -2395,41 +2391,19 @@ def _run_job(job_id: str) -> None:
 
     svg_path = _uploads() / f"{job['svg_id']}.svg"
 
-    # Pre-flight check: refuse to touch hardware if a leftover manual jog
-    # (see manual_jog) pushes the artwork off the page. AxiDraw has no
-    # hardware home switches, so wherever the carriage physically sits when a
-    # plot starts becomes its new logical (0, 0) — an un-homed manual jog is
-    # a real, invisible-in-preview physical origin shift, unlike the job's
-    # own offset/scale/rotation/fit-to-page, which the preview already shows
-    # and which pyaxidraw clips at plot time same as always if it runs past
-    # the edge — that's a deliberate crop, not blocked here (see
-    # _delta_correction_mm).
+    # No pre-flight bounds check. A leftover manual jog used to fail the job
+    # here if it pushed the artwork off the page, which meant the one control
+    # that exists for aiming the pen at real paper could quietly make the job
+    # unplottable. Running past the page edge is a crop, same as it has always
+    # been for a design placed off-page by its own offset/scale/rotation; and
+    # running past the *bed* edge is clipped at the rail by _apply_plot_bounds
+    # rather than driven into the end stops. The carriage's position relative
+    # to the bed is reported instead (refresh_origin_bed_status), so the user
+    # sees it without the plot being blocked over it.
     #
-    # The check needs the drawing's measured ink, and on a cold ink cache —
-    # right after a restart, which is also when a half-plotted sheet is most
-    # likely still on the bed — that means waiting for a full vpype read of
-    # the document. Say so first: the job still reads `ready` here, so
-    # without this the card sits silent for up to a minute with nothing to
-    # explain it, in a UI that names every other stage it is blocked on.
-    # plan_status is restored either way; the run's own planning phase below
-    # sets it properly from there.
-    manual_x, manual_y = state.manual_origin_offset()
-    prior_plan_status = job.get("plan_status")
-    state.update_job(job_id, plan_status="measuring")
-    try:
-        correction = _delta_correction_mm(job, svg_path, manual_x, manual_y)
-    finally:
-        state.update_job(job_id, plan_status=prior_plan_status)
-    if correction is not None:
-        cx, cy = correction
-        _fail(job_id,
-              f"A leftover manual jog puts the artwork off the page. "
-              f"Nudge back by ({cx:+.1f}, {cy:+.1f}) mm to bring it "
-              "onto the page, then plot again.",
-              "manual_jog_off_page", {"dx": f"{cx:+.1f}", "dy": f"{cy:+.1f}"},
-              jog_hint_dx_mm=cx, jog_hint_dy_mm=cy)
-        return
-
+    # Dropping the check also drops the ink measurement it needed, which on a
+    # cold cache stalled every plot for up to a minute before any hardware was
+    # touched.
     optimized = _run_optimize_phase(job_id, svg_path, stages)
     if optimized is None:
         return  # phase already marked the job as cancelled/failed
