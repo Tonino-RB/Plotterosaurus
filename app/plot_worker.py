@@ -1774,12 +1774,25 @@ def _effective_svg_path(job: dict) -> Path:
 
     Expert mode: the .opt.svg (if any) was produced explicitly by the user
     via POST /jobs/{id}/optimize-expert/execute, independent of optimize_svg
-    — serve it whenever it exists.
+    — serve it whenever it exists. It wins over the grid: switching a job to
+    Expert only greys the Grid section out, so the card goes on PATCHing
+    grid_enabled from the still-checked box while the queue (which no-ops for
+    expert mode) stops refreshing the tiled file. Reading it here would serve a
+    grid nothing can rebuild and ignore the file Execute just wrote.
+
+    Grid: when the "Grid" module is on and the tiled {svg_id}.grid.svg is
+    current, that supersedes the optimized file — it is already the optimized
+    geometry, tiled. Current, not merely present: the file outlives the settings
+    that built it, and serving a stale arrangement means the preview, the export
+    and the plot all disagree with the UI. Until a rebuild lands we fall through
+    to the un-tiled file.
     """
     src = _uploads() / f"{job['svg_id']}.svg"
     opt_path = src.with_name(f"{job['svg_id']}.opt.svg")
     if job.get("optimize_mode", "beginner") == "expert":
         return opt_path if opt_path.exists() else src
+    if job.get("grid_enabled") and optimize_queue.grid_is_current(job):
+        return src.with_name(f"{job['svg_id']}.grid.svg")
     if not job.get("optimize_svg"):
         return src
     return opt_path if opt_path.exists() else src
@@ -1805,12 +1818,16 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
     """
     job = state.get_job(job_id)
     if job is None or job.get("optimize_mode", "beginner") != "beginner" \
-            or not job.get("optimize_svg"):
+            or not (job.get("optimize_svg") or job.get("grid_enabled")):
         return _effective_svg_path(job) if job is not None else src_path
 
     opt_path = src_path.with_name(f"{job['svg_id']}.opt.svg")
     cache_key = _optimize_cache_key(job)
-    if opt_path.exists() and job.get("optimized_with_key") == cache_key:
+    # A grid job always goes through the queue (which no-ops instantly via its
+    # own fast path when both the .opt.svg and .grid.svg are fresh), so the
+    # tiled file is rebuilt whenever a grid setting changed.
+    if opt_path.exists() and job.get("optimized_with_key") == cache_key \
+            and not job.get("grid_enabled"):
         return opt_path
 
     state.update_job(job_id,
@@ -1845,7 +1862,8 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
         return None
 
     state.update_job(job_id, optimized_with_key=cache_key)
-    return opt_path
+    # Re-resolve: with grid on this is now {svg_id}.grid.svg.
+    return _effective_svg_path(state.get_job(job_id) or job)
 
 
 def _run_calibration_phase(job_id: str, svg_path: Path) -> None:

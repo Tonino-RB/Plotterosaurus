@@ -364,21 +364,118 @@ def test_patch_persists_and_clamps_grid_fields(client, job_from_svg):
     assert body["grid_gutter_mm"] == 0.0    # floored
 
 
-def test_placement_endpoint_reports_the_tiled_size(client, job_from_svg, tmp_path):
+def test_placement_endpoint_reports_the_tiled_size(client, job_from_svg):
     from app import main as _main
     job = job_from_svg(FIXTURES / "multi-layer.svg",
                        grid_enabled=True, paper_width_mm=297.0,
                        paper_height_mm=420.0)
-    # Stand in for the queue: drop a ready {svg_id}.grid.svg next to the source.
+    # Stand in for the queue: a ready {svg_id}.grid.svg next to the source, and
+    # the status entry that marks it current for these settings.
     grid_file = _main.UPLOAD_DIR / f"{job['svg_id']}.grid.svg"
     svg_optimize.grid_svg(_main.UPLOAD_DIR / f"{job['svg_id']}.svg",
                           grid_file, 2, 2, 148.5, 210.0, 0.0)
-    res = client.post(f"/jobs/{job['job_id']}/placement",
-                      json={"paper_width_mm": 297.0, "paper_height_mm": 420.0})
-    assert res.status_code == 200
-    body = res.json()
-    assert body["doc_width_mm"] == pytest.approx(297.0, abs=0.5)
-    assert body["doc_height_mm"] == pytest.approx(420.0, abs=0.5)
+    state.set_svg_status(
+        f"{job['svg_id']}:grid", "ready",
+        settings_key=optimize_queue.grid_settings_key(
+            optimize_queue.settings_from_job(job)))
+    try:
+        res = client.post(f"/jobs/{job['job_id']}/placement",
+                          json={"paper_width_mm": 297.0, "paper_height_mm": 420.0})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["doc_width_mm"] == pytest.approx(297.0, abs=0.5)
+        assert body["doc_height_mm"] == pytest.approx(420.0, abs=0.5)
+    finally:
+        grid_file.unlink(missing_ok=True)
+        state.clear_svg_status(f"{job['svg_id']}:grid")
+
+
+# --- which file the job actually reads ----------------------------------------
+
+def _grid_job(svg_id: str, **overrides) -> dict:
+    """A grid-enabled job record with all three files on disk, and the ':grid'
+    status the queue writes once the tiled file is built."""
+    from app import main
+
+    for suffix in (".svg", ".opt.svg", ".grid.svg"):
+        (main.UPLOAD_DIR / f"{svg_id}{suffix}").write_bytes(
+            (FIXTURES / "multi-layer.svg").read_bytes())
+    job = {
+        "svg_id": svg_id, "optimize_mode": "beginner", "optimize_svg": True,
+        "grid_enabled": True, "grid_copies": 4, "grid_gutter_mm": 0.0,
+        "grid_cut_marks": False,
+        "paper_width_mm": 297.0, "paper_height_mm": 420.0,
+        "margin_left_mm": 0.0, "margin_right_mm": 0.0,
+        "margin_top_mm": 0.0, "margin_bottom_mm": 0.0,
+        "optimize_svg_linemerge": True, "optimize_svg_linesimplify": True,
+        "optimize_svg_linesort": True, "optimize_svg_reloop": True,
+        "optimize_svg_tolerance_mm": 0.1,
+        **overrides,
+    }
+    state.set_svg_status(
+        f"{svg_id}:grid", "ready",
+        settings_key=optimize_queue.grid_settings_key(
+            optimize_queue.settings_from_job(job)))
+    return job
+
+
+def test_a_grid_built_for_other_settings_is_not_served():
+    """Existence is not currency: between changing a setting and the rebuild
+    landing, every read path would answer for the previous arrangement while the
+    card shows the new one."""
+    from app import main, plot_worker
+
+    svg_id = "_grid_stale"
+    job = _grid_job(svg_id)
+    try:
+        assert plot_worker._effective_svg_path(job) \
+            == main.UPLOAD_DIR / f"{svg_id}.grid.svg"
+        # The user asks for 9 copies; the file on disk is still the 4-up one.
+        assert plot_worker._effective_svg_path({**job, "grid_copies": 9}) \
+            == main.UPLOAD_DIR / f"{svg_id}.opt.svg"
+    finally:
+        _cleanup(svg_id)
+
+
+def test_expert_mode_serves_its_own_optimize_over_a_leftover_grid():
+    """Switching to Expert only greys the Grid section out — the card keeps
+    PATCHing grid_enabled, and the queue stops refreshing the tiled file. The
+    .opt.svg the user's Execute wrote is what plots."""
+    from app import main, plot_worker
+
+    svg_id = "_grid_expert"
+    job = _grid_job(svg_id, optimize_mode="expert")
+    try:
+        assert plot_worker._effective_svg_path(job) \
+            == main.UPLOAD_DIR / f"{svg_id}.opt.svg"
+    finally:
+        _cleanup(svg_id)
+
+
+def test_turning_grid_off_clears_its_status():
+    svg_id = "_grid_toggled_off"
+    state.set_svg_status(f"{svg_id}:grid", "ready", settings_key="whatever")
+    job = {"svg_id": svg_id, "grid_enabled": False, "optimize_svg": True,
+           "optimize_svg_tolerance_mm": 0.1}
+    try:
+        optimize_queue._enqueue(svg_id, optimize_queue.settings_from_job(job),
+                                kind="job")
+        assert state.get_svg_status(f"{svg_id}:grid") is None
+    finally:
+        optimize_queue.cancel(svg_id)
+
+
+def test_an_upload_scan_leaves_a_live_grid_status_alone():
+    """enqueue_for_upload and bootstrap_from_disk pass grid=None for every SVG
+    on disk. Clearing on that would wipe every grid status at startup."""
+    svg_id = "_grid_upload_scan"
+    state.set_svg_status(f"{svg_id}:grid", "ready", settings_key="whatever")
+    try:
+        optimize_queue._enqueue(svg_id, optimize_queue.settings_from_config(),
+                                kind="upload")
+        assert state.get_svg_status(f"{svg_id}:grid") is not None
+    finally:
+        optimize_queue.cancel(svg_id)
 
 
 def test_gridded_document_places_onto_its_sheet(tmp_path):

@@ -238,6 +238,20 @@ def enqueue_for_job(job: dict) -> None:
     _enqueue(job["svg_id"], settings_from_job(job), kind="job")
 
 
+def grid_is_current(job: dict) -> bool:
+    """Is ``{svg_id}.grid.svg`` on disk *and* built from this job's grid
+    settings as they stand now?
+
+    Existence alone is not enough. The tiled file outlives the settings that
+    produced it, so between a settings change and the rebuild landing every read
+    path — the preview, /jobs/{id}/svg, svg-meta, export, placement and the plot
+    itself — would answer for the previous arrangement while the UI shows the
+    new one.
+    """
+    return _grid_is_fresh(job["svg_id"],
+                          grid_settings_key(settings_from_job(job)))
+
+
 def request_for_job(svg_id: str,
                     settings: dict,
                     on_running: Callable[[], None] | None,
@@ -340,6 +354,13 @@ def _enqueue(svg_id: str, settings: dict, kind: str) -> _Task:
     sk = settings_key(settings)
     gk = grid_settings_key(settings)
     want_grid = settings.get("grid") is not None
+    if not want_grid and kind == "job":
+        # The job just turned Grid off. Nothing else ever clears this entry, so
+        # it would stay "ready" in state.svgs for the life of the drawing, ride
+        # every WebSocket frame and come back at startup. Scoped to job-kind
+        # enqueues because enqueue_for_upload and bootstrap_from_disk pass
+        # grid=None for every SVG on disk, and would wipe live grid statuses.
+        state.clear_svg_status(_grid_status_id(svg_id))
 
     # Fast path: both derivatives exist and their recorded keys still match → done.
     opt = _opt_path(svg_id)
