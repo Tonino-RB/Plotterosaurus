@@ -94,6 +94,16 @@ def settings_from_job(job: dict) -> dict:
             float(job.get("margin_top_mm", 0.0)),
             float(job.get("margin_bottom_mm", 0.0)),
         )
+    if not job.get("optimize_svg"):
+        # Grid alone is enough to run a task, and phase 1 read the four toggles
+        # straight off the job record — so a job with Optimize SVG *off* and
+        # Grid on got its geometry simplified anyway, and tiled the result. All
+        # four off makes optimize_svg() take its copy-through no-op path, and
+        # the grid tiles the drawing as uploaded. The tolerance is canonicalised
+        # with them so dragging a slider that now changes nothing cannot
+        # invalidate the key and spend a vpype run re-tiling the same geometry.
+        return {"tolerance_mm": 0.10, "linemerge": False, "linesimplify": False,
+                "linesort": False, "reloop": False, "grid": grid}
     return {
         "tolerance_mm": float(job.get("optimize_svg_tolerance_mm", 0.10)),
         "linemerge": bool(job.get("optimize_svg_linemerge", True)),

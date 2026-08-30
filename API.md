@@ -128,6 +128,19 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   "optimize_expert_3_enabled": false,
   "optimize_expert_3_cmd":     "",
 
+  // "Grid" layout: tile the whole drawing to fill the sheet, resizing each
+  // copy to its cell. Reversible (a cached derivative selected by grid_enabled).
+  // Follows optimize_svg — with it on the optimized geometry is what gets
+  // tiled, with it off the drawing as uploaded. Beginner mode only. The
+  // columns x rows arrangement is derived from grid_copies, the drawing's
+  // aspect ratio and the area inside the margins; grid_copies is rounded up to
+  // a full grid (e.g. 5 -> 3x2 = 6). A gutter too wide for the resulting cell
+  // is capped at half the cell's smaller side.
+  "grid_enabled":              false,  // Master toggle.
+  "grid_copies":               4,      // 2–64. Number of copies to fit on the sheet.
+  "grid_gutter_mm":            0.0,    // 0–100. Gap between copies (for cutting).
+  "grid_cut_marks":            false,  // Dot every copy corner, in a layer of its own.
+
   "layers": [                         // Per-layer overrides keyed by SVG layer index.
     {
       "index": 0,                     // Required — the 0-based Inkscape layer index.
@@ -147,12 +160,12 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
 
 ##### Paper size resolution
 
-- **Metadata omitted, or `paper_size` omitted** — paper dimensions are taken straight from the SVG's `width`/`height` attributes (parsed via the SVG's units / `viewBox`). Orientation is implicit in those dimensions: portrait if `width ≤ height`, landscape otherwise. If the resulting size matches a known preset (A0–A5, B0–B5, Letter, Legal, Ledger, ANSI C–E), the web UI labels the job accordingly; otherwise it's shown as a custom size with the raw mm.
+- **Metadata omitted, or `paper_size` omitted** — paper dimensions are taken straight from the SVG's `width`/`height` attributes (parsed via the SVG's units / `viewBox`). Orientation is implicit in those dimensions: portrait if `width ≤ height`, landscape otherwise. If the resulting size matches a known preset (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E), the web UI labels the job accordingly; otherwise it's shown as a custom size with the raw mm.
 - **`paper_size.name` set, `width`/`height` omitted** — `name` must match a known preset (see list below); preset dimensions are used.
 - **`paper_size.width` and `paper_size.height` set** — those values are used after unit conversion. `name` is preserved as a display label only.
 - **`paper_size.orientation`** — if given, the resolved dimensions are swapped if needed so `width >= height` (landscape) or `width <= height` (portrait).
 
-Known presets: `A0`–`A5`, `B0`–`B5`, `Letter`, `Legal`, `Ledger`, `ANSI-C`, `ANSI-D`, `ANSI-E`. Any other `name` without explicit dimensions returns `400`.
+Known presets: `A0`–`A6`, `B0`–`B5`, `Letter`, `Legal`, `Ledger`, `ANSI-C`, `ANSI-D`, `ANSI-E`. Any other `name` without explicit dimensions returns `400`.
 
 ##### Paper stock and pens
 
@@ -271,9 +284,11 @@ Idle-only. Three separate values describe where the carriage is relative to the 
 
 Both offsets are reported in the state snapshot as `manual_origin_offset_x_mm` / `_y_mm` and `origin_nudge_x_mm` / `_y_mm`.
 
+`origin_past_bed_x_mm` / `_y_mm` report how far beyond the bed's far edge the carriage currently stands, per axis, `0.0` when inside — the declared origin plus both offsets, skew-corrected. Advisory: no move is refused for landing there, and a plot started from there is clipped at the bed edge rather than blocked.
+
 | Method | Path | What it does | 409 conditions |
 |---|---|---|---|
-| `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. | Not idle; a move past the bed's far edge, or longer than the bed itself; connection failure. |
+| `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. Landing *past* the bed's far edge is allowed and reported instead (see `origin_past_bed_x_mm` below). | Not idle; a move longer than the bed itself; connection failure. |
 | `POST` | `/api/v1/pen/jog-home` | Walk the carriage back to the declared origin, clearing the manual offset. No-op when the offset is already zero. | Not idle; connection failure. |
 | `POST` | `/api/v1/pen/jog-shortcut` | Walk the carriage to the Move-shortcut position — `move_shortcut_x_mm` / `_y_mm` in settings, measured from the declared origin, so a second call moves nothing. With `move_shortcut_set_origin` on, the arrival point is then declared the page's top-left corner (as if `/pen/set-origin` followed), which makes each call walk the shortcut afresh. No body. | Not idle; the shortcut lies past the bed's far edge (e.g. after switching to a smaller machine profile); connection failure. |
 | `POST` | `/api/v1/pen/set-origin` | Declare wherever the carriage currently sits to be the page's top-left corner: the manual offset folds into the origin and resets to zero. Touches no hardware. | Not idle. |
@@ -403,6 +418,10 @@ Editable fields:
 | `optimize_mode` | `"beginner"` \| `"expert"` | See the metadata schema above. |
 | `optimize_expert_1_enabled`, `optimize_expert_2_enabled`, `optimize_expert_3_enabled` | bool | |
 | `optimize_expert_1_cmd`, `optimize_expert_2_cmd`, `optimize_expert_3_cmd` | string | Raw vpype command fragment for that box. |
+| `grid_enabled` | bool | "Grid" layout: tile the whole drawing to fill the sheet before placement, each copy resized to its cell. Reversible; follows `optimize_svg` (the optimized geometry when it is on, the upload as-is when it is off); beginner mode only. |
+| `grid_copies` | int | 2–64. Copies to fit on the sheet; rounded up to a full columns×rows grid, arranged to fill the area inside the margins. |
+| `grid_gutter_mm` | number | 0–100. Gap between copies, capped at half the smaller side of the cell it is applied to. |
+| `grid_cut_marks` | bool | Add cutting marks to the tiled sheet: a dot at every copy corner, on the gutter's centre line between copies. They go in a layer of their own that no selection addresses, so they are drawn once per plot whatever layers are selected. |
 | `layer_selections` | array | `[{index, label, type?, selected?, pen_name?}]` — drives which layers plot. Entries with `selected: false` are kept in the list (so name/type metadata survives a toggle in the UI) but skipped when planning. |
 
 Returns the full updated job record. **`409 Conflict`** if the job is currently active (`plotting`, `planning`, `paused`, `awaiting_pen_change`, `homing`).
@@ -455,7 +474,9 @@ The first message after `accept()` is always a full `state` snapshot:
   "manual_origin_offset_x_mm": 0.0,
   "manual_origin_offset_y_mm": 0.0,
   "origin_nudge_x_mm": 0.0,
-  "origin_nudge_y_mm": 0.0
+  "origin_nudge_y_mm": 0.0,
+  "origin_past_bed_x_mm": 0.0,
+  "origin_past_bed_y_mm": 0.0
 }
 ```
 

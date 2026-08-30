@@ -200,6 +200,7 @@ def test_queue_produces_both_derivatives_and_records_grid_status(tmp_path):
         "paper_width_mm": 297.0, "paper_height_mm": 420.0,
         "margin_left_mm": 0.0, "margin_right_mm": 0.0,
         "margin_top_mm": 0.0, "margin_bottom_mm": 0.0,
+        "optimize_svg": True,
         "optimize_svg_linemerge": True, "optimize_svg_linesimplify": False,
         "optimize_svg_linesort": False, "optimize_svg_reloop": False,
         "optimize_svg_tolerance_mm": 0.1,
@@ -350,6 +351,39 @@ def test_a_cancelled_task_leaves_no_grid_status_behind():
         assert state.get_svg_status(f"{svg_id}:grid") is None
     finally:
         _cleanup(svg_id)
+
+
+def test_grid_alone_does_not_smuggle_in_optimization():
+    """Grid is enough on its own to run a task, and phase 1 used to read the
+    four toggles straight off the job record — so Optimize SVG off plus Grid on
+    tiled simplified geometry the user had turned simplification off for."""
+    from app import main
+
+    svg_id = "_grid_raw"
+    task = _grid_task(svg_id, optimize_svg=False,
+                      optimize_svg_linemerge=True, optimize_svg_linesimplify=True)
+    try:
+        optimize_queue._process(task)
+        assert task.ok
+        # Phase 1 took its copy-through no-op path: byte-for-byte the upload.
+        assert (main.UPLOAD_DIR / f"{svg_id}.opt.svg").read_bytes() \
+            == (FIXTURES / "multi-layer.svg").read_bytes()
+        assert (main.UPLOAD_DIR / f"{svg_id}.grid.svg").exists()
+    finally:
+        _cleanup(svg_id)
+
+
+def test_settings_from_job_reports_the_toggles_that_will_actually_run():
+    off = optimize_queue.settings_from_job({
+        "optimize_svg": False, "optimize_svg_linemerge": True,
+        "optimize_svg_linesimplify": True, "optimize_svg_linesort": True,
+        "optimize_svg_reloop": True, "optimize_svg_tolerance_mm": 5.0,
+    })
+    assert not any([off["linemerge"], off["linesimplify"],
+                    off["linesort"], off["reloop"]])
+    # The tolerance goes with them, so a slider that now changes nothing cannot
+    # invalidate the cache key and spend a vpype run re-tiling.
+    assert off["tolerance_mm"] == 0.10
 
 
 def test_patch_persists_and_clamps_grid_fields(client, job_from_svg):
@@ -586,6 +620,7 @@ def test_cut_marks_change_the_grid_cache_key():
         "paper_width_mm": 297.0, "paper_height_mm": 420.0,
         "margin_left_mm": 0.0, "margin_right_mm": 0.0,
         "margin_top_mm": 0.0, "margin_bottom_mm": 0.0,
+        "optimize_svg": True,
         "optimize_svg_linemerge": True, "optimize_svg_linesimplify": True,
         "optimize_svg_linesort": True, "optimize_svg_reloop": True,
         "optimize_svg_tolerance_mm": 0.1,
@@ -618,6 +653,7 @@ def test_queue_grid_phase_adds_cut_marks(tmp_path):
         "paper_width_mm": 200.0, "paper_height_mm": 200.0,
         "margin_left_mm": 0.0, "margin_right_mm": 0.0,
         "margin_top_mm": 0.0, "margin_bottom_mm": 0.0,
+        "optimize_svg": True,
         "optimize_svg_linemerge": True, "optimize_svg_linesimplify": False,
         "optimize_svg_linesort": False, "optimize_svg_reloop": False,
         "optimize_svg_tolerance_mm": 0.1,

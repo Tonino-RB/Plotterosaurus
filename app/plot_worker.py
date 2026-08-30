@@ -1754,15 +1754,13 @@ def _optimize_cache_key(job: dict) -> str:
     """Snapshot of the inputs that govern the .opt.svg contents.
 
     Stored on the job after a successful run so we re-optimize only when the
-    user changes a setting that would actually change the output.
+    user changes a setting that would actually change the output. Delegated to
+    the queue's own key rather than mirrored, so the two cannot drift — a job
+    with Optimize SVG off gets the all-off key its copy-through .opt.svg was
+    actually written under (see optimize_queue.settings_from_job), instead of
+    one describing simplification that never ran.
     """
-    return "|".join([
-        f"t={float(job.get('optimize_svg_tolerance_mm', 0.10)):.4f}",
-        f"lm={int(bool(job.get('optimize_svg_linemerge', True)))}",
-        f"ls={int(bool(job.get('optimize_svg_linesimplify', True)))}",
-        f"so={int(bool(job.get('optimize_svg_linesort', True)))}",
-        f"rl={int(bool(job.get('optimize_svg_reloop', True)))}",
-    ])
+    return optimize_queue.settings_key(optimize_queue.settings_from_job(job))
 
 
 def _effective_svg_path(job: dict) -> Path:
