@@ -25,6 +25,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from lxml import etree
+
 from . import config, state, svg_optimize, svg_utils, workload
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,26 @@ def settings_key(settings: dict) -> str:
     ])
 
 
+def grid_settings_key(settings: dict) -> str:
+    """Cache key for the {svg_id}.grid.svg derivative.
+
+    Built on top of ``settings_key`` because the grid pass tiles the *optimized*
+    file — a change to any optimize toggle changes what gets tiled. The grid
+    tuple carries the copy count, gutter, the cutting-marks toggle and the
+    sheet + margins (which set the cell size). The drawing's own dimensions are
+    not in the key: a given svg_id has fixed content, so the arrangement is
+    deterministic without them.
+    """
+    g = settings.get("grid")
+    if not g:
+        return f"{settings_key(settings)}|g=0"
+    copies, gutter, cut_marks, pw, ph, ml, mr, mt, mb = g
+    return (f"{settings_key(settings)}|g={int(copies)}x{float(gutter):.3f}"
+            f"x{int(bool(cut_marks))}"
+            f"x{float(pw):.1f}x{float(ph):.1f}"
+            f"x{float(ml):.1f}x{float(mr):.1f}x{float(mt):.1f}x{float(mb):.1f}")
+
+
 def settings_from_config() -> dict:
     return {
         "tolerance_mm": float(config.OPTIMIZE_SVG_TOLERANCE_DEFAULT_MM),
@@ -53,29 +75,49 @@ def settings_from_config() -> dict:
         "linesimplify": bool(config.OPTIMIZE_SVG_LINESIMPLIFY_DEFAULT),
         "linesort": bool(config.OPTIMIZE_SVG_LINESORT_DEFAULT),
         "reloop": bool(config.OPTIMIZE_SVG_RELOOP_DEFAULT),
+        # Grid is inherently per-job — never run at upload / bootstrap time.
+        "grid": None,
     }
 
 
 def settings_from_job(job: dict) -> dict:
+    grid = None
+    if job.get("grid_enabled"):
+        grid = (
+            int(job.get("grid_copies", 4)),
+            float(job.get("grid_gutter_mm", 0.0)),
+            bool(job.get("grid_cut_marks", False)),
+            float(job.get("paper_width_mm", 210.0)),
+            float(job.get("paper_height_mm", 297.0)),
+            float(job.get("margin_left_mm", 0.0)),
+            float(job.get("margin_right_mm", 0.0)),
+            float(job.get("margin_top_mm", 0.0)),
+            float(job.get("margin_bottom_mm", 0.0)),
+        )
     return {
         "tolerance_mm": float(job.get("optimize_svg_tolerance_mm", 0.10)),
         "linemerge": bool(job.get("optimize_svg_linemerge", True)),
         "linesimplify": bool(job.get("optimize_svg_linesimplify", True)),
         "linesort": bool(job.get("optimize_svg_linesort", True)),
         "reloop": bool(job.get("optimize_svg_reloop", True)),
+        "grid": grid,
     }
 
 
 # Internal task representation --------------------------------------------
 
 class _Task:
-    __slots__ = ("svg_id", "settings", "settings_key", "kind",
+    __slots__ = ("svg_id", "settings", "settings_key", "grid", "grid_key", "kind",
                  "started", "done", "ok", "error", "cancelled", "waiters")
 
     def __init__(self, svg_id: str, settings: dict, sk: str, kind: str) -> None:
         self.svg_id = svg_id
         self.settings = settings
         self.settings_key = sk
+        # Phase 2: tile the optimized file into a grid. None when the job has
+        # grid disabled. grid_key covers both phases (grid of optimized).
+        self.grid = settings.get("grid")
+        self.grid_key = grid_settings_key(settings)
         self.kind = kind  # "upload" or "job"
         self.started = threading.Event()
         self.done = threading.Event()
@@ -185,11 +227,13 @@ def enqueue_for_job(job: dict) -> None:
     finished. This closes the common "API client sends custom settings; the
     upload-time pre-opt with config defaults misses cache" case.
 
-    No-op if the job has optimize_svg disabled, or is in expert mode — expert
-    mode's vpype run is triggered explicitly (see optimize_expert_queue), not
-    automatically here.
+    No-op if the job has both optimize_svg and grid disabled, or is in expert
+    mode — expert mode's vpype run is triggered explicitly (see
+    optimize_expert_queue), not automatically here.
     """
-    if job.get("optimize_mode", "beginner") != "beginner" or not job.get("optimize_svg"):
+    if job.get("optimize_mode", "beginner") != "beginner":
+        return
+    if not (job.get("optimize_svg") or job.get("grid_enabled")):
         return
     _enqueue(job["svg_id"], settings_from_job(job), kind="job")
 
@@ -258,6 +302,7 @@ def cancel(svg_id: str) -> None:
             svg_optimize.cancel_current()
             woken_a_waiter = True
     state.clear_svg_status(svg_id)
+    state.clear_svg_status(_grid_status_id(svg_id))
     if woken_a_waiter:
         _wakeup.set()
 
@@ -268,19 +313,40 @@ def _opt_path(svg_id: str) -> Path:
     return _uploads() / f"{svg_id}.opt.svg"
 
 
+def _grid_path(svg_id: str) -> Path:
+    return _uploads() / f"{svg_id}.grid.svg"
+
+
 def _src_path(svg_id: str) -> Path:
     return _uploads() / f"{svg_id}.svg"
+
+
+def _grid_status_id(svg_id: str) -> str:
+    """Synthetic state.svgs key for the grid derivative's status, so the
+    frontend can tell 'tiled file is being built' from 'tiled file is ready'
+    the same way it does for the optimized file."""
+    return f"{svg_id}:grid"
+
+
+def _grid_is_fresh(svg_id: str, grid_key: str) -> bool:
+    st = state.get_svg_status(_grid_status_id(svg_id))
+    return bool(_grid_path(svg_id).exists() and st
+               and st.get("settings_key") == grid_key
+               and st.get("status") == "ready")
 
 
 def _enqueue(svg_id: str, settings: dict, kind: str) -> _Task:
     """Create-or-join. Always returns a task whose ``done`` event will fire."""
     sk = settings_key(settings)
+    gk = grid_settings_key(settings)
+    want_grid = settings.get("grid") is not None
 
-    # Fast path: cached output exists and the recorded key still matches → done.
+    # Fast path: both derivatives exist and their recorded keys still match → done.
     opt = _opt_path(svg_id)
     existing = state.get_svg_status(svg_id)
-    if opt.exists() and existing and existing.get("settings_key") == sk \
-            and existing.get("status") == "ready":
+    opt_fresh = (opt.exists() and existing and existing.get("settings_key") == sk
+                 and existing.get("status") == "ready")
+    if opt_fresh and (not want_grid or _grid_is_fresh(svg_id, gk)):
         t = _Task(svg_id, settings, sk, kind)
         t.started.set()
         t.ok = True
@@ -288,13 +354,15 @@ def _enqueue(svg_id: str, settings: dict, kind: str) -> _Task:
         return t
 
     with _lock:
-        # Dedup against in-flight task with matching key.
+        # Dedup against in-flight task with matching key (both phases).
         if _inflight is not None and _inflight.svg_id == svg_id \
-                and _inflight.settings_key == sk and not _inflight.cancelled:
+                and _inflight.settings_key == sk and _inflight.grid_key == gk \
+                and not _inflight.cancelled:
             return _inflight
         # Dedup against an already-pending matching task.
         for t in _pending:
-            if t.svg_id == svg_id and t.settings_key == sk and not t.cancelled:
+            if t.svg_id == svg_id and t.settings_key == sk \
+                    and t.grid_key == gk and not t.cancelled:
                 return t
 
         # When a job-task arrives, drop any older pending upload-tasks for the
@@ -322,6 +390,10 @@ def _enqueue(svg_id: str, settings: dict, kind: str) -> _Task:
     existing = state.get_svg_status(svg_id)
     if not (existing and existing.get("status") == "optimizing"):
         state.set_svg_status(svg_id, "pending", settings_key=sk)
+    if want_grid:
+        gstat = state.get_svg_status(_grid_status_id(svg_id))
+        if not (gstat and gstat.get("status") == "tiling"):
+            state.set_svg_status(_grid_status_id(svg_id), "pending", settings_key=gk)
     return new_task
 
 
@@ -400,10 +472,11 @@ def _process(task: _Task) -> None:
     task.started.set()
 
     opt = _opt_path(task.svg_id)
+    opt_kwargs = {k: v for k, v in task.settings.items() if k != "grid"}
     try:
         # One heavy job at a time across all three queues (app/workload.py).
         with workload.heavy("optimize"):
-            svg_optimize.optimize_svg(src, opt, **task.settings)
+            svg_optimize.optimize_svg(src, opt, **opt_kwargs)
     except svg_optimize.OptimizeError as e:
         # Clean up a partial file if vpype died mid-write.
         if opt.exists():
@@ -449,5 +522,57 @@ def _process(task: _Task) -> None:
                              settings_key=task.settings_key, error=task.error)
         return
 
-    task.ok = True
     state.set_svg_status(task.svg_id, "ready", settings_key=task.settings_key)
+
+    # Phase 2 — tile the optimized file into a grid (see app/svg_optimize.grid_svg).
+    # A grid failure does not fail the task: plot / preview fall back to the
+    # un-tiled file via plot_worker._effective_svg_path.
+    if task.grid is not None and not task.cancelled:
+        _run_grid_phase(task, opt)
+
+    task.ok = True
+
+
+def _run_grid_phase(task: _Task, pre_grid: Path) -> None:
+    copies, gutter, cut_marks, pw, ph, ml, mr, mt, mb = task.grid
+    grid_path = _grid_path(task.svg_id)
+    gsid = _grid_status_id(task.svg_id)
+    try:
+        root = etree.parse(str(pre_grid)).getroot()
+        content_w, content_h = svg_utils.svg_size_mm(root)
+        # The cells are carved out of the margin box, so that — not the whole
+        # sheet — is the area the columns x rows split has to make the most of.
+        # Deciding on the sheet and then filling the margin box picks the wrong
+        # split whenever the two have different aspects: A4 portrait with 100mm
+        # top and bottom margins is a landscape strip, and 2 copies want 2x1.
+        avail_w = max(1.0, pw - ml - mr)
+        avail_h = max(1.0, ph - mt - mb)
+        cols, rows = svg_optimize.arrangement(copies, avail_w, avail_h,
+                                              content_w, content_h)
+        cell_w, cell_h = avail_w / cols, avail_h / rows
+        # Both the tiling and the cutting marks have to use the same gutter, or
+        # the marks stop landing on the lines the copies were inset to.
+        gutter = svg_optimize.clamp_gutter_mm(gutter, cell_w, cell_h)
+        state.set_svg_status(gsid, "tiling", settings_key=task.grid_key)
+        with workload.heavy("grid"):
+            svg_optimize.grid_svg(pre_grid, grid_path, cols, rows,
+                                  cell_w, cell_h, gutter)
+        svg_utils.reconcile_layers(_src_path(task.svg_id), grid_path)
+        if cut_marks:
+            # After the reconcile, never before: the marks layer is not one of
+            # the upload's, and matching it against a source label would move
+            # it into an artwork layer's position (see svg_utils.add_cut_marks).
+            svg_utils.add_cut_marks(grid_path, cols, rows, cell_w, cell_h, gutter)
+    except Exception as e:  # noqa: BLE001 — grid is best-effort
+        grid_path.unlink(missing_ok=True)
+        if task.cancelled:
+            state.clear_svg_status(gsid)
+            return
+        log.warning("optimize_queue: grid phase failed for %s: %s", task.svg_id, e)
+        state.set_svg_status(gsid, "failed", settings_key=task.grid_key, error=str(e))
+        return
+    if task.cancelled:
+        grid_path.unlink(missing_ok=True)
+        state.clear_svg_status(gsid)
+        return
+    state.set_svg_status(gsid, "ready", settings_key=task.grid_key)

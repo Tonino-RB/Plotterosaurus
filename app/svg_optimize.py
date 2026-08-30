@@ -10,6 +10,7 @@ structure (``inkscape:groupmode="layer"`` and ``inkscape:label``), so
 downstream ``svg_utils.filter_to_layers`` keeps working on the optimized file.
 """
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -135,6 +136,106 @@ def optimize_svg(
         # letting a FileNotFoundError escape as "internal error".
         raise OptimizeError("the document contains no plottable geometry")
     # Only now does the optimized file become visible under its real name.
+    os.replace(tmp, dst)
+
+
+def arrangement(copies: int, paper_w_mm: float, paper_h_mm: float,
+                content_w_mm: float | None = None,
+                content_h_mm: float | None = None) -> tuple[int, int]:
+    """Best columns x rows to fit ``copies`` cells on a ``paper_w`` x ``paper_h``
+    sheet: the split that lets each copy be scaled up the most while keeping its
+    aspect ratio. Falls back to the sheet's own aspect when the drawing has no
+    resolvable size.
+
+    ``cols * rows`` is >= ``copies`` and may exceed it (e.g. 5 -> 3x2); the extra
+    cells are filled too. Common counts (2, 4, 6, 8, 9, 12, 16) land exactly.
+    """
+    copies = max(1, int(copies))
+    w = paper_w_mm if paper_w_mm and paper_w_mm > 0 else 1.0
+    h = paper_h_mm if paper_h_mm and paper_h_mm > 0 else 1.0
+    cw = content_w_mm if content_w_mm and content_w_mm > 0 else w
+    ch = content_h_mm if content_h_mm and content_h_mm > 0 else h
+    best_key: tuple | None = None
+    best: tuple[int, int] = (1, copies)
+    for cols in range(1, copies + 1):
+        rows = math.ceil(copies / cols)
+        fit = min((w / cols) / cw, (h / rows) / ch)
+        # Largest copies win; ties break toward fewer wasted cells, then toward
+        # an arrangement whose own aspect is closest to the sheet's.
+        key = (round(fit, 6), -(cols * rows - copies),
+               -abs((cols / rows) - (w / h)))
+        if best_key is None or key > best_key:
+            best_key, best = key, (cols, rows)
+    return best
+
+
+def clamp_gutter_mm(gutter_mm: float, cell_w_mm: float, cell_h_mm: float) -> float:
+    """The largest gutter that still leaves a cell to draw in.
+
+    ``layout -m`` subtracts *twice* the margin from the cell and scales the copy
+    by ``min((w - 2m) / content_w, (h - 2m) / content_h)`` with no check that the
+    result is positive (see vpype_cli/operations.py). A gutter at or above the
+    cell size therefore produces a negative scale: every copy comes out mirrored,
+    enlarged and off the page, with vpype exiting 0 and reporting nothing.
+
+    Capped at half the smaller cell dimension, so the drawing always keeps at
+    least half of it. Clamped rather than refused for the same reason the job
+    fields in main.py are (``_CLAMP_RANGES``): the user dragged a slider past
+    what this sheet can hold, they didn't ask for the request to fail.
+    """
+    return min(max(0.0, gutter_mm), 0.5 * min(cell_w_mm, cell_h_mm))
+
+
+def grid_svg(src: Path, dst: Path, cols: int, rows: int,
+             cell_w_mm: float, cell_h_mm: float, gutter_mm: float) -> None:
+    """Tile ``src`` into a ``cols`` x ``rows`` grid, resizing each copy to fit a
+    ``cell_w`` x ``cell_h`` mm cell (minus ``gutter_mm`` between copies). Writes
+    ``dst`` atomically. Raises ``OptimizeError`` on vpype failure / empty output.
+
+    ``gutter_mm`` is expected to have been through ``clamp_gutter_mm`` already —
+    the caller needs the clamped value too, to put the cutting marks on the same
+    lines the copies were inset to (see optimize_queue._run_grid_phase).
+
+    Same atomic-write shape as ``optimize_svg`` (see its docstring): vpype writes
+    a sibling ``.partial`` file which is renamed into place, so a reader sees the
+    previous complete file or the new one, never a half-tiled document.
+    """
+    tmp = _partial(dst)
+    inset = max(0.0, gutter_mm) / 2.0
+    # vpype's `layout` enforces portrait unless --landscape is given: it runs the
+    # size through _normalize_page_size, which swaps any page whose width exceeds
+    # its height. Without this flag every landscape cell is silently fitted to a
+    # portrait box of the same dimensions, so the copies come out too small in
+    # one axis and overflow their pitch in the other.
+    landscape = ["-l"] if cell_w_mm > cell_h_mm else []
+    cmd = _vpype_cmd() + [
+        "begin",
+        "grid", "-o", f"{cell_w_mm}mm", f"{cell_h_mm}mm", str(int(cols)), str(int(rows)),
+        "read", str(src),
+        "layout", *landscape, "-m", f"{inset}mm", f"{cell_w_mm}mmx{cell_h_mm}mm",
+        "end",
+        "write", str(tmp),
+    ]
+    log.info("grid: %s", " ".join(cmd))
+    env = {**os.environ, "VPYPE_NO_COLOR": "1"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env)
+    with _proc_lock:
+        global _current_proc
+        _current_proc = proc
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        with _proc_lock:
+            _current_proc = None
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        msg = (stderr.strip() or stdout.strip() or
+               f"vpype exited with code {proc.returncode}")
+        first_line = msg.splitlines()[-1] if msg else f"rc={proc.returncode}"
+        raise OptimizeError(first_line)
+    if not tmp.exists():
+        raise OptimizeError("the document contains no plottable geometry")
     os.replace(tmp, dst)
 
 
