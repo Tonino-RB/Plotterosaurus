@@ -86,7 +86,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Finished recordings are saved locally under `camera_output_folder` and optionally pushed to cloud storage via `rclone copy` (bring your own installed + authenticated `rclone`), one upload at a time, retried with backoff until the remote confirms them — an upload cut short by a restart or a dropped connection is picked back up by a sweep of the folder at startup and every five minutes
 - **Keep at most** (`camera_retention_gb`, default 10 GB) caps the local recordings folder: once it is over, the oldest recordings are deleted each time a new one finishes — `0` keeps everything, as it always used to. A recording whose upload hasn't landed yet is never deleted, and a recording won't start at all when the card is nearly full
 - Settings → Camera → Recording lists what is still on the Pi, with each file's upload percentage, an inline preview, a delete button, and an "upload now" retry. With *delete local after upload* on, that list is empty whenever every recording has landed
-- Opt-in at install time (`ENABLE_CAMERA=1`) — everything above is skipped entirely on installs without a camera. See [Install options](#install-options) and [API.md](API.md#camera--plot-recording)
+- Opt-in at install time (`ENABLE_CAMERA=1`) — everything above is skipped entirely on installs without a camera. See [Plot recording (camera)](#plot-recording-camera) for what the module installs, and [API.md](API.md#camera--plot-recording)
 
 **Operational**
 
@@ -109,7 +109,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 
 - Raspberry Pi Zero 2 W, 3B+, or newer running Raspberry Pi OS Trixie (Debian 13) or Bookworm (Debian 12)
 - An iDraw H SE A3, AxiDraw, or compatible EBB-based plotter on USB
-- A Raspberry Pi Camera Module 3 — optional, only needed for [plot recording](#plot-recording-optional--camera) (`ENABLE_CAMERA=1`)
+- A Raspberry Pi Camera Module 3 — optional, only needed for [plot recording](#plot-recording-camera) (`ENABLE_CAMERA=1`)
 
 Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Raspberry Pi OS Lite (64-bit) — a port of Debian Trixie with no desktop environment (released 2026-04-21).
 
@@ -193,28 +193,64 @@ When the script finishes it prints the URL to open in your browser.
 
 ### Install options
 
+Everything past the core server is opt-in, and every option is an environment variable you set in front of `./install.sh`. Two of them are plain settings; three switch whole modules on. They combine freely:
+
 ```bash
-# Unattended install (pipes sudo password):
-SUDO_PW='your-password' ./install.sh
-
-# Set a different plotter model at install (default is 2, AxiDraw SE/A3):
-PLOTTER_MODEL=1 ./install.sh
-
-# Enable plot recording via a Pi Camera Module 3 + MediaMTX (off by default):
-ENABLE_CAMERA=1 ./install.sh
-
-# Enable the /draw-stream live "draw progress" page, for an OBS Browser
-# Source (off by default — pure app code, no extra packages/services):
-ENABLE_DRAW_STREAM=1 ./install.sh
-
-# Enable the in-app "Update now" self-update path (off by default — see Updating below):
-ENABLE_SELF_UPDATE=1 ./install.sh
-
-# Options can be combined:
 SUDO_PW='your-password' PLOTTER_MODEL=2 ENABLE_CAMERA=1 ./install.sh
 ```
 
-After install, the plotter model can also be changed from the UI (gear icon → Settings) and is persisted to `config.json`.
+| Variable | Default | What it does |
+|---|---|---|
+| `SUDO_PW` | unset — `sudo` prompts | Pipes the sudo password in, for an unattended install |
+| `PLOTTER_MODEL` | `2` (AxiDraw SE/A3) | Seeds the plotter model in the systemd unit. Changeable afterwards in the UI (gear icon → Settings), where it persists to `config.json` |
+| `ENABLE_CAMERA` | off | Installs the [plot recording](#plot-recording-camera) module |
+| `ENABLE_DRAW_STREAM` | off | Installs the [draw-stream OBS overlay](#draw-stream-obs-overlay) module |
+| `ENABLE_SELF_UPDATE` | off | Installs the [in-app self-update](#in-app-self-update) module |
+
+### Optional modules
+
+`./install.sh` with no variables installs the **core server**, and that on its own is a complete, plottable install: upload and layer selection, placement and margins, staged plotting with pen-change pauses, calibration and manual jog, vpype optimization, "Save As" export (SVG / PNG / PDF / G-code / HPGL), webhook notifications, the shutdown button, and the `/api/v1` API. Nothing below is needed in order to plot.
+
+The three modules below are skipped entirely unless asked for, because each one costs something an install without it shouldn't have to pay — extra apt packages and a second systemd service, or a passwordless `git reset --hard`.
+
+**Adding a module later** is just a re-run of the installer with its variable set. `install.sh` is idempotent, so this is the same command as a normal upgrade:
+
+```bash
+cd ~/Plotterosaurus
+ENABLE_CAMERA=1 ./install.sh
+```
+
+**Removing one is not symmetric.** Re-running without the variable *does* put `Environment=ENABLE_CAMERA=0` back into the systemd unit — but that variable is only consulted the first time `config.json` is created. Once the setting is persisted there, the persisted value wins on every later boot, so a module you enabled once stays enabled. Turning it back off is a settings change, not an install change; each module says how below. (`ENABLE_SELF_UPDATE` is the exception — it lives entirely in root-owned files outside `config.json`, so a re-run without it really does remove it.)
+
+#### Plot recording (camera)
+
+Records the plot through a Raspberry Pi Camera Module 3 — realtime, timelapse, or sped-up — with a live RTSP / HLS / WebRTC stream, in-UI focus and image controls, a local retention cap, and optional `rclone` push to cloud storage. It also unlocks **optical layer registration**: a carriage-mounted camera measures how far a pen change left the next layer off the first, and offers the correction as an origin nudge you confirm before it is applied.
+
+- **Needs:** a Camera Module 3 on the CSI connector; the service user in the `video` group (`sudo usermod -a -G video $USER`, then log out and back in — `install.sh` aborts with this hint if it's missing); and a 64-bit OS, since the MediaMTX build the script downloads is `linux_arm64`.
+- **Enable:** `ENABLE_CAMERA=1 ./install.sh`
+- **Installs:** the apt packages `rpicam-apps`, `libfreetype6` and `ffmpeg`; the latest MediaMTX release unpacked into `/opt/mediamtx`, with its `mediamtx.yml` templated from MediaMTX's own defaults (Control API bound to `127.0.0.1:9997`, one `cam` path for the Camera Module 3); and `mediamtx.service`, enabled and started as a second systemd service.
+- **Cloud upload is a separate step:** `rclone` is deliberately *not* installed, because authenticating a remote is interactive and the credentials are yours. Run `sudo apt-get install -y rclone && rclone config`, then set the target in Settings → Camera → Recording. Without it, finished recordings simply stay on the Pi.
+- **Turn it off:** there is no toggle in the UI, so flip the setting directly — `curl -X PATCH http://plotterosaurus.local/settings -H 'Content-Type: application/json' -d '{"camera_enabled": false}'`. It takes effect immediately and hides every camera control. To stop MediaMTX holding the camera as well: `sudo systemctl disable --now mediamtx`.
+- **More:** the camera feature list above, and [API.md](API.md#camera--plot-recording).
+
+#### Draw-stream OBS overlay
+
+A `/draw-stream` page that redraws the plot live on a black or white canvas, taking stroke colour and width from the SVG itself and pen position from the running job — meant as an OBS Browser Source, alongside the camera feed or instead of it.
+
+- **Needs:** nothing. This is pure application code — no apt packages, no extra service, no camera.
+- **Enable:** `ENABLE_DRAW_STREAM=1 ./install.sh`
+- **Installs:** nothing on the system. It only sets `Environment=ENABLE_DRAW_STREAM=1` in the unit, which seeds the `draw_stream_enabled` setting; until then the page and its settings panel stay hidden.
+- **Turn it off:** `curl -X PATCH http://plotterosaurus.local/settings -H 'Content-Type: application/json' -d '{"draw_stream_enabled": false}'`
+
+#### In-app self-update
+
+The update banner and the **Update now** button (Settings → About & Updates). Off by default because applying an update runs `git reset --hard`, which would silently discard local changes on a modified checkout.
+
+- **Needs:** `git`, and a checkout you are happy to have reset to `main`.
+- **Enable:** `ENABLE_SELF_UPDATE=1 ./install.sh`
+- **Installs:** a root-owned helper at `/usr/local/sbin/plotterosaurus-update`, with the project directory, service user and repo URL baked in so the sudo grant can't be widened by editing a file in the repo; plus a scoped NOPASSWD rule at `/etc/sudoers.d/plotterosaurus-update`.
+- **Turn it off:** re-run `./install.sh` without the variable — it deletes both files. With the helper gone, Plotterosaurus stops checking for updates and hides the banner, the availability badge and **Check now**, rather than offering a button that cannot work.
+- **More:** [Updating](#updating).
 
 ### Network and access
 
