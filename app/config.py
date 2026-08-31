@@ -86,17 +86,6 @@ _SETTINGS: list[_Setting] = [
     _Setting("optimize_expert_1_cmd_default", str, ""),
     _Setting("optimize_expert_2_cmd_default", str, ""),
     _Setting("optimize_expert_3_cmd_default", str, ""),
-    # Move shortcut: the one-press jog target sitting between Move and Return
-    # to Origin in the toolbar. Absolute — the button walks the carriage *to*
-    # this offset from the declared origin rather than by it, so pressing it
-    # twice lands in the same place — and, with set_origin on, declares that
-    # spot the new page corner once the carriage arrives. Kept non-negative
-    # because the shortcut names a spot on the page, and the page starts at
-    # the origin: a negative target is the one case manual_jog refuses to
-    # carry out without a confirmation the button has no way to ask for.
-    _Setting("move_shortcut_x_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
-    _Setting("move_shortcut_y_mm", float, 6.0, lambda v: 0.0 <= v <= 2000.0),
-    _Setting("move_shortcut_set_origin", bool, False),
     # "auto" derives the unit from the browser's locale (app.js
     # effectiveDisplayUnit). It is a stored value rather than None because
     # update() below ignores a None — so with None as the sentinel there was
@@ -338,6 +327,16 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     skew_mode = raw.get("skew_mode")
     if skew_mode not in ("clip", "absorb"):
         skew_mode = "clip"
+    # Where the sheet's top-left corner sits on the bed, measured from the
+    # machine's own corner. A deliberately non-zero offset gives the carriage
+    # room to absorb a skew correction / origin nudge / optical-registration
+    # shift without running off the near edge. Non-negative and coerced rather
+    # than fatal, same as skew_deg.
+    try:
+        paper_origin_x = max(0.0, float(raw.get("paper_origin_x_mm") or 0.0))
+        paper_origin_y = max(0.0, float(raw.get("paper_origin_y_mm") or 0.0))
+    except (TypeError, ValueError):
+        paper_origin_x = paper_origin_y = 0.0
     machine_id = str(raw.get("id") or "").strip()
     while not machine_id or machine_id in used_ids:
         machine_id = secrets.token_hex(4)
@@ -345,7 +344,8 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
     return {"id": machine_id, "name": name[:_MACHINE_NAME_MAX],
             "width_mm": width, "height_mm": height, "auto_rotate": auto_rotate,
             "skew_deg": skew_deg, "skew_true_axis": skew_true_axis,
-            "skew_mode": skew_mode}
+            "skew_mode": skew_mode,
+            "paper_origin_x_mm": paper_origin_x, "paper_origin_y_mm": paper_origin_y}
 
 
 def _seed_machines(data: dict) -> tuple[list[dict], str]:
@@ -355,7 +355,8 @@ def _seed_machines(data: dict) -> tuple[list[dict], str]:
     which preset starts out active, so an install that never touched the
     custom bed keeps exactly the machine it had."""
     machines = [{"id": f"m{i + 1}", "auto_rotate": "off", "skew_deg": 0.0,
-                 "skew_true_axis": "x", "skew_mode": "clip", **preset}
+                 "skew_true_axis": "x", "skew_mode": "clip",
+                 "paper_origin_x_mm": 0.0, "paper_origin_y_mm": 0.0, **preset}
                 for i, preset in enumerate(_MACHINE_PRESETS)]
     try:
         index = int(data.get("plotter_model")) - 1

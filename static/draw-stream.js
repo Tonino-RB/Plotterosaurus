@@ -8,7 +8,8 @@
   const FALLBACK_STROKE_COLOR = "#ff2d55";
   const FALLBACK_STROKE_WIDTH_PX = 4;
 
-  const settings = { stroke_width_px: FALLBACK_STROKE_WIDTH_PX, background: "black", max_resolution_px: 2560 };
+  const settings = { stroke_width_px: FALLBACK_STROKE_WIDTH_PX, background: "black", max_resolution_px: 2560,
+                     paper_origin_x_mm: 0, paper_origin_y_mm: 0 };
   let hasBgImage = false;
   let bgImage = null;
 
@@ -175,17 +176,22 @@
     lastPt = null;
   }
 
-  // Same manual-origin-jog correction the pen-cursor overlay applies
-  // (static/app.js activeRunDelta) — raw x_mm/y_mm are document-frame
-  // coordinates that drift from the canvas without it whenever the operator
-  // nudges the origin mid-plot. Applied uniformly using the *current* delta,
-  // including when replaying history — a delta changed mid-plot won't be
-  // reflected exactly for earlier points, a minor known limitation.
+  // raw x_mm/y_mm are document-frame coordinates that drift from the canvas
+  // whenever the operator jogs or nudges the origin. Applied uniformly using
+  // the *current* delta, including when replaying history — a delta changed
+  // mid-plot won't be reflected exactly for earlier points, a minor known
+  // limitation.
+  //
+  // paper_origin is subtracted back out: the ⇱ button jogs the carriage to
+  // where the sheet sits on the bed (config paper_origin_x/y_mm), which lands
+  // in manual_origin_offset — but this canvas *is* the sheet, so that move is
+  // the zero point, not a shift of the drawing across it. Only a jog past the
+  // paper origin, or a mid-plot nudge, actually moves the ink on the paper.
   function activeRunDelta(state, job) {
     if (!job || job.job_id !== state.active_id) return { dx: 0, dy: 0 };
     return {
-      dx: (state.manual_origin_offset_x_mm || 0) + (state.origin_nudge_x_mm || 0),
-      dy: (state.manual_origin_offset_y_mm || 0) + (state.origin_nudge_y_mm || 0),
+      dx: (state.manual_origin_offset_x_mm || 0) + (state.origin_nudge_x_mm || 0) - settings.paper_origin_x_mm,
+      dy: (state.manual_origin_offset_y_mm || 0) + (state.origin_nudge_y_mm || 0) - settings.paper_origin_y_mm,
     };
   }
 
@@ -346,6 +352,8 @@
       settings.stroke_width_px = data.draw_stream_stroke_width_px ?? FALLBACK_STROKE_WIDTH_PX;
       settings.background = data.draw_stream_background === "white" ? "white" : "black";
       settings.max_resolution_px = data.draw_stream_max_resolution_px > 0 ? data.draw_stream_max_resolution_px : 2560;
+      settings.paper_origin_x_mm = data.machine_paper_origin_x_mm || 0;
+      settings.paper_origin_y_mm = data.machine_paper_origin_y_mm || 0;
     } catch (e) {}
   }
 

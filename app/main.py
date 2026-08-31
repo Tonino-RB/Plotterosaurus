@@ -1192,6 +1192,12 @@ class MachineProfile(BaseModel):
     # How the plot worker reacts if correcting skew_deg would push ink past
     # the page edge — see config.MACHINE_SKEW_MODE / app.axis_skew.
     skew_mode: Literal["clip", "absorb"] = "clip"
+    # Where the sheet's top-left corner sits on the bed, mm from the machine's
+    # own corner — a deliberately non-zero offset so a skew / nudge / optical-
+    # registration correction has room before the near edge. Drives the preview
+    # and the toolbar's "jog to paper origin" button; never the declared origin.
+    paper_origin_x_mm: float = Field(0.0, ge=0.0)
+    paper_origin_y_mm: float = Field(0.0, ge=0.0)
 
 
 class SettingsUpdate(BaseModel):
@@ -1212,9 +1218,6 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
     display_unit: Literal["auto", "mm", "cm", "in"] | None = None
-    move_shortcut_x_mm: float | None = Field(None, ge=0.0, le=2000.0)
-    move_shortcut_y_mm: float | None = Field(None, ge=0.0, le=2000.0)
-    move_shortcut_set_origin: bool | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
     # of a named machine now, not a global override (see config.MACHINES).
@@ -2063,7 +2066,8 @@ def requeue_job(job_id: str):
                      progress_total_seconds=None,
                      distance_pendown_m=None,
                      distance_total_m=None,
-                     pen_lifts=None)
+                     pen_lifts=None,
+                     jog_hint_dx_mm=None, jog_hint_dy_mm=None)
     fresh = state.get_job(job_id)
     optimize_queue.enqueue_for_job(fresh)
     plan_queue.enqueue(fresh)
@@ -2445,18 +2449,18 @@ def api_pen_jog_home():
     return pen_jog_home()
 
 
-@app.post("/pen/jog-shortcut")
-def pen_jog_shortcut():
+@app.post("/pen/jog-paper-origin")
+def pen_jog_paper_origin():
     try:
-        plot_worker.manual_jog_shortcut()
+        plot_worker.jog_to_paper_origin()
     except RuntimeError as e:
         raise _worker_error(e)
     return {"ok": True}
 
 
-@app.post("/api/v1/pen/jog-shortcut", dependencies=[Depends(require_api_key)])
-def api_pen_jog_shortcut():
-    return pen_jog_shortcut()
+@app.post("/api/v1/pen/jog-paper-origin", dependencies=[Depends(require_api_key)])
+def api_pen_jog_paper_origin():
+    return pen_jog_paper_origin()
 
 
 @app.post("/pen/set-origin")
@@ -2642,6 +2646,9 @@ def _settings_payload() -> dict:
     snap["machine_skew_deg"] = config.MACHINE_SKEW_DEG
     snap["machine_skew_true_axis"] = config.MACHINE_SKEW_TRUE_AXIS
     snap["machine_skew_mode"] = config.MACHINE_SKEW_MODE
+    machine = config.active_machine()
+    snap["machine_paper_origin_x_mm"] = machine.get("paper_origin_x_mm", 0.0)
+    snap["machine_paper_origin_y_mm"] = machine.get("paper_origin_y_mm", 0.0)
     return snap
 
 
@@ -2667,11 +2674,6 @@ def patch_settings(req: SettingsUpdate):
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()
-    if "machines" in updates or "active_machine_id" in updates:
-        # A smaller bed (or a different machine) can leave an already-parked
-        # carriage outside it without anything having moved, so the warning has
-        # to be re-read here as well as after every jog.
-        plot_worker.refresh_origin_bed_status()
     return _settings_payload()
 
 

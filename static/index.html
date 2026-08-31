@@ -78,7 +78,7 @@
         </div>
         <div class="jog-actions">
           <button id="jog-move-btn" type="button" class="jog-action-btn" data-i18n="controls.move" title="Move" aria-label="Move" data-i18n-title="controls.move" data-i18n-aria-label="controls.move">Move</button>
-          <button id="jog-shortcut-btn" type="button" class="jog-action-btn jog-shortcut-btn" title="Move to shortcut" aria-label="Move to shortcut" data-i18n-title="a11y.jog_shortcut" data-i18n-aria-label="a11y.jog_shortcut">⇱</button>
+          <button id="jog-shortcut-btn" type="button" class="jog-action-btn jog-shortcut-btn" title="Jog to paper origin" aria-label="Jog to paper origin" data-i18n-title="a11y.jog_paper_origin" data-i18n-aria-label="a11y.jog_paper_origin">⇱</button>
           <button id="jog-home-btn" type="button" class="jog-action-btn jog-home-btn" title="Return to Origin" aria-label="Return to origin" data-i18n-title="a11y.jog_home" data-i18n-aria-label="a11y.jog_home">⌂</button>
           <button id="jog-origin-btn" type="button" class="jog-action-btn jog-origin-btn" title="Set origin here" aria-label="Set origin here" data-i18n-title="a11y.jog_set_origin" data-i18n-aria-label="a11y.jog_set_origin">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -87,7 +87,6 @@
             </svg>
           </button>
         </div>
-        <p id="origin-bed-warning" class="origin-bed-warning" role="status" hidden></p>
       </div>
 
       <div id="pen-controls" class="control-col" role="group" aria-label="Pen and motors">
@@ -259,6 +258,18 @@
             </div>
           </div>
           <p class="muted" data-i18n="settings.machine.note">Measure what the pen can actually reach — the bed is the whole machine here, and anything past it is clipped at plot time. The presets are only starting points: rename, resize or delete any of them.</p>
+          <span class="field-label" data-i18n="settings.machine.paper_origin_label">Paper origin (mm from the bed corner)</span>
+          <div class="form-row">
+            <label class="field">
+              <span class="field-label">X</span>
+              <input type="number" id="settings-machine-paper-origin-x" min="0" step="0.1" value="0" />
+            </label>
+            <label class="field">
+              <span class="field-label">Y</span>
+              <input type="number" id="settings-machine-paper-origin-y" min="0" step="0.1" value="0" />
+            </label>
+          </div>
+          <p class="muted" data-i18n="settings.machine.paper_origin_note">Where the top-left corner of your paper usually sits on the bed. Shown as the white sheet on the grey bed in every preview, and the spot the ⇱ button jogs the carriage to. Keep it a little off 0, 0 so a skew, nudge or optical-registration correction has room before the near edge — it is not the plot origin, "Set origin here" still is.</p>
           <label class="field">
             <span class="field-label" data-i18n="settings.machine.skew_label">Skew angle (°)</span>
             <input type="number" id="settings-machine-skew" min="-5" max="5" step="0.001" value="0" />
@@ -302,31 +313,6 @@
               <span id="settings-skew-result" class="muted"></span>
             </div>
           </details>
-        </div>
-      </section>
-
-      <section class="card-section collapsed" data-section="shortcut">
-        <header class="card-section-head">
-          <span class="card-section-title" data-i18n="settings.shortcut.title">Shortcuts</span>
-          <span class="card-section-caret" aria-hidden="true">▼</span>
-        </header>
-        <div class="card-section-body">
-          <span class="field-label" data-i18n="settings.shortcut.move_label">Move shortcut (mm from the origin)</span>
-          <div class="form-row">
-            <label class="field">
-              <span class="field-label">X</span>
-              <input type="number" id="settings-shortcut-x" min="0" max="2000" step="0.1" value="6" />
-            </label>
-            <label class="field">
-              <span class="field-label">Y</span>
-              <input type="number" id="settings-shortcut-y" min="0" max="2000" step="0.1" value="6" />
-            </label>
-          </div>
-          <label class="inline-check">
-            <input type="checkbox" id="settings-shortcut-set-origin" />
-            <span data-i18n="settings.shortcut.set_origin">Set the origin there once the carriage arrives</span>
-          </label>
-          <p class="muted" data-i18n="settings.shortcut.note">Where the ⇱ button beside Move sends the carriage. The position is measured from the origin, not from where the pen currently sits, so pressing it twice changes nothing — unless the box above is ticked, which declares each arrival the new page corner.</p>
         </div>
       </section>
 
@@ -1016,6 +1002,7 @@
       </header>
       <div class="job-error" hidden>
         <span class="job-error-text"></span>
+        <button type="button" class="secondary job-error-nudge-btn" hidden></button>
       </div>
       <div class="job-error job-save-error" hidden></div>
       <div class="complexity-warning" hidden></div>

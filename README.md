@@ -26,7 +26,7 @@ Some specific things to be aware of:
 
 - **Watch the first run of any new setup.** Confirm the origin, and be ready to reach the power switch. Do not leave a plot unattended until you trust the setup.
 - **The pen-height and speed settings command the hardware directly.** Values outside what your machine tolerates can drive the pen into the paper or the bed.
-- **Placement is decided in software.** Check the on-screen preview and the machine-bounds warning before you commit good paper to a plot — artwork placed past the page or bed edge is clipped, not refused — see [Known limitations](#known-limitations).
+- **Placement is decided in software.** Check the on-screen preview and the machine-bounds warning before you commit good paper to a plot — see [Known limitations](#known-limitations) for the cases where artwork can end up clipped or off the page.
 - **There is no login.** Anyone who can reach the web port can move the machine. See [Network and access](#network-and-access).
 
 This software is not certified for any purpose, and is not suitable for any application where a failure could cause harm. If you are not comfortable with the above, do not use it.
@@ -50,6 +50,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Staged plotting: optional pause between layers for pen changes
 - No queue to manage: a job is `ready` from the moment it is created, Plot runs the topmost ready one, and the run ends with that job — so the paper can be changed with the machine genuinely idle
 - Paper presets (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
+- The preview canvas is the machine bed (grey, from the active profile), with the job's paper (white) drawn on it at the machine's configured "paper origin" — where the sheet's top-left corner usually sits — and the artwork on the paper
 - 4-sided margins, fit-content-to-page, and a per-job scale / rotation / X-Y offset transform
 - Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
 - Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
@@ -72,9 +73,10 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - A standalone calibration-file library (the gitignored `calibration/` folder) of reusable test SVGs, runnable the same way independent of any job
 - Fine origin nudge (X/Y, in mm) during a pen-change pause to correct for paper drift between layers — also physically jogs the carriage so you see/feel the correction
 - Manual jog d-pad + "Set Origin Here" to walk the carriage over the paper while idle and capture that position as the default offset for new jobs
+- One-press "jog to paper origin" (the ⇱ button) to walk the carriage from the bed corner to the machine's configured paper origin — a plain move, it does not set the origin; keep the paper origin a little off 0, 0 so a skew / nudge / optical-registration correction has room before the near edge
 - Manual pen up/down and motor enable/disable, usable any time the plotter isn't actively driving a plot (e.g. to move the carriage by hand)
-- Bounds protection that warns rather than blocks: a jog or nudge that puts the carriage past the machine bed edge goes through and is reported in the control bar, and the plot is clipped at the real bed edge instead of driven into the end stops. Only a move longer than the bed itself is refused — the driver would clip it while still reporting the full distance, leaving the position readout wrong. Running off the *page* is a crop, not an error
-- Live preview overlay (red dot + outline) showing exactly where the current jog/nudge places the artwork's origin and footprint on the page, before it's committed
+- Bounds protection: a nudge, jog, or leftover un-homed jog that would push the artwork's actual ink (not just its canvas) off the machine bed, or the carriage past the bed's far edge, is rejected up front, with a precise "nudge back by (x, y) mm" correction — surfaced as a one-click button on the job card if it blocks a plot from starting. Running off the *paper* but still on the bed is a crop, not an error, and a plot that still slips through is clipped at the real bed edge rather than driven into the end stops
+- Live preview overlay (red dot + outline) showing exactly where the current jog/nudge places the artwork's origin and footprint on the bed, before it's committed
 
 **Plot recording (optional — camera)**
 
@@ -95,7 +97,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Outgoing webhook notifications on layer/job completion — point it at ntfy, Home Assistant, or a Slack/Discord incoming webhook for a push/text/email
 - Multi-language UI (English, German, Spanish, French, Italian, Japanese, Korean, Dutch, Portuguese, Simplified Chinese), auto-detected from the browser, switchable in Settings
 - Configurable display unit (mm / cm / in) for the whole UI
-- Custom plotter bed size with optional paper auto-rotate, layered on top of the selected AxiDraw model — clips real travel to the custom size, never beyond the hardware's own limits
+- Named machine profiles, each with its own bed size, paper origin, optional paper auto-rotate and axis-skew correction, layered on top of the selected AxiDraw model — clips real travel to the profile's size, never beyond the hardware's own limits
 - Plot worker runs in a thread; preview and vpype optimization run in cancel-killable subprocesses, each behind their own single-worker queue so they never fight each other for CPU on the Pi
 - In-memory preview cache — same SVG + same params skips the ~20–30s planning pass
 - Graceful shutdown on service stop: pauses any in-flight plot so the pen is raised and the resume SVG is flushed

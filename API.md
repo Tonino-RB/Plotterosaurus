@@ -284,13 +284,11 @@ Idle-only. Three separate values describe where the carriage is relative to the 
 
 Both offsets are reported in the state snapshot as `manual_origin_offset_x_mm` / `_y_mm` and `origin_nudge_x_mm` / `_y_mm`.
 
-`origin_past_bed_x_mm` / `_y_mm` report how far beyond the bed's far edge the carriage currently stands, per axis, `0.0` when inside — the declared origin plus both offsets, skew-corrected. Advisory: no move is refused for landing there, and a plot started from there is clipped at the bed edge rather than blocked.
-
 | Method | Path | What it does | 409 conditions |
 |---|---|---|---|
-| `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. Landing *past* the bed's far edge is allowed and reported instead (see `origin_past_bed_x_mm` below). | Not idle; a move longer than the bed itself; connection failure. |
+| `POST` | `/api/v1/pen/jog` | Move the carriage pen-up by `{"dx_mm": 5.0, "dy_mm": 0.0}` (either field optional, default `0.0`) and add it to the manual offset. A move that lands above/left of the declared origin is refused with code `jog_below_origin` unless you also send `"confirm_below_origin": true`. A move that would run the carriage past the bed's far edge is refused outright. | Not idle; past the bed's far edge; a move longer than the bed itself; connection failure. |
 | `POST` | `/api/v1/pen/jog-home` | Walk the carriage back to the declared origin, clearing the manual offset. No-op when the offset is already zero. | Not idle; connection failure. |
-| `POST` | `/api/v1/pen/jog-shortcut` | Walk the carriage to the Move-shortcut position — `move_shortcut_x_mm` / `_y_mm` in settings, measured from the declared origin, so a second call moves nothing. With `move_shortcut_set_origin` on, the arrival point is then declared the page's top-left corner (as if `/pen/set-origin` followed), which makes each call walk the shortcut afresh. No body. | Not idle; the shortcut lies past the bed's far edge (e.g. after switching to a smaller machine profile); connection failure. |
+| `POST` | `/api/v1/pen/jog-paper-origin` | Walk the carriage to the active machine profile's paper origin — `paper_origin_x_mm` / `_y_mm` on that machine, measured from the declared origin, so a second call moves nothing. A plain move: it never declares an origin (use `/pen/set-origin` for that). No body. | Not idle; the paper origin lies past the bed's far edge (e.g. after switching to a smaller machine profile); connection failure. |
 | `POST` | `/api/v1/pen/set-origin` | Declare wherever the carriage currently sits to be the page's top-left corner: the manual offset folds into the origin and resets to zero. Touches no hardware. | Not idle. |
 
 ### Calibration library
@@ -474,9 +472,7 @@ The first message after `accept()` is always a full `state` snapshot:
   "manual_origin_offset_x_mm": 0.0,
   "manual_origin_offset_y_mm": 0.0,
   "origin_nudge_x_mm": 0.0,
-  "origin_nudge_y_mm": 0.0,
-  "origin_past_bed_x_mm": 0.0,
-  "origin_past_bed_y_mm": 0.0
+  "origin_nudge_y_mm": 0.0
 }
 ```
 
@@ -519,9 +515,6 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "optimize_svg_linesort_default": true,
   "optimize_svg_reloop_default": true,
   "display_unit": null,                         // null | "mm" | "cm" | "in" — UI labels only
-  "move_shortcut_x_mm": 6.0,                    // 0–2000, the one-press jog target — see /api/v1/pen/jog-shortcut
-  "move_shortcut_y_mm": 6.0,                    // 0–2000
-  "move_shortcut_set_origin": false,            // Declare the arrival point the page corner too
   "machine_custom_enabled": false,              // Custom bed-size profile layered on plotter_model (UI/bounds only)
   "machine_width_mm": 297.0,
   "machine_height_mm": 420.0,
@@ -595,8 +588,6 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `optimize_svg_tolerance_default_mm` | float 0.01–10.0 |
 | `optimize_svg_linemerge_default`, `optimize_svg_linesimplify_default`, `optimize_svg_linesort_default`, `optimize_svg_reloop_default` | bool |
 | `display_unit` | `"mm"` \| `"cm"` \| `"in"` — UI display only. PATCH cannot clear it back to `null`; that state only exists before any value has been saved. |
-| `move_shortcut_x_mm`, `move_shortcut_y_mm` | number 0–2000 (mm from the declared origin). Non-negative so the shortcut can never need the `confirm_below_origin` that `/pen/jog-shortcut` has no body to send. |
-| `move_shortcut_set_origin` | bool |
 
 Out-of-range values return `400`. The API key cannot be set through this endpoint — to rotate it, edit `config.json` on the Pi and restart the service.
 

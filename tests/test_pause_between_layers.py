@@ -14,8 +14,8 @@ An origin nudge that outlived its run would silently offset the following
 plot, and because an AxiDraw has no home switches nothing would ever correct
 it: each run would inherit the sum of every nudge before it. The one thing
 that may cross into the next job is a nudge the hardware refused to walk back,
-and only as a manual jog — visible in the readout and in the bed warning,
-which is the opposite of silent.
+and only as a manual jog — visible in the readout and caught by the pre-flight
+check, which is the opposite of silent.
 """
 import pytest
 
@@ -26,8 +26,9 @@ from app import plot_worker, state
 def paused_job(monkeypatch):
     """An active job sitting at a pen-change pause, with the hardware stubbed.
 
-    A real SVG on disk, deliberately: the stage renders these tests compare are
-    made from it, and a stub would skip the rendering they are about.
+    A real SVG on disk, deliberately: `nudge_origin` refuses a delta that would
+    push the artwork off the bed, so it measures the document. Stubbing that
+    out would skip the guard these tests are partly about.
     """
     from app import main
 
@@ -64,12 +65,10 @@ def paused_job(monkeypatch):
     state.set_origin_nudge(0.0, 0.0)
     state.set_manual_origin_offset(0.0, 0.0)
     state.set_origin_base(0.0, 0.0)
-    state.set_origin_past_bed(0.0, 0.0)
     yield state.get_job(job["job_id"])
     state.set_origin_nudge(0.0, 0.0)
     state.set_manual_origin_offset(0.0, 0.0)
     state.set_origin_base(0.0, 0.0)
-    state.set_origin_past_bed(0.0, 0.0)
     state.set_active(None)
     state.remove_job(job["job_id"])
 
@@ -123,7 +122,7 @@ def test_a_nudge_that_cannot_be_walked_back_becomes_a_manual_jog(paused_job, mon
     What it must not do is drop the number. The carriage really is still
     standing where the nudge put it, so the drift happens either way; clearing
     the count only hides it. It moves to the manual jog instead — the
-    displacement the readout shows, the bed warning measures, and Return
+    displacement the readout shows, the pre-flight check measures, and Return
     to origin can walk back.
     """
     plot_worker.nudge_origin(2.0, 2.0)        # stored while the jog still works
@@ -137,16 +136,13 @@ def test_a_nudge_that_cannot_be_walked_back_becomes_a_manual_jog(paused_job, mon
     assert state.manual_origin_offset() == (2.0, 2.0)
 
 
-def test_the_bed_reading_measures_from_where_the_carriage_really_is(paused_job):
-    """A nudge that is trivially small can still be the one that reaches the rail.
+def test_the_bed_guard_measures_from_where_the_carriage_really_is(paused_job):
+    """A nudge that is trivially small can still be the one that hits the rail.
 
     The carriage stands at the declared origin (set_origin) plus the idle jog
-    that nothing has walked back, and the nudge is added on top of both — so
-    the reading has to see all three. Measuring the nudge on its own against
-    the full bed reports a machine already parked at its far end stop as clean.
-
-    The nudge itself goes through: it is refused for nothing but a move longer
-    than the bed now, and the plot is clipped at the real edge instead.
+    that nothing has walked back, and the nudge is added on top of both.
+    Measuring the nudge on its own against the full bed lets a machine already
+    parked near its far end stop accept a move straight into it.
     """
     bed_w_mm, _ = plot_worker.machine_bounds_mm()
     state.set_origin_base(bed_w_mm - 5.0, 0.0)    # origin declared near the rail
@@ -154,9 +150,9 @@ def test_the_bed_reading_measures_from_where_the_carriage_really_is(paused_job):
 
     # 3mm is nothing against a bed this wide; from where the carriage actually
     # stands it is 1mm past the end stop.
-    plot_worker.nudge_origin(3.0, 0.0)
-    assert state.origin_nudge() == (3.0, 0.0)
-    assert state.origin_past_bed() == pytest.approx((1.0, 0.0))
+    with pytest.raises(RuntimeError, match="machine bed edge"):
+        plot_worker.nudge_origin(3.0, 0.0)
+    assert state.origin_nudge() == (0.0, 0.0)     # refused outright, nothing stored
 
 
 def test_nudging_is_refused_when_no_job_is_paused():
@@ -233,64 +229,3 @@ def test_a_calibration_plot_leaves_the_job_where_it_was(paused_job):
     after = state.get_job(job_id)
     assert after["status"] == "awaiting_pen_change"
     assert after.get("current_stage_index", 0) == before
-
-
-def test_a_nudge_does_not_reach_the_geometry(paused_job, monkeypatch):
-    """The nudge positions the pen; it never re-renders the drawing.
-
-    An AxiDraw has no home switches, so the carriage jog in `nudge_origin` is
-    the whole correction — pyaxidraw reads wherever the carriage stands as the
-    next stage's zero. Folding the nudge into `transform_to_paper` as well
-    would apply it twice, landing the remaining layers at double the distance
-    the user dialled in. The stage SVG handed to the driver therefore has to
-    come out byte-identical with and without a nudge standing.
-    """
-    from app import main
-
-    svg_path = main.UPLOAD_DIR / "s.svg"
-    job_id = paused_job["job_id"]
-
-    def render_stage_svg():
-        """Drive the real staged loop for one stage and keep what it produced."""
-        handed = []
-
-        def fake_run_stage(current_svg, mode, job, stage=None):
-            handed.append(current_svg.read_bytes())
-            return plot_worker.STOPPED_COMPLETED, ""
-
-        monkeypatch.setattr(plot_worker, "_run_stage", fake_run_stage)
-        # The loop runs the job to completion; put it back to a plottable
-        # status first so it can be driven a second time.
-        if state.get_job(job_id)["status"] != "awaiting_pen_change":
-            state.update_job(job_id, status="ready")
-        state.update_job(job_id, status="plotting", current_stage_index=0,
-                         stages=[{"layer_indices": [0], "labels": ["a"],
-                                  "status": "pending", "speed_pendown": 25,
-                                  "speed_penup": 75, "acceleration": 75}])
-        plot_worker._run_staged_loop_impl(job_id, svg_path, "plot")
-        assert handed, "the staged loop rendered nothing"
-        return handed[0]
-
-    plot_worker.nudge_origin(4.0, -3.0, confirm_below_origin=True)
-    assert state.origin_nudge() == (4.0, -3.0), "the nudge did not take"
-    with_nudge = render_stage_svg()
-
-    state.set_origin_nudge(0.0, 0.0)
-    without = render_stage_svg()
-
-    assert with_nudge == without, \
-        "the nudge changed the plotted geometry; it must only move the pen"
-
-
-def test_a_nudge_does_not_rewrite_the_jobs_placement(paused_job):
-    """The other half of the same rule: nothing about where the artwork sits on
-    the page is the nudge's to touch, so a replot tomorrow starts clean."""
-    placement_keys = ("transform_offset_x_mm", "transform_offset_y_mm",
-                      "transform_scale", "transform_rotation_deg",
-                      "fit_content", "paper_width_mm", "paper_height_mm",
-                      "margin_top_mm", "margin_right_mm",
-                      "margin_bottom_mm", "margin_left_mm")
-    before = {k: paused_job[k] for k in placement_keys}
-    plot_worker.nudge_origin(2.0, -1.5, confirm_below_origin=True)
-    after = state.get_job(paused_job["job_id"])
-    assert {k: after[k] for k in placement_keys} == before

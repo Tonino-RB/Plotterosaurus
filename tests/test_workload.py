@@ -116,33 +116,32 @@ def test_a_cold_ink_measurement_is_not_parsed_on_the_calling_thread(
     assert seen["nice"] >= os.getpriority(os.PRIO_PROCESS, 0) + workload.NICE
 
 
-def test_a_leftover_jog_no_longer_blocks_the_run(job_from_svg, monkeypatch):
-    """_run_job used to measure the drawing's ink before touching anything, to
-    fail the job if a leftover jog put the artwork off the page. That measure
-    was a full vpype parse on a cold cache, so every plot paid for it while the
-    card still read `ready`, and the one control for aiming the pen at real
-    paper could make a job unplottable. Both are gone: the run goes ahead and
-    the plot is clipped at the bed edge (plot_worker._apply_plot_bounds)."""
+def test_the_pre_flight_says_what_it_is_waiting_for(job_from_svg, monkeypatch):
+    """_run_job's bounds check blocks on that measurement before it changes
+    the job's status at all, so on a cold cache the card sat reading `ready`
+    with nothing on it for as long as the parse took — the one stage this UI
+    did not name."""
     job = job_from_svg(FIXTURE, optimize_svg=False)
     job_id = job["job_id"]
-    measured = []
-    monkeypatch.setattr(svg_utils, "measure_layers",
-                        lambda path: measured.append(path) or
-                        {0: {"rect": (10.0, 10.0, 90.0, 60.0), "length_mm": 120.0}})
-    # A leftover jog this wide puts the ink off the page whatever the drawing is.
-    state.set_manual_origin_offset(300.0, 0.0)
+    seen = []
+
+    def watched(path):
+        seen.append((state.get_job(job_id) or {}).get("plan_status"))
+        return {0: {"rect": (10.0, 10.0, 90.0, 60.0), "length_mm": 120.0}}
+
+    monkeypatch.setattr(svg_utils, "measure_layers", watched)
+    # A leftover jog this wide puts the ink off the bed whatever the drawing
+    # is, so the pre-flight rejects and the run stops before any hardware.
+    state.set_manual_origin_offset(3000.0, 0.0)
     try:
         plot_worker._run_job(job_id)
     finally:
         state.set_manual_origin_offset(0.0, 0.0)
-        state.set_origin_past_bed(0.0, 0.0)
 
+    assert seen == ["measuring"], f"status during the measurement: {seen}"
     after = state.get_job(job_id)
-    assert after["status"] != "failed" or "off the page" not in (after["error"] or ""), \
-        "the removed pre-flight is still blocking the run"
-    # The run reached its own planning phase instead of stopping at a bounds
-    # check, which is the whole difference being pinned here.
-    assert after["plan_status"] == "ready", after["plan_status"]
+    assert after["status"] == "failed", "the pre-flight let the run through"
+    assert after["plan_status"] is None, "left a stale plan_status behind"
 
 
 def test_an_export_conversion_waits_its_turn_and_runs_niced(client, job_from_svg,

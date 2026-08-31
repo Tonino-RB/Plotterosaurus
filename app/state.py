@@ -42,9 +42,8 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     # `plotting` is allowed straight from ready/awaiting_optimize/optimizing
     # so the plot worker can skip the `planning` status when the preview is
     # already cached (the plan queue ran ahead of the user's Plot click).
-    # "failed" straight from "ready" covers the phases that run before the
-    # job's status moves off it — the optimize phase and the complexity guard
-    # can both reject a job before planning starts.
+    # "failed" straight from "ready" covers _run_job's pre-flight bounds
+    # check, which can reject a job before optimize/plan ever starts.
     # "cancelled" straight from "ready" covers a cancel that lands during the
     # optimize/plan phases: the plan-cache fast path never flips the job to
     # `planning`, so it is still reading as ready when the worker picks the
@@ -170,16 +169,9 @@ _manual_origin_offset: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Where on the bed the page's top-left corner has been declared to be (see
 # plot_worker.set_origin) — (0, 0), the machine's own corner, until the user
 # redefines it. _manual_origin_offset above is measured from *this*, not from
-# the machine corner, so only the reading that places the carriage on the bed
-# has to add the two back together. Session-only, same as the rest.
+# the machine corner, so only the guard that keeps the carriage clear of the
+# far rail has to add the two back together. Session-only, same as the rest.
 _origin_base: dict = {"x_mm": 0.0, "y_mm": 0.0}
-# How far past the bed's far edge the carriage currently stands, per axis, in
-# mm — 0.0 on an axis that is still inside. Published for the top control bar's
-# warning; recomputed by plot_worker.refresh_origin_bed_status() whenever any of
-# the three values above changes, or the machine profile does. Advisory only:
-# nothing is refused for being past the edge, the driver's travel bounds clip
-# the plot instead (see plot_worker._apply_bed_size).
-_origin_past_bed: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.
 _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
@@ -387,8 +379,6 @@ def snapshot() -> dict:
         "origin_nudge_y_mm": _origin_nudge["y_mm"],
         "manual_origin_offset_x_mm": _manual_origin_offset["x_mm"],
         "manual_origin_offset_y_mm": _manual_origin_offset["y_mm"],
-        "origin_past_bed_x_mm": _origin_past_bed["x_mm"],
-        "origin_past_bed_y_mm": _origin_past_bed["y_mm"],
         "recording_status": _recording["status"],
         "recording_job_id": _recording["job_id"],
         "optical_reg": dict(_optical_reg, ready=_optical_reg_ready),
@@ -465,6 +455,13 @@ def _make_record(data: dict) -> dict:
         # unaffected. Cleared with "error" on requeue.
         "error_code": None,
         "error_params": None,
+        # Set alongside "error" only when the job was blocked by a leftover
+        # manual jog (see plot_worker._run_job / _delta_correction_mm): the
+        # exact (dx, dy) nudge that would bring the artwork back onto the
+        # bed, so the UI can offer a "nudge back" button instead of forcing
+        # a full return-to-origin. Cleared on requeue.
+        "jog_hint_dx_mm": None,
+        "jog_hint_dy_mm": None,
         **data,
     }
 
@@ -597,18 +594,6 @@ def set_origin_base(x_mm: float, y_mm: float) -> None:
 
 def origin_base() -> tuple[float, float]:
     return _origin_base["x_mm"], _origin_base["y_mm"]
-
-
-def set_origin_past_bed(x_mm: float, y_mm: float) -> None:
-    global _origin_past_bed
-    if _origin_past_bed["x_mm"] == x_mm and _origin_past_bed["y_mm"] == y_mm:
-        return
-    _origin_past_bed = {"x_mm": x_mm, "y_mm": y_mm}
-    _broadcast()
-
-
-def origin_past_bed() -> tuple[float, float]:
-    return _origin_past_bed["x_mm"], _origin_past_bed["y_mm"]
 
 
 def set_recording(status: str, job_id: str | None) -> None:

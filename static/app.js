@@ -43,7 +43,6 @@ const jogMoveBtn = $("jog-move-btn");
 const jogShortcutBtn = $("jog-shortcut-btn");
 const jogHomeBtn = $("jog-home-btn");
 const jogOriginBtn = $("jog-origin-btn");
-const originBedWarning = $("origin-bed-warning");
 const calibrationFileRow = $("calibration-file-row");
 const calibrationFileSelect = $("calibration-file-select");
 const calibrationFileRunBtn = $("calibration-file-run-btn");
@@ -1077,6 +1076,12 @@ function previewStatusKey(job, ctx) {
   const svgInfo = (serverState.svgs || {})[job.svg_id];
   // Nothing on screen yet — the case that looked like a crash.
   if (!ctx.svg) return "preview.status.loading";
+  // The plot worker's pre-flight bounds check, waiting on the same ink
+  // measurement the readout below waits on — but from the server side, where
+  // this card's own copy of the ink can be current while the server's cache
+  // is cold (a restart empties it). The job still reads "ready" throughout,
+  // so this is the only thing that names it.
+  if (job.plan_status === "measuring") return "preview.status.measuring";
   if (job.optimize_svg && svgInfo) {
     if (svgInfo.status === "optimizing") return "preview.status.optimizing";
     if (svgInfo.status === "pending") return "preview.status.queued_optimize";
@@ -1267,6 +1272,9 @@ function createCardForJob(job) {
     });
   });
   card.querySelector(".export-download").addEventListener("click", () => exportJob(card, job.job_id));
+  card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
+    nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
+  );
 
   // Settings changes
   const paperInputs = [
@@ -1781,12 +1789,25 @@ function updateCard(card, job) {
   pill.className = `job-status-pill status ${job.status}`;
 
   const errorEl = card.querySelector(".job-error");
+  const nudgeBtn = card.querySelector(".job-error-nudge-btn");
   if (job.error) {
     card.querySelector(".job-error-text").textContent = jobErrorText(job);
     errorEl.hidden = false;
+    const hasHint = job.jog_hint_dx_mm != null && job.jog_hint_dy_mm != null;
+    nudgeBtn.hidden = !hasHint;
+    if (hasHint) {
+      const u = effectiveDisplayUnit();
+      nudgeBtn.textContent = t("card.nudge_back_btn", {
+        dx: fmtLength(job.jog_hint_dx_mm, u),
+        dy: fmtLength(job.jog_hint_dy_mm, u),
+      });
+      nudgeBtn.dataset.dx = job.jog_hint_dx_mm;
+      nudgeBtn.dataset.dy = job.jog_hint_dy_mm;
+    }
   } else {
     card.querySelector(".job-error-text").textContent = "";
     errorEl.hidden = true;
+    nudgeBtn.hidden = true;
   }
 
   // Disable editing when job is active
@@ -1926,41 +1947,41 @@ function effectiveDeltaForJob(job) {
   return { dx: 0, dy: 0 };
 }
 
-// Red dot + thin red outline on the preview: where the current delta (see
-// effectiveDeltaForJob) puts the geometry's own origin corner, and the
-// geometry's actual on-page footprint from there. Nothing refuses a plot for
-// running off the page any more, so this overlay is the only thing that shows
-// a jog or nudge before it prints — it is worth keeping accurate.
+// Red dot + thin red outline on the preview, both positioned against the bed:
+// where the current delta (see effectiveDeltaForJob) puts the page's origin
+// corner on the bed, and the artwork's actual footprint from there. With no
+// jog it sits on the bed's own corner; jogged to the paper origin it lands on
+// the drawn sheet; a leftover jog is what pushes it off the bed — which is
+// exactly what _run_job's pre-flight check refuses.
 function renderDeltaOverlay(card, job, footprint) {
   const dot = card.querySelector(".delta-dot");
   const square = card.querySelector(".delta-square");
   if (!dot || !square) return;
-  const w = job.paper_width_mm, h = job.paper_height_mm;
-  const validPage = w > 0 && h > 0;
+  const { bedW, bedH } = previewBedFrame(job);
+  const validBed = bedW > 0 && bedH > 0;
 
-  // The dot marks the delta itself — (dx, dy) as a raw coordinate on the
-  // page (0, 0 = the paper's own top-left, same as if there were no jog/
-  // nudge at all) — independent of where the geometry sits, so it stays
-  // meaningful even for a job with no geometry loaded yet.
+  // The dot marks the delta itself — (dx, dy) as a raw coordinate on the bed
+  // (0, 0 = the machine's own corner) — independent of where the geometry
+  // sits, so it stays meaningful even for a job with no geometry loaded yet.
   const { dx, dy } = effectiveDeltaForJob(job);
-  dot.hidden = !validPage;
-  if (validPage) {
-    dot.style.left = `${(dx / w) * 100}%`;
-    dot.style.top = `${(dy / h) * 100}%`;
+  dot.hidden = !validBed;
+  if (validBed) {
+    dot.style.left = `${(dx / bedW) * 100}%`;
+    dot.style.top = `${(dy / bedH) * 100}%`;
   }
 
-  // The square is the geometry's actual on-page footprint, delta included —
-  // where the artwork will really be, unlinked from the dot above.
-  if (!footprint || !validPage) {
+  // The square is the artwork's actual footprint on the bed, delta included —
+  // where the ink will really land, unlinked from the dot above.
+  if (!footprint || !validBed) {
     square.hidden = true;
     return;
   }
   const left = footprint.left + dx, top = footprint.top + dy;
   square.hidden = false;
-  square.style.left = `${(left / w) * 100}%`;
-  square.style.top = `${(top / h) * 100}%`;
-  square.style.width = `${(footprint.width / w) * 100}%`;
-  square.style.height = `${(footprint.height / h) * 100}%`;
+  square.style.left = `${(left / bedW) * 100}%`;
+  square.style.top = `${(top / bedH) * 100}%`;
+  square.style.width = `${(footprint.width / bedW) * 100}%`;
+  square.style.height = `${(footprint.height / bedH) * 100}%`;
 }
 
 // Advisory only: pyaxidraw clips anything past the travel bounds at plot time
@@ -2047,7 +2068,10 @@ function renderPreview(card, job) {
   if (!ctx || !ctx.svg) return;
   const previewEl = card.querySelector(".svg-preview");
   if (!previewEl.dataset.rendered) {
-    previewEl.innerHTML = `<div class="paper"><div class="paper-margins" hidden></div><div class="paper-content">${ctx.svg.text}</div><div class="pen-cursor" hidden></div><div class="delta-square" hidden></div><div class="delta-dot" hidden></div></div>`;
+    // The grey .bed is the frame-filling canvas now; the white .paper sits on
+    // it at the machine profile's paper origin. The pen cursor and jog/nudge
+    // overlay hang off the bed, since a jog is a move in bed space.
+    previewEl.innerHTML = `<div class="bed"><div class="paper"><div class="paper-margins" hidden></div><div class="paper-content">${ctx.svg.text}</div></div><div class="pen-cursor" hidden></div><div class="delta-square" hidden></div><div class="delta-dot" hidden></div></div>`;
     previewEl.dataset.rendered = "1";
   }
   card.querySelector(".svg-dims").textContent = `${formatDim(ctx.svg.width)} × ${formatDim(ctx.svg.height)}`;
@@ -2459,19 +2483,39 @@ function applyGridEnabledStyle(card) {
   card.querySelector(".grid-options").classList.toggle("disabled", !on);
 }
 
+// The paper's top-left corner on the bed, and the bed's own size, from the
+// active machine profile (see _settings_payload). Falls back to treating the
+// sheet as the whole bed while settings are still loading, which degrades to
+// the pre-bed preview rather than drawing nothing.
+function previewBedFrame(job) {
+  const bedW = appSettings.machine_effective_width_mm;
+  const bedH = appSettings.machine_effective_height_mm;
+  if (bedW > 0 && bedH > 0) {
+    return {
+      bedW, bedH,
+      pox: appSettings.machine_paper_origin_x_mm || 0,
+      poy: appSettings.machine_paper_origin_y_mm || 0,
+    };
+  }
+  return { bedW: job.paper_width_mm, bedH: job.paper_height_mm, pox: 0, poy: 0 };
+}
+
 function updatePreviewTransform(card, job) {
   const previewEl = card.querySelector(".svg-preview");
+  const bed = previewEl.querySelector(".bed");
   const paper = previewEl.querySelector(".paper");
   const content = previewEl.querySelector(".paper-content");
   const margins = previewEl.querySelector(".paper-margins");
   previewStatus(card, job);
-  if (!paper || !content) return;
+  if (!bed || !paper || !content) return;
   const ctx = cardCtx.get(job.job_id);
   if (!ctx || !ctx.svg) return;
 
   const w = job.paper_width_mm, h = job.paper_height_mm;
   if (w <= 0 || h <= 0) return;
-  paper.style.aspectRatio = `${w} / ${h}`;
+  const { bedW, bedH, pox, poy } = previewBedFrame(job);
+  if (bedW <= 0 || bedH <= 0) return;
+  bed.style.aspectRatio = `${bedW} / ${bedH}`;
 
   // Everything geometric comes from the server (see requestPlacement). Ask
   // for a fresh answer whenever the inputs have moved, and redraw when it
@@ -2496,11 +2540,14 @@ function updatePreviewTransform(card, job) {
   const bboxW = place.footprint_width_mm, bboxH = place.footprint_height_mm;
   const userScale = Math.max(0.01, Math.min(5, job.transform_scale ?? 1));
 
-  // Zoom the whole sheet so anything hanging off the paper still shows.
-  const contentLeft = place.center_x_mm - bboxW / 2;
-  const contentTop = place.center_y_mm - bboxH / 2;
-  const extentW = Math.max(w, contentLeft + bboxW) - Math.min(0, contentLeft);
-  const extentH = Math.max(h, contentTop + bboxH) - Math.min(0, contentTop);
+  // Zoom so the whole bed shows, plus anything hanging off it — the paper
+  // parked at (pox, poy), and the artwork on that paper.
+  const artLeft = pox + place.center_x_mm - bboxW / 2;
+  const artTop = poy + place.center_y_mm - bboxH / 2;
+  const extentLeft = Math.min(0, pox, artLeft);
+  const extentTop = Math.min(0, poy, artTop);
+  const extentW = Math.max(bedW, pox + w, artLeft + bboxW) - extentLeft;
+  const extentH = Math.max(bedH, poy + h, artTop + bboxH) - extentTop;
 
   const cs = getComputedStyle(previewEl);
   const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
@@ -2509,8 +2556,14 @@ function updatePreviewTransform(card, job) {
   const availH = previewEl.clientHeight - padY;
   if (availW <= 0 || availH <= 0) return;
   const mmToPx = Math.min(availW / extentW, availH / extentH);
-  paper.style.width = `${w * mmToPx}px`;
-  paper.style.height = `${h * mmToPx}px`;
+  bed.style.width = `${bedW * mmToPx}px`;
+  bed.style.height = `${bedH * mmToPx}px`;
+
+  // The sheet, placed on the bed at the machine profile's paper origin.
+  paper.style.left = `${(pox / bedW) * 100}%`;
+  paper.style.top = `${(poy / bedH) * 100}%`;
+  paper.style.width = `${(w / bedW) * 100}%`;
+  paper.style.height = `${(h / bedH) * 100}%`;
 
   content.style.left = `${(ml / w) * 100}%`;
   content.style.top = `${(mt / h) * 100}%`;
@@ -2523,13 +2576,14 @@ function updatePreviewTransform(card, job) {
   // transform applied in unrotated screen space, so the difference goes here.
   //
   // While this job is actually running, its live delta folds in too (see
-  // activeRunDelta): the same pure page-space translation the plotter is
-  // physically applying right now, so the preview matches where the pen
-  // really is rather than where the design was drawn. It snaps back the
-  // moment the job stops being active.
+  // activeRunDelta): the plotter's physical zero is the declared origin plus
+  // that delta (jog + nudge), measured from the bed's own corner — so shifting
+  // the artwork by (runDelta - paper origin) moves it from where it is drawn
+  // (on the parked sheet) to where the pen is really putting it on the bed. It
+  // snaps back the moment the job stops being active.
   const runDelta = activeRunDelta(job);
-  const dx = (place.center_x_mm - (ml + layoutW / 2)) + (runDelta ? runDelta.dx : 0);
-  const dy = (place.center_y_mm - (mt + layoutH / 2)) + (runDelta ? runDelta.dy : 0);
+  const dx = (place.center_x_mm - (ml + layoutW / 2)) + (runDelta ? runDelta.dx - pox : 0);
+  const dy = (place.center_y_mm - (mt + layoutH / 2)) + (runDelta ? runDelta.dy - poy : 0);
   content.style.transform =
     `translate(${dx * mmToPx}px, ${dy * mmToPx}px) ` +
     `rotate(${place.rotation_deg}deg) scale(${userScale})`;
@@ -3031,6 +3085,35 @@ async function requeueJob(id) {
   }
 }
 
+// Applies a job-card's suggested jog correction (see job.jog_hint_dx_mm/
+// jog_hint_dy_mm) via the same idle manual-jog endpoint as the top control
+// panel's Move buttons, then re-queues the job it was correcting — one
+// click both fixes the carriage position and puts the job back where
+// pressing Plot works again. The error banner (and this button with it)
+// disappears on its own once the requeue clears job.error.
+async function nudgeBack(jobId, dxStr, dyStr) {
+  const dx = parseFloat(dxStr) || 0;
+  const dy = parseFloat(dyStr) || 0;
+  try {
+    const res = await fetch("/pen/jog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Pre-confirmed: this correction can legitimately land above/left of
+      // the origin (the server aims for the design's own baseline overflow,
+      // not for a non-negative delta), and the below-origin prompt exists to
+      // catch aiming blind — the exact distance is printed on the button the
+      // user just clicked, so there's nothing left to warn about.
+      body: JSON.stringify({ dx_mm: dx, dy_mm: dy, confirm_below_origin: true }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+    const res2 = await fetch(`/jobs/${jobId}/requeue`, { method: "POST" });
+    if (!res2.ok) throw new Error(await readErr(res2));
+  } catch (e) {
+    topMessage.textContent = t("error.request_failed", { message: e.message });
+    topMessage.className = "error";
+  }
+}
+
 // "Save As": download the job's processed drawing in the chosen format. The
 // source is whatever GET /jobs/{id}/svg would serve (the vpype .opt.svg once
 // optimization has run, else the raw upload) — exported in its own
@@ -3427,13 +3510,13 @@ jogMoveBtn.addEventListener("click", () => {
   postJog(parseFloat(jogXInput.value) || 0, parseFloat(jogYInput.value) || 0, false);
 });
 
-// One press to the Move shortcut configured in Settings — an absolute spot
-// measured from the origin, so a second press moves nothing (see
-// plot_worker.manual_jog_shortcut). Whether arriving also declares that spot
-// the new origin is part of that same setting, not decided here.
+// One press to the active machine's configured paper origin — where the
+// sheet's top-left corner sits on the bed. An absolute spot measured from the
+// declared origin, so a second press moves nothing, and it never declares an
+// origin of its own (see plot_worker.jog_to_paper_origin).
 jogShortcutBtn.addEventListener("click", async () => {
   try {
-    const res = await fetch("/pen/jog-shortcut", { method: "POST" });
+    const res = await fetch("/pen/jog-paper-origin", { method: "POST" });
     if (!res.ok) throw new Error(await readErr(res));
     flashJogResult(jogShortcutBtn, true);
   } catch (e) {
@@ -3604,24 +3687,6 @@ function applyTopControls() {
   jogOriginBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
   jogYReadout.textContent = (s.manual_origin_offset_y_mm ?? 0).toFixed(1);
-
-  // How far past the bed's far edge the carriage is standing, counting the
-  // declared origin, the Move offset and any pen-change nudge together (the
-  // server does that sum — see plot_worker.refresh_origin_bed_status — because
-  // origin_base and the skew correction aren't available here). Advisory: the
-  // move that got here wasn't refused, and the plot is clipped at the rail
-  // rather than blocked, which is what the message has to say.
-  const pastX = s.origin_past_bed_x_mm ?? 0;
-  const pastY = s.origin_past_bed_y_mm ?? 0;
-  originBedWarning.hidden = !(pastX > 0 || pastY > 0);
-  if (!originBedWarning.hidden) {
-    const u = effectiveDisplayUnit();
-    originBedWarning.textContent = t("origin.bed_warning", {
-      x: formatLengthValue(pastX, u),
-      y: formatLengthValue(pastY, u),
-      unit: u,
-    });
-  }
 
   // Pen up/down: only refused while a real plot_run is actively driving the
   // pen (mirrors plot_worker's _current_ad guard) — enabled otherwise,
@@ -3865,9 +3930,6 @@ const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
 const settingsPenPosUp = $("settings-pen-pos-up");
 const settingsPenPosDown = $("settings-pen-pos-down");
-const settingsShortcutX = $("settings-shortcut-x");
-const settingsShortcutY = $("settings-shortcut-y");
-const settingsShortcutSetOrigin = $("settings-shortcut-set-origin");
 const settingsMachineSelect = $("settings-machine-select");
 const settingsMachineAdd = $("settings-machine-add");
 const settingsMachineDelete = $("settings-machine-delete");
@@ -3876,6 +3938,8 @@ const settingsMachineWidth = $("settings-machine-width");
 const settingsMachineHeight = $("settings-machine-height");
 const settingsMachineAutoRotate = $("settings-machine-auto-rotate");
 const settingsMachineSkew = $("settings-machine-skew");
+const settingsMachinePaperOriginX = $("settings-machine-paper-origin-x");
+const settingsMachinePaperOriginY = $("settings-machine-paper-origin-y");
 const settingsMachineSkewAxis = $("settings-machine-skew-axis");
 const settingsMachineSkewMode = $("settings-machine-skew-mode");
 const settingsSkewSide = $("settings-skew-side");
@@ -3970,6 +4034,8 @@ function applyAppSettings(data) {
     machine_auto_rotate: data.machine_auto_rotate ?? appSettings.machine_auto_rotate,
     machine_effective_width_mm: data.machine_effective_width_mm ?? appSettings.machine_effective_width_mm,
     machine_effective_height_mm: data.machine_effective_height_mm ?? appSettings.machine_effective_height_mm,
+    machine_paper_origin_x_mm: data.machine_paper_origin_x_mm ?? appSettings.machine_paper_origin_x_mm,
+    machine_paper_origin_y_mm: data.machine_paper_origin_y_mm ?? appSettings.machine_paper_origin_y_mm,
     webhook_url: data.webhook_url ?? appSettings.webhook_url,
     webhook_on_layer_complete: data.webhook_on_layer_complete ?? appSettings.webhook_on_layer_complete,
     webhook_on_job_complete: data.webhook_on_job_complete ?? appSettings.webhook_on_job_complete,
@@ -4076,9 +4142,6 @@ async function openSettings() {
     settingsOptimizeReloop.checked = data.optimize_svg_reloop_default !== false;
     settingsOptimizeTolerance.value = (data.optimize_svg_tolerance_default_mm ?? 0.10).toFixed(2);
     settingsDisplayUnit.value = data.display_unit || "auto";
-    settingsShortcutX.value = String(data.move_shortcut_x_mm ?? 6);
-    settingsShortcutY.value = String(data.move_shortcut_y_mm ?? 6);
-    settingsShortcutSetOrigin.checked = !!data.move_shortcut_set_origin;
     if (settingsLanguage) settingsLanguage.value = I18N.getLanguage();
     applySettingsOptimizeEnabledStyle();
     loadMachineDraft(data);
@@ -4119,9 +4182,6 @@ async function saveSettings() {
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
       display_unit: settingsDisplayUnit.value,
-      move_shortcut_x_mm: parseFloat(settingsShortcutX.value) || 0,
-      move_shortcut_y_mm: parseFloat(settingsShortcutY.value) || 0,
-      move_shortcut_set_origin: settingsShortcutSetOrigin.checked,
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
       webhook_on_job_complete: settingsWebhookOnJobComplete.checked,
@@ -4227,6 +4287,8 @@ function loadMachineFields() {
   settingsMachineWidth.value = machine.width_mm;
   settingsMachineHeight.value = machine.height_mm;
   setSegmentedValue(settingsMachineAutoRotate, machine.auto_rotate || "off");
+  settingsMachinePaperOriginX.value = machine.paper_origin_x_mm ?? 0;
+  settingsMachinePaperOriginY.value = machine.paper_origin_y_mm ?? 0;
   settingsMachineSkew.value = machine.skew_deg ?? 0;
   setSegmentedValue(settingsMachineSkewAxis, machine.skew_true_axis || "x");
   setSegmentedValue(settingsMachineSkewMode, machine.skew_mode || "clip");
@@ -4244,8 +4306,13 @@ function captureMachineFields() {
   machine.height_mm = parseFloat(settingsMachineHeight.value) || machine.height_mm;
   machine.auto_rotate = getSegmentedValue(settingsMachineAutoRotate, "off");
   // Not the `|| fallback` the dimensions use: 0 is both falsy and the value
-  // this field holds on every machine that isn't skewed, so that pattern
-  // would make "back to no correction" the one edit you can't save.
+  // these fields hold on a machine whose paper sits in the bed corner / that
+  // isn't skewed, so that pattern would make "back to zero" the one edit you
+  // can't save.
+  const px = parseFloat(settingsMachinePaperOriginX.value);
+  const py = parseFloat(settingsMachinePaperOriginY.value);
+  machine.paper_origin_x_mm = Number.isFinite(px) ? Math.max(0, px) : 0;
+  machine.paper_origin_y_mm = Number.isFinite(py) ? Math.max(0, py) : 0;
   const skew = parseFloat(settingsMachineSkew.value);
   machine.skew_deg = Number.isFinite(skew)
     ? Math.max(-SKEW_DEG_MAX, Math.min(SKEW_DEG_MAX, skew))
@@ -4291,13 +4358,15 @@ settingsMachineAdd.addEventListener("click", () => {
     width_mm: base ? base.width_mm : 430,
     height_mm: base ? base.height_mm : 297,
     auto_rotate: "off",
-    // Skew belongs to the physical machine, not to the profile it was copied
-    // from, so a new one starts unmeasured even when cloned from a
-    // calibrated entry — inheriting it would silently misdescribe a
-    // different plotter.
+    // Skew and paper origin belong to the physical machine / setup, not to the
+    // profile they were copied from, so a new one starts unmeasured and at the
+    // bed corner even when cloned from a configured entry — inheriting them
+    // would silently misdescribe a different plotter.
     skew_deg: 0,
     skew_true_axis: "x",
     skew_mode: "clip",
+    paper_origin_x_mm: 0,
+    paper_origin_y_mm: 0,
   };
   machineDraft.push(machine);
   machineDraftActiveId = machine.id;
@@ -5164,20 +5233,20 @@ function updatePenCursor(msg) {
   const cursor = active.querySelector(".pen-cursor");
   const job = serverState.queue.find((j) => j.job_id === serverState.active_id);
   if (!cursor || !job) return;
-  const w = job.paper_width_mm, h = job.paper_height_mm;
+  const { bedW, bedH } = previewBedFrame(job);
   // This fork never sets ad.options.auto_rotate, so it stays at pyaxidraw's
   // own default (False, see axidraw_conf.py) — the physical pen frame is
   // never rotated relative to the document, and phys_x/phys_y map straight
   // onto the document's own top-left-origin frame. That frame is anchored
   // wherever plot_setup() started (i.e. it excludes any jog/nudge — verified
   // empirically: phys_x stays within the artwork's own extent regardless of
-  // an active manual jog), the same frame the *undelta-shifted* design sits
-  // in — so add the same live delta applied to the preview content (see
-  // updatePreviewTransform's runDelta) or the cursor drifts off the artwork
-  // the moment there's an active jog/nudge.
+  // an active manual jog). The cursor hangs off the bed now, and the page's
+  // own origin sits at the declared origin plus the live jog/nudge in bed
+  // space — so add that same runDelta (the shift updatePreviewTransform gives
+  // the artwork) or the cursor drifts off it the moment there's a jog/nudge.
   const runDelta = activeRunDelta(job) || { dx: 0, dy: 0 };
-  const leftPct = ((msg.x_mm + runDelta.dx) / w) * 100;
-  const topPct = ((msg.y_mm + runDelta.dy) / h) * 100;
+  const leftPct = ((msg.x_mm + runDelta.dx) / bedW) * 100;
+  const topPct = ((msg.y_mm + runDelta.dy) / bedH) * 100;
   cursor.hidden = false;
   cursor.style.left = `${leftPct}%`;
   cursor.style.top = `${topPct}%`;

@@ -203,6 +203,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
   border-top: 1px solid #fecaca;
 }
 .job-error[hidden] { display: none; }
+.job-error-nudge-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+.job-error-nudge-btn[hidden] { display: none; }
+
 /* Advisory, not a failure: amber rather than the red of .job-error. The plot
    was refused, but the card goes on to say which setting would make it work,
    so this reads as guidance rather than a dead end. */
@@ -338,10 +345,20 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 .preview-status.done .preview-status-spinner { display: none; }
 .preview-status.fading { opacity: 0; transition: opacity 0.6s ease; }
 
-.paper {
+/* The machine bed: the grey surface the preview is framed around, sized to the
+   active machine profile. The white .paper sits on it at the profile's
+   configured paper origin (see updatePreviewTransform). The pen cursor and the
+   jog/nudge overlay are positioned against the bed too, since a jog is a move
+   in bed space. */
+.bed {
   position: relative;
+  background: #c7c2b6;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12), 0 1px 3px rgba(0,0,0,0.18);
+}
+.paper {
+  position: absolute;
   background: #fff;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
 .paper-margins {
   position: absolute;
@@ -381,8 +398,8 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 .pen-cursor.pen-down { background: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 2px 4px rgba(0,0,0,0.2); }
 
 /* Delta dot + geometry-footprint square (see renderDeltaOverlay): where the
-   current manual jog / origin nudge places the artwork's origin corner, and
-   its actual on-page footprint from there — same numbers the pre-flight
+   current manual jog / origin nudge places the artwork's origin corner on the
+   bed, and its actual footprint from there — same numbers the pre-flight
    bounds check uses (see _delta_correction_mm), shown before the fact. */
 .delta-dot {
   position: absolute;
@@ -902,21 +919,6 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-
-/* Advisory, same amber as .complexity-warning: the move that got here was
-   allowed, and the plot is clipped at the bed edge rather than blocked, so
-   this is guidance rather than a failure. */
-.origin-bed-warning {
-  margin: 0.35rem 0 0;
-  padding: 0.35rem 0.5rem;
-  max-width: 16rem;
-  background: #fef3c7;
-  color: #92400e;
-  border-radius: 4px;
-  font-size: 0.65rem;
-  line-height: 1.35;
-}
-.origin-bed-warning[hidden] { display: none; }
 
 .jog-inputs {
   display: flex;
