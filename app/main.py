@@ -2063,8 +2063,7 @@ def requeue_job(job_id: str):
                      progress_total_seconds=None,
                      distance_pendown_m=None,
                      distance_total_m=None,
-                     pen_lifts=None,
-                     jog_hint_dx_mm=None, jog_hint_dy_mm=None)
+                     pen_lifts=None)
     fresh = state.get_job(job_id)
     optimize_queue.enqueue_for_job(fresh)
     plan_queue.enqueue(fresh)
@@ -2668,6 +2667,11 @@ def patch_settings(req: SettingsUpdate):
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()
+    if "machines" in updates or "active_machine_id" in updates:
+        # A smaller bed (or a different machine) can leave an already-parked
+        # carriage outside it without anything having moved, so the warning has
+        # to be re-read here as well as after every jog.
+        plot_worker.refresh_origin_bed_status()
     return _settings_payload()
 
 

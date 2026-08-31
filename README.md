@@ -26,7 +26,7 @@ Some specific things to be aware of:
 
 - **Watch the first run of any new setup.** Confirm the origin, and be ready to reach the power switch. Do not leave a plot unattended until you trust the setup.
 - **The pen-height and speed settings command the hardware directly.** Values outside what your machine tolerates can drive the pen into the paper or the bed.
-- **Placement is decided in software.** Check the on-screen preview and the machine-bounds warning before you commit good paper to a plot — see [Known limitations](#known-limitations) for the cases where artwork can end up clipped or off the page.
+- **Placement is decided in software.** Check the on-screen preview and the machine-bounds warning before you commit good paper to a plot — artwork placed past the page or bed edge is clipped, not refused — see [Known limitations](#known-limitations).
 - **There is no login.** Anyone who can reach the web port can move the machine. See [Network and access](#network-and-access).
 
 This software is not certified for any purpose, and is not suitable for any application where a failure could cause harm. If you are not comfortable with the above, do not use it.
@@ -73,7 +73,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Fine origin nudge (X/Y, in mm) during a pen-change pause to correct for paper drift between layers — also physically jogs the carriage so you see/feel the correction
 - Manual jog d-pad + "Set Origin Here" to walk the carriage over the paper while idle and capture that position as the default offset for new jobs
 - Manual pen up/down and motor enable/disable, usable any time the plotter isn't actively driving a plot (e.g. to move the carriage by hand)
-- Bounds protection: a nudge, jog, or leftover un-homed jog that would push the artwork's actual ink (not just its canvas) off the page or the carriage past the machine bed edge is rejected up front, with a precise "nudge back by (x, y) mm" correction — surfaced as a one-click button on the job card if it blocks a plot from starting
+- Bounds protection that warns rather than blocks: a jog or nudge that puts the carriage past the machine bed edge goes through and is reported in the control bar, and the plot is clipped at the real bed edge instead of driven into the end stops. Only a move longer than the bed itself is refused — the driver would clip it while still reporting the full distance, leaving the position readout wrong. Running off the *page* is a crop, not an error
 - Live preview overlay (red dot + outline) showing exactly where the current jog/nudge places the artwork's origin and footprint on the page, before it's committed
 
 **Plot recording (optional — camera)**

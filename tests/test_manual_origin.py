@@ -13,8 +13,13 @@ of them. That separation is the whole design — Set origin folds the move into
 the base, the nudge belongs to one run and is walked back at the end of it,
 and neither may disturb the other's number. These tests pin the separation
 down, and pin down the two rules that keep the stored numbers honest: nothing
-is recorded unless the hardware actually moved, and nothing is accepted that
-the driver would silently clip.
+is recorded unless the hardware actually moved, and no move is accepted that
+the driver would silently clip while reporting the full distance.
+
+Standing past the bed's far edge is not one of those rules. It used to be
+refused outright on both the move and the nudge, which made the pen impossible
+to aim at a sheet taped near the rail; it is reported now (state.origin_past_bed)
+and the plot is clipped at the real edge instead.
 """
 import math
 
@@ -48,6 +53,7 @@ def _reset():
     state.set_origin_nudge(0.0, 0.0)
     state.set_manual_origin_offset(0.0, 0.0)
     state.set_origin_base(0.0, 0.0)
+    state.set_origin_past_bed(0.0, 0.0)
 
 
 def triple():
@@ -75,8 +81,8 @@ def idle(monkeypatch):
 def paused(monkeypatch):
     """An active job at a pen-change pause; yields (job, move log).
 
-    A real SVG on disk, deliberately: nudge_origin refuses a delta that would
-    push the artwork off the page, so it measures the document.
+    A real SVG on disk, deliberately: the stage rendering and the ink
+    measurement behind "absorb" mode both read it.
     """
     (main.UPLOAD_DIR / "mo.svg").write_text(SVG)
     moves = []
@@ -116,7 +122,7 @@ def test_move_is_idle_only(idle):
 
 
 def test_a_move_the_plotter_refused_is_not_recorded(idle, monkeypatch):
-    """The readout, the pre-flight check and Return to Origin all read this
+    """The readout, the bed warning and Return to Origin all read this
     number. Recording a move that never happened points all three at a place
     the pen is not, and Return to Origin would then drive the carriage that
     far *away* from the real origin."""
@@ -138,13 +144,26 @@ def test_a_walk_back_the_plotter_refused_keeps_the_offset(idle, monkeypatch):
 
 # Bed limits -------------------------------------------------------------------
 
-def test_move_past_the_far_edge_is_refused_from_where_the_carriage_is(idle):
+def test_move_past_the_far_edge_is_allowed_and_reported(idle):
+    """Landing past the bed used to be refused outright, which made the pen
+    impossible to aim at a sheet taped near the rail. It goes through now and
+    is reported instead — the plot is clipped at the edge (see
+    plot_worker._apply_plot_bounds) rather than driven into the end stop."""
     bed_w, _ = plot_worker.machine_bounds_mm()
     state.set_origin_base(bed_w - 5.0, 0.0)
-    with pytest.raises(RuntimeError, match="machine bed edge"):
-        plot_worker.manual_jog(6.0, 0.0)
-    assert state.manual_origin_offset() == (0.0, 0.0)
-    assert idle == []
+    plot_worker.manual_jog(6.0, 0.0)
+    assert idle == [(6.0, 0.0)]
+    assert state.manual_origin_offset() == (6.0, 0.0)
+    assert state.origin_past_bed() == pytest.approx((1.0, 0.0))
+
+
+def test_coming_back_inside_the_bed_clears_the_warning(idle):
+    bed_w, _ = plot_worker.machine_bounds_mm()
+    state.set_origin_base(bed_w - 5.0, 0.0)
+    plot_worker.manual_jog(6.0, 0.0)
+    assert state.origin_past_bed()[0] > 0
+    plot_worker.manual_jog_home()
+    assert state.origin_past_bed() == (0.0, 0.0)
 
 
 def test_a_move_longer_than_the_bed_is_refused_however_it_is_confirmed(idle):
@@ -197,19 +216,19 @@ def test_set_origin_is_idempotent(idle):
     assert state.origin_base() == (30.0, 20.0)
 
 
-def test_set_origin_clears_what_the_preflight_check_measures(paused):
-    """The point of the button: after it, a plot no longer lands offset by
-    the jog that aimed it."""
-    job, _ = paused
-    svg = main.UPLOAD_DIR / "mo.svg"
-    state.set_manual_origin_offset(150.0, 0.0)
-    assert plot_worker._delta_correction_mm(job, svg, 150.0, 0.0) is not None
-    state.set_active(None)                     # back to idle
+def test_set_origin_leaves_the_bed_reading_alone(idle):
+    """It moves a number between two of the three, and the carriage not at all,
+    so the sum the bed warning measures has to come out unchanged — declaring
+    an origin must not invent or clear an overshoot."""
+    bed_w, _ = plot_worker.machine_bounds_mm()
+    state.set_origin_base(bed_w - 5.0, 0.0)
+    plot_worker.manual_jog(9.0, 0.0)
+    before = state.origin_past_bed()
+    assert before == pytest.approx((4.0, 0.0))
     plot_worker.set_origin()
-    mx, my = state.manual_origin_offset()
-    assert (mx, my) == (0.0, 0.0)
-    assert plot_worker._delta_correction_mm(job, svg, mx, my) is None
-    assert state.origin_base() == (150.0, 0.0)
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert state.origin_base() == (bed_w + 4.0, 0.0)
+    assert state.origin_past_bed() == pytest.approx(before)
 
 
 # Return to origin ------------------------------------------------------------
@@ -263,14 +282,17 @@ def test_a_nudge_the_plotter_refused_is_not_recorded(paused, monkeypatch):
     assert state.origin_nudge() == (0.0, 0.0)
 
 
-def test_the_page_guard_sees_the_move_and_the_nudge_together(paused):
-    """Two individually-fine deltas must not add up to an off-page plot."""
-    _, _ = paused
+def test_a_nudge_that_puts_the_artwork_off_the_page_is_allowed(paused):
+    """A nudge aims the pen at drifted paper; it does not move artwork
+    relative to the page, and running off the page edge is a crop the driver
+    has always handled. Refusing it here meant the one control for correcting
+    registration mid-run could not be used on a design that fills its sheet."""
+    _, moves = paused
     # Ink spans x 20..90 on a 210 page: 120mm of slack to the right.
     state.set_manual_origin_offset(115.0, 0.0)
-    with pytest.raises(RuntimeError, match="off the page"):
-        plot_worker.nudge_origin(10.0, 0.0)
-    assert state.origin_nudge() == (0.0, 0.0)
+    plot_worker.nudge_origin(10.0, 0.0)
+    assert state.origin_nudge() == (10.0, 0.0)
+    assert moves == [(10.0, 0.0)]
 
 
 def test_the_below_origin_prompt_sees_an_outstanding_move(paused):
@@ -507,15 +529,15 @@ def test_a_nudge_sends_a_corrected_command_and_records_the_true_delta(skewed):
         state.remove_job(job["job_id"])
 
 
-def test_the_far_edge_guard_catches_true_position_drift_a_raw_sum_would_miss(skewed):
-    """A nominal position that looks safely inside the bed can still command
-    a motor-space position past it, once the axis defect is folded in — this
-    is what stops the carriage drifting out of its bed "bit by bit". base_x +
-    dx = 950, comfortably under the 1000mm bed on its own — a raw-sum guard
-    would allow this. But true_axis="x" means a large move up (-y) also
-    drags the motor-space x command up by -dy*tan(skew), past the real edge."""
+def test_the_bed_reading_catches_true_position_drift_a_raw_sum_would_miss(skewed):
+    """A nominal position that looks safely inside the bed can still command a
+    motor-space position past it, once the axis defect is folded in. base_x +
+    dx = 950, comfortably under the 1000mm bed on its own — a raw-sum reading
+    would call this clean. But true_axis="x" means a large move up (-y) also
+    drags the motor-space x command up by -dy*tan(skew), past the real edge,
+    which is the position the warning (and the plot's clip bounds) must use."""
     state.set_origin_base(900.0, 0.0)
-    with pytest.raises(RuntimeError, match="machine bed edge"):
-        plot_worker.manual_jog(50.0, -999.0, confirm_below_origin=True)
-    assert state.manual_origin_offset() == (0.0, 0.0)
-    assert skewed == []
+    plot_worker.manual_jog(50.0, -999.0, confirm_below_origin=True)
+    past_x, past_y = state.origin_past_bed()
+    assert past_x == pytest.approx(950.0 + 999.0 * SKEW_TAN - 1000.0)
+    assert past_y == 0.0

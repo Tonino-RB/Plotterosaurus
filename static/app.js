@@ -43,6 +43,7 @@ const jogMoveBtn = $("jog-move-btn");
 const jogShortcutBtn = $("jog-shortcut-btn");
 const jogHomeBtn = $("jog-home-btn");
 const jogOriginBtn = $("jog-origin-btn");
+const originBedWarning = $("origin-bed-warning");
 const calibrationFileRow = $("calibration-file-row");
 const calibrationFileSelect = $("calibration-file-select");
 const calibrationFileRunBtn = $("calibration-file-run-btn");
@@ -1076,12 +1077,6 @@ function previewStatusKey(job, ctx) {
   const svgInfo = (serverState.svgs || {})[job.svg_id];
   // Nothing on screen yet — the case that looked like a crash.
   if (!ctx.svg) return "preview.status.loading";
-  // The plot worker's pre-flight bounds check, waiting on the same ink
-  // measurement the readout below waits on — but from the server side, where
-  // this card's own copy of the ink can be current while the server's cache
-  // is cold (a restart empties it). The job still reads "ready" throughout,
-  // so this is the only thing that names it.
-  if (job.plan_status === "measuring") return "preview.status.measuring";
   if (job.optimize_svg && svgInfo) {
     if (svgInfo.status === "optimizing") return "preview.status.optimizing";
     if (svgInfo.status === "pending") return "preview.status.queued_optimize";
@@ -1272,9 +1267,6 @@ function createCardForJob(job) {
     });
   });
   card.querySelector(".export-download").addEventListener("click", () => exportJob(card, job.job_id));
-  card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
-    nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
-  );
 
   // Settings changes
   const paperInputs = [
@@ -1789,25 +1781,12 @@ function updateCard(card, job) {
   pill.className = `job-status-pill status ${job.status}`;
 
   const errorEl = card.querySelector(".job-error");
-  const nudgeBtn = card.querySelector(".job-error-nudge-btn");
   if (job.error) {
     card.querySelector(".job-error-text").textContent = jobErrorText(job);
     errorEl.hidden = false;
-    const hasHint = job.jog_hint_dx_mm != null && job.jog_hint_dy_mm != null;
-    nudgeBtn.hidden = !hasHint;
-    if (hasHint) {
-      const u = effectiveDisplayUnit();
-      nudgeBtn.textContent = t("card.nudge_back_btn", {
-        dx: fmtLength(job.jog_hint_dx_mm, u),
-        dy: fmtLength(job.jog_hint_dy_mm, u),
-      });
-      nudgeBtn.dataset.dx = job.jog_hint_dx_mm;
-      nudgeBtn.dataset.dy = job.jog_hint_dy_mm;
-    }
   } else {
     card.querySelector(".job-error-text").textContent = "";
     errorEl.hidden = true;
-    nudgeBtn.hidden = true;
   }
 
   // Disable editing when job is active
@@ -1841,9 +1820,9 @@ function updateCard(card, job) {
 
   // Re-queue button visible when the job is in a terminal state AND either
   // it has actually been plotted before (started_at set) or it carries an
-  // error — the latter covers a job rejected by a pre-flight check (e.g. the
-  // artwork-bounds check in _run_job) before started_at is ever set, which
-  // otherwise left a failed job with no way to retry from the card. The
+  // error — the latter covers a job rejected before started_at is ever set
+  // (the optimize phase, the complexity guard), which otherwise left a failed
+  // job with no way to retry from the card. The
   // started_at half of the condition still avoids the button flashing
   // visible for freshly-uploaded or just-PATCH-requeued jobs in the brief
   // window before the server broadcast lands.
@@ -1949,9 +1928,9 @@ function effectiveDeltaForJob(job) {
 
 // Red dot + thin red outline on the preview: where the current delta (see
 // effectiveDeltaForJob) puts the geometry's own origin corner, and the
-// geometry's actual on-page footprint from there — the same numbers the
-// server's pre-flight/nudge bounds check uses (see _delta_correction_mm),
-// made visible instead of only surfacing as an error after the fact.
+// geometry's actual on-page footprint from there. Nothing refuses a plot for
+// running off the page any more, so this overlay is the only thing that shows
+// a jog or nudge before it prints — it is worth keeping accurate.
 function renderDeltaOverlay(card, job, footprint) {
   const dot = card.querySelector(".delta-dot");
   const square = card.querySelector(".delta-square");
@@ -3052,35 +3031,6 @@ async function requeueJob(id) {
   }
 }
 
-// Applies a job-card's suggested jog correction (see job.jog_hint_dx_mm/
-// jog_hint_dy_mm) via the same idle manual-jog endpoint as the top control
-// panel's Move buttons, then re-queues the job it was correcting — one
-// click both fixes the carriage position and puts the job back where
-// pressing Plot works again. The error banner (and this button with it)
-// disappears on its own once the requeue clears job.error.
-async function nudgeBack(jobId, dxStr, dyStr) {
-  const dx = parseFloat(dxStr) || 0;
-  const dy = parseFloat(dyStr) || 0;
-  try {
-    const res = await fetch("/pen/jog", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // Pre-confirmed: this correction can legitimately land above/left of
-      // the origin (the server aims for the design's own baseline overflow,
-      // not for a non-negative delta), and the below-origin prompt exists to
-      // catch aiming blind — the exact distance is printed on the button the
-      // user just clicked, so there's nothing left to warn about.
-      body: JSON.stringify({ dx_mm: dx, dy_mm: dy, confirm_below_origin: true }),
-    });
-    if (!res.ok) throw new Error(await readErr(res));
-    const res2 = await fetch(`/jobs/${jobId}/requeue`, { method: "POST" });
-    if (!res2.ok) throw new Error(await readErr(res2));
-  } catch (e) {
-    topMessage.textContent = t("error.request_failed", { message: e.message });
-    topMessage.className = "error";
-  }
-}
-
 // "Save As": download the job's processed drawing in the chosen format. The
 // source is whatever GET /jobs/{id}/svg would serve (the vpype .opt.svg once
 // optimization has run, else the raw upload) — exported in its own
@@ -3654,6 +3604,24 @@ function applyTopControls() {
   jogOriginBtn.disabled = jogDisabled;
   jogXReadout.textContent = (s.manual_origin_offset_x_mm ?? 0).toFixed(1);
   jogYReadout.textContent = (s.manual_origin_offset_y_mm ?? 0).toFixed(1);
+
+  // How far past the bed's far edge the carriage is standing, counting the
+  // declared origin, the Move offset and any pen-change nudge together (the
+  // server does that sum — see plot_worker.refresh_origin_bed_status — because
+  // origin_base and the skew correction aren't available here). Advisory: the
+  // move that got here wasn't refused, and the plot is clipped at the rail
+  // rather than blocked, which is what the message has to say.
+  const pastX = s.origin_past_bed_x_mm ?? 0;
+  const pastY = s.origin_past_bed_y_mm ?? 0;
+  originBedWarning.hidden = !(pastX > 0 || pastY > 0);
+  if (!originBedWarning.hidden) {
+    const u = effectiveDisplayUnit();
+    originBedWarning.textContent = t("origin.bed_warning", {
+      x: formatLengthValue(pastX, u),
+      y: formatLengthValue(pastY, u),
+      unit: u,
+    });
+  }
 
   // Pen up/down: only refused while a real plot_run is actively driving the
   // pen (mirrors plot_worker's _current_ad guard) — enabled otherwise,

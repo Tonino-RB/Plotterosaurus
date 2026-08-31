@@ -202,10 +202,10 @@ def rect_for_blocking(path: Path, layer_indices) -> tuple[bool, tuple | None]:
     """``rect_for``, but waits for the measurement rather than reporting it
     not ready.
 
-    For the few callers that cannot carry on without an answer: the pre-flight
-    check that decides whether a job is safe to start plotting, and the
-    jog/nudge guards that decide whether a move would push ink off the page.
-    Anything on a render path should keep using ``rect_for`` and ask again.
+    For the callers that cannot carry on without an answer — currently the
+    skew "absorb" scale, which has to know the real ink extent before the run
+    can pick the size it plots at. Anything on a render path should keep using
+    ``rect_for`` and ask again.
 
     The waiting is the point. These callers used to measure the file inline
     instead, on whatever thread they were on — a full vpype parse of the whole

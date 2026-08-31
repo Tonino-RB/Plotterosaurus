@@ -203,13 +203,6 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
   border-top: 1px solid #fecaca;
 }
 .job-error[hidden] { display: none; }
-.job-error-nudge-btn {
-  padding: 0.3rem 0.7rem;
-  font-size: 0.8rem;
-  flex-shrink: 0;
-}
-.job-error-nudge-btn[hidden] { display: none; }
-
 /* Advisory, not a failure: amber rather than the red of .job-error. The plot
    was refused, but the card goes on to say which setting would make it work,
    so this reads as guidance rather than a dead end. */
@@ -909,6 +902,21 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* Advisory, same amber as .complexity-warning: the move that got here was
+   allowed, and the plot is clipped at the bed edge rather than blocked, so
+   this is guidance rather than a failure. */
+.origin-bed-warning {
+  margin: 0.35rem 0 0;
+  padding: 0.35rem 0.5rem;
+  max-width: 16rem;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  line-height: 1.35;
+}
+.origin-bed-warning[hidden] { display: none; }
 
 .jog-inputs {
   display: flex;
