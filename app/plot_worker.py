@@ -797,6 +797,17 @@ def manual_pen(raise_pen: bool) -> None:
     if not ad.connect():
         raise RuntimeError("Could not connect to the plotter. Check that it is powered on and plugged in.")
     try:
+        # Always send the command, even when the driver believes the pen is
+        # already there. The EBB powers the lift servo down after ~60s idle
+        # (servo_timeout), so a pen left up through a long pen change droops
+        # under gravity while the board still reports it as raised. connect()
+        # trusts that report (find_pen_state reads EBBLV + QueryPenUp), and
+        # pen_raise/pen_lower then skip a move they think is redundant --
+        # leaving the button dead in exactly the case where the pen has fallen
+        # and the user is pressing it because of that. Nothing can read the
+        # servo's true position, so drop the assumed one instead: None is what
+        # both pen_raise and pen_lower read as "state unknown, go move it".
+        ad.pen.phys.z_up = None
         ad.penup() if raise_pen else ad.pendown()
     finally:
         ad.disconnect()
