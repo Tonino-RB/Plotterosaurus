@@ -764,6 +764,17 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 .optimize-options .field { margin-top: 0.5rem; }
 .optimize-options .field input[type="number"] { max-width: 8rem; }
 
+.grid-options {
+  margin-left: 1.4rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border);
+}
+.grid-options.disabled { opacity: 0.5; pointer-events: none; }
+.grid-options .field { margin-top: 0.5rem; }
+.grid-options .field input[type="number"] { max-width: 8rem; }
+.grid-arrangement { margin-bottom: 0.25rem; font-variant-numeric: tabular-nums; }
+.card-section.disabled { opacity: 0.55; }
+
 .optimize-mode { margin-bottom: 0.75rem; }
 .optimize-expert-panel .muted { margin-top: 0; margin-bottom: 0.75rem; }
 .optimize-expert-box { margin-bottom: 0.75rem; }

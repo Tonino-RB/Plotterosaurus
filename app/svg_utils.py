@@ -17,6 +17,20 @@ LABEL_ATTR = f"{{{INKSCAPE_NS}}}label"
 # Label given to the layer that collects content found outside any layer.
 LAYERLESS_LABEL = "Layerless elements"
 
+# The grid module's optional cutting marks (see add_cut_marks) live in a layer
+# of their own, tagged with this attribute. It is a real Inkscape layer so the
+# marks are separable in Inkscape and in an export, but it belongs to no
+# selection: layers are addressed by position, and those positions come from
+# the upload, which has no such layer. So it is deliberately invisible to
+# _top_level_layers and counted as un-layered content instead — drawn exactly
+# once, with the first stage, whatever the user selected.
+CUT_MARKS_ATTR = "data-plotterosaurus-cut-marks"
+CUT_MARKS_LABEL = "Cut marks"
+
+# Radius of one cutting-mark dot. Small enough to trim away, big enough that a
+# pen leaves a mark rather than a scratch.
+CUT_MARK_RADIUS_MM = 0.4
+
 
 PX_PER_MM = 96.0 / 25.4
 
@@ -134,8 +148,19 @@ def parse_viewbox(s: str) -> tuple[float, float, float, float] | None:
     return x, y, w, h
 
 
+def _is_layer(g) -> bool:
+    return g.tag == LAYER_TAG and g.get(GROUPMODE_ATTR) == "layer"
+
+
+def _is_cut_marks_layer(g) -> bool:
+    """The grid's cutting-marks layer, which has no layer index of its own.
+    Identified by our own attribute, never by label: an upload is free to have
+    a layer the user called "Cut marks", and that one is theirs to select."""
+    return _is_layer(g) and g.get(CUT_MARKS_ATTR) is not None
+
+
 def _top_level_layers(root):
-    return [g for g in root if g.tag == LAYER_TAG and g.get(GROUPMODE_ATTR) == "layer"]
+    return [g for g in root if _is_layer(g) and not _is_cut_marks_layer(g)]
 
 
 # Top-level elements that paint something. Anything else at the top level
@@ -155,10 +180,14 @@ def _top_level_orphans(root):
     Inkscape always wraps content in layers, but plenty of other producers
     don't. This content has no layer index, so it can't be selected or
     deselected — and without special handling it would be copied into *every*
-    per-layer stage and drawn once per stage (see filter_to_layers)."""
+    per-layer stage and drawn once per stage (see filter_to_layers).
+
+    The grid's cutting-marks layer counts as one of these. It is a layer in the
+    file, but it is not one of the upload's, so no selection can address it and
+    "drawn once, with the first stage" is exactly the treatment it wants."""
     return [el for el in root
             if el.tag in _DRAWABLE_TAGS
-            and not (el.tag == LAYER_TAG and el.get(GROUPMODE_ATTR) == "layer")]
+            and (not _is_layer(el) or _is_cut_marks_layer(el))]
 
 
 def svg_size_mm(root) -> tuple[float | None, float | None]:
@@ -408,6 +437,80 @@ def reconcile_layers(reference_path: Path, target_path: Path) -> None:
     for offset, g in enumerate(ordered):
         root.insert(at + offset, g)
     tree.write(str(target_path), xml_declaration=True, encoding="utf-8")
+
+
+def _cut_mark_positions(n: int, pitch_mm: float, inset_mm: float) -> list[float]:
+    """Cutting-mark coordinates along one axis of an ``n``-cell grid.
+
+    The two ends sit on the outermost copies' own edges; every line in between
+    sits mid-gutter, halfway between the two copies it separates. With no
+    gutter those are the same thing — ``inset_mm`` is zero, adjacent copies
+    touch, and the result is simply every copy corner.
+    """
+    return [inset_mm] + [i * pitch_mm for i in range(1, n)] + [n * pitch_mm - inset_mm]
+
+
+def add_cut_marks(svg_path: Path, cols: int, rows: int,
+                  cell_w_mm: float, cell_h_mm: float, gutter_mm: float) -> None:
+    """Append a cutting-marks layer to a tiled document, in place.
+
+    One dot per grid line intersection — (cols + 1) x (rows + 1) of them — so
+    each copy is bracketed by a dot at each of its four corners and the sheet
+    can be trimmed apart by eye or against a ruler laid between two dots.
+
+    ``cell_w_mm``/``cell_h_mm``/``gutter_mm`` are the ones the tiling ran with
+    (see svg_optimize.grid_svg), which is what makes the dots land on the cuts:
+    vpype insets each copy by half the gutter inside its cell, so a cell
+    boundary *is* the middle of the gutter.
+
+    The layer is tagged CUT_MARKS_ATTR, which keeps it out of the by-position
+    layer numbering everything downstream uses (see _top_level_layers). One
+    consequence worth knowing: ink_cache measures layers, so the reported ink
+    rectangle covers the artwork and not the marks. They can only ever fall
+    inside the tiled document's own box, which placement lays out in full, so
+    they cannot push anything off the page.
+    """
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+
+    # Document mm -> the user units an SVG coordinate is written in.
+    doc_w_mm, doc_h_mm = svg_size_mm(root)
+    viewbox = parse_viewbox(root.get("viewBox", ""))
+    if viewbox and doc_w_mm and doc_h_mm:
+        vb_x, vb_y, vb_w, vb_h = viewbox
+        per_mm_x, per_mm_y = vb_w / doc_w_mm, vb_h / doc_h_mm
+    else:
+        vb_x, vb_y = 0.0, 0.0
+        per_mm_x = per_mm_y = PX_PER_MM
+
+    inset = max(0.0, gutter_mm) / 2.0
+    xs = _cut_mark_positions(cols, cell_w_mm, inset)
+    ys = _cut_mark_positions(rows, cell_h_mm, inset)
+
+    layer = etree.SubElement(root, LAYER_TAG)
+    layer.set(GROUPMODE_ATTR, "layer")
+    layer.set(LABEL_ATTR, CUT_MARKS_LABEL)
+    layer.set(CUT_MARKS_ATTR, "1")
+    # vpype reads a layer's id from the first digit group of its label, else of
+    # its id (see _vpype_layer_id). Claim one no artwork layer already answers
+    # to, or a measuring pass would fold the marks into that layer's geometry.
+    taken = {_vpype_layer_id(g.get(LABEL_ATTR) or "", g.get("id") or "", order)
+             for order, g in enumerate(_top_level_layers(root), start=1)}
+    layer.set("id", f"cutmarks{next(i for i in itertools.count(1) if i not in taken)}")
+    layer.set("fill", "none")
+    layer.set("stroke", "#000000")
+    # A stroke as wide as the radius makes the ring read as a solid dot on
+    # screen; what the pen actually leaves is decided by the nib, not by this.
+    layer.set("stroke-width", f"{CUT_MARK_RADIUS_MM * per_mm_x:.4f}")
+
+    for y in ys:
+        for x in xs:
+            dot = etree.SubElement(layer, f"{{{SVG_NS}}}circle")
+            dot.set("cx", f"{vb_x + x * per_mm_x:.4f}")
+            dot.set("cy", f"{vb_y + y * per_mm_y:.4f}")
+            dot.set("r", f"{CUT_MARK_RADIUS_MM * per_mm_x:.4f}")
+
+    tree.write(str(svg_path), xml_declaration=True, encoding="utf-8")
 
 
 def _placement_for(

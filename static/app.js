@@ -189,6 +189,7 @@ const PAPER_SIZES = {
   A3: { w: 297, h: 420 },
   A4: { w: 210, h: 297 },
   A5: { w: 148, h: 210 },
+  A6: { w: 105, h: 148 },
   B0: { w: 1000, h: 1414 },
   B1: { w: 707, h: 1000 },
   B2: { w: 500, h: 707 },
@@ -339,6 +340,10 @@ function buildJobPayload(svg, fallbackName) {
       record_mode: appSettings.camera_recording_mode_default,
       record_timelapse_interval_s: appSettings.camera_timelapse_interval_s_default,
       record_speed_multiplier: appSettings.camera_speed_multiplier_default,
+      grid_enabled: false,
+      grid_copies: 4,
+      grid_gutter_mm: 0,
+      grid_cut_marks: false,
       optimize_svg: appSettings.optimize_svg_default,
       optimize_svg_tolerance_mm: appSettings.optimize_svg_tolerance_default_mm,
       optimize_svg_linemerge: appSettings.optimize_svg_linemerge_default,
@@ -1081,6 +1086,11 @@ function previewStatusKey(job, ctx) {
     if (svgInfo.status === "optimizing") return "preview.status.optimizing";
     if (svgInfo.status === "pending") return "preview.status.queued_optimize";
   }
+  if (job.grid_enabled) {
+    const gridInfo = (serverState.svgs || {})[job.svg_id + ":grid"];
+    if (gridInfo && gridInfo.status === "tiling") return "preview.status.tiling";
+    if (gridInfo && gridInfo.status === "pending") return "preview.status.queued_tiling";
+  }
   if (IDLE_JOB_STATUSES.includes(job.status)) {
     if (job.plan_status === "planning") return "preview.status.estimating";
     if (job.plan_status === "pending") return "preview.status.queued_estimate";
@@ -1228,6 +1238,12 @@ function createCardForJob(job) {
   card.querySelector(".optimize-linesort").checked = job.optimize_svg_linesort !== false;
   card.querySelector(".optimize-reloop").checked = job.optimize_svg_reloop !== false;
   card.querySelector(".optimize-tolerance").value = (job.optimize_svg_tolerance_mm ?? 0.10).toFixed(2);
+  card.querySelector(".grid-enable").checked = !!job.grid_enabled;
+  card.querySelector(".grid-copies").value = job.grid_copies ?? 4;
+  card.querySelector(".grid-gutter").value = job.grid_gutter_mm ?? 0;
+  card.querySelector(".grid-cut-marks").checked = !!job.grid_cut_marks;
+  applyGridEnabledStyle(card);
+  updateGridArrangement(card, job);
   applyOptimizeEnabledStyle(card);
   applyOptimizeMode(card, job);
   resumeOptimizeExpertStatus(card, job);
@@ -1314,6 +1330,19 @@ function createCardForJob(job) {
       queueCardUpdate(card);
     }));
   card.querySelector(".optimize-tolerance").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".grid-enable").addEventListener("change", () => {
+    applyGridEnabledStyle(card);
+    queueCardUpdate(card);
+  });
+  card.querySelector(".grid-cut-marks").addEventListener("change", () => queueCardUpdate(card));
+  [".grid-copies", ".grid-gutter"].forEach((sel) => {
+    const el = card.querySelector(sel);
+    el.addEventListener("input", () => {
+      const j = serverState.queue.find((x) => x.job_id === card.dataset.id);
+      if (j) updateGridArrangement(card, { ...j, ...readGridFromCard(card) });
+    });
+    el.addEventListener("change", () => queueCardUpdate(card));
+  });
   card.querySelector(".optimize-mode").querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
       setSegmentedValue(card.querySelector(".optimize-mode"), btn.dataset.val);
@@ -1421,6 +1450,7 @@ function createCardForJob(job) {
       else if (kind === "transform") resetTransform(card);
       else if (kind === "parameters") resetParameters(card);
       else if (kind === "optimize") resetOptimize(card);
+      else if (kind === "grid") resetGrid(card);
     });
   });
 
@@ -1691,6 +1721,7 @@ function updateCard(card, job) {
     subParts.push(`${formatLengthValue(geomFootprint.width, u)} × ${formatLengthValue(geomFootprint.height, u)} ${u}`);
   }
   renderDeltaOverlay(card, job, geomFootprint);
+  updateGridArrangement(card, job);
   if (job.estimated_total_seconds) subParts.push(formatDuration(Math.round(job.estimated_total_seconds)));
   // Surface the SVG-level pre-optimize state on queued cards so the user knows
   // a future "Plot" click won't be instant if their SVG is still in the
@@ -1699,6 +1730,12 @@ function updateCard(card, job) {
     const svgInfo = (serverState.svgs || {})[job.svg_id];
     if (svgInfo && svgInfo.status === "optimizing") subParts.push(t("job.optimizing_svg"));
     else if (svgInfo && svgInfo.status === "pending") subParts.push(t("job.waiting_optimize_svg"));
+  }
+  // Same, for the grid (tiling) build — a second vpype pass after optimize.
+  if (IDLE_JOB_STATUSES.includes(job.status) && job.grid_enabled) {
+    const gridInfo = (serverState.svgs || {})[job.svg_id + ":grid"];
+    if (gridInfo && gridInfo.status === "tiling") subParts.push(t("job.tiling"));
+    else if (gridInfo && gridInfo.status === "pending") subParts.push(t("job.waiting_tiling"));
   }
   // The preview is fetched once (see createCardForJob) and reflects whatever
   // was effective at that moment. Refetch whenever the *effective* SVG the
@@ -1709,8 +1746,19 @@ function updateCard(card, job) {
   // answer rather than a mid-flight raw fallback.
   if (ctx.svg) {
     const svgInfo = (serverState.svgs || {})[job.svg_id];
-    const settled = !job.optimize_svg || !svgInfo || svgInfo.status === "ready" || svgInfo.status === "failed";
-    const effectiveKind = job.optimize_svg && settled ? "optimized" : "raw";
+    const gridInfo = (serverState.svgs || {})[job.svg_id + ":grid"];
+    const optSettled = !job.optimize_svg || !svgInfo ||
+      svgInfo.status === "ready" || svgInfo.status === "failed";
+    const gridSettled = !job.grid_enabled || !gridInfo ||
+      gridInfo.status === "ready" || gridInfo.status === "failed";
+    const settled = optSettled && gridSettled;
+    // Grid supersedes optimize in _effective_svg_path, and its output depends
+    // on the copy count / gap / sheet, so encode those in the key.
+    const effectiveKind =
+      (job.grid_enabled && gridSettled && gridInfo && gridInfo.status === "ready")
+        ? `grid:${job.grid_copies}:${job.grid_gutter_mm}:${job.grid_cut_marks ? 1 : 0}`
+          + `:${job.paper_width_mm}x${job.paper_height_mm}`
+        : (job.optimize_svg && optSettled ? "optimized" : "raw");
     if (settled && ctx.previewEffectiveKind !== effectiveKind) {
       ctx.previewEffectiveKind = effectiveKind;
       reloadCardSvg(card, job);
@@ -2089,6 +2137,13 @@ function applyOptimizeMode(card, job) {
     cmdEl.disabled = !enabledEl.checked;
     autoGrowTextarea(cmdEl);
   }
+  // Grid tiling piggy-backs on the beginner-mode optimize pass, so it has no
+  // effect in expert mode — grey the section and say why.
+  const gridSection = card.querySelector("[data-section='grid']");
+  if (gridSection) {
+    gridSection.classList.toggle("disabled", mode === "expert");
+    gridSection.querySelectorAll("input").forEach((el) => { el.disabled = mode === "expert"; });
+  }
 }
 
 function optimizeExpertUiRefs(card) {
@@ -2239,6 +2294,17 @@ function resetOptimize(card) {
   queueCardUpdate(card);
 }
 
+function resetGrid(card) {
+  card.querySelector(".grid-enable").checked = false;
+  card.querySelector(".grid-copies").value = 4;
+  card.querySelector(".grid-gutter").value = 0;
+  card.querySelector(".grid-cut-marks").checked = false;
+  applyGridEnabledStyle(card);
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (job) updateGridArrangement(card, { ...job, ...readGridFromCard(card) });
+  queueCardUpdate(card);
+}
+
 function resetParameters(card) {
   const pairs = [
     [".speed-pendown", appSettings.speed_pendown_default],
@@ -2353,6 +2419,65 @@ function readTransformFromCard(card) {
     transform_offset_x_mm: parseFloat(card.querySelector(".transform-offset-x").value) || 0,
     transform_offset_y_mm: parseFloat(card.querySelector(".transform-offset-y").value) || 0,
   };
+}
+
+function readGridFromCard(card) {
+  return {
+    grid_enabled: card.querySelector(".grid-enable").checked,
+    grid_copies: parseInt(card.querySelector(".grid-copies").value, 10),
+    grid_gutter_mm: parseFloat(card.querySelector(".grid-gutter").value),
+    grid_cut_marks: card.querySelector(".grid-cut-marks").checked,
+  };
+}
+
+// Columns x rows the server will tile into — display only; app/svg_optimize.py
+// arrangement() is authoritative. Mirrors its "largest copies win" choice.
+// Called with the area inside the margins, not the sheet: that is what the
+// cells are carved out of (see optimize_queue._run_grid_phase).
+//
+// One known way the mirror can part company with it: Python's round(fit, 6)
+// rounds halves to even where Math.round rounds them up, so an exact half at
+// the 7th decimal could break a tie the other way. Nothing closer than a
+// server round-trip per keystroke would fix that, which the readout is not
+// worth.
+function gridArrangement(copies, availW, availH, contentW, contentH) {
+  copies = Math.max(1, Math.floor(copies || 1));
+  const W = availW > 0 ? availW : 1, H = availH > 0 ? availH : 1;
+  const cw = contentW > 0 ? contentW : W, ch = contentH > 0 ? contentH : H;
+  const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+  let best = [1, copies], bestKey = null;
+  for (let cols = 1; cols <= copies; cols++) {
+    const rows = Math.ceil(copies / cols);
+    const fit = Math.min((W / cols) / cw, (H / rows) / ch);
+    const key = [Math.round(fit * 1e6), -(cols * rows - copies),
+                 -Math.abs((cols / rows) - (W / H))];
+    if (!bestKey || cmp(key, bestKey) > 0) { bestKey = key; best = [cols, rows]; }
+  }
+  return best;
+}
+
+function updateGridArrangement(card, job) {
+  const el = card.querySelector(".grid-arrangement");
+  if (!el) return;
+  const on = job.grid_enabled ?? card.querySelector(".grid-enable").checked;
+  const copies = job.grid_copies ?? parseInt(card.querySelector(".grid-copies").value, 10);
+  if (!on || !Number.isFinite(copies) || copies < 2) { el.hidden = true; return; }
+  const ctx = cardCtx.get(job.job_id);
+  // The drawing's own size, not the served document's: once the grid exists,
+  // ctx.svg describes the tiled sheet (see reloadCardSvg), and an arrangement
+  // computed from that is a different one than the server tiled to.
+  const cw = ctx?.svg?.source_width_mm ?? ctx?.svg?.width_mm;
+  const ch = ctx?.svg?.source_height_mm ?? ctx?.svg?.height_mm;
+  const availW = (job.paper_width_mm || 0) - (job.margin_left_mm || 0) - (job.margin_right_mm || 0);
+  const availH = (job.paper_height_mm || 0) - (job.margin_top_mm || 0) - (job.margin_bottom_mm || 0);
+  const [cols, rows] = gridArrangement(copies, availW, availH, cw, ch);
+  el.textContent = t("card.grid_arrangement", { cols, rows, copies: cols * rows });
+  el.hidden = false;
+}
+
+function applyGridEnabledStyle(card) {
+  const on = card.querySelector(".grid-enable").checked;
+  card.querySelector(".grid-options").classList.toggle("disabled", !on);
 }
 
 function updatePreviewTransform(card, job) {
@@ -2695,6 +2820,9 @@ function onPaperChange(card) {
   card.querySelector(".paper-w").value = w;
   card.querySelector(".paper-h").value = h;
 
+  // The grid arrangement depends on the sheet — refresh its readout.
+  updateGridArrangement(card, { ...job, ...updates, ...readGridFromCard(card) });
+
   queueCardUpdate(card, updates);
 }
 
@@ -2809,6 +2937,10 @@ async function sendCardUpdate(card, pending) {
       updates[`optimize_expert_${n}_enabled`] = card.querySelector(`.optimize-expert-${n}-enabled`).checked;
       updates[`optimize_expert_${n}_cmd`] = card.querySelector(`.optimize-expert-${n}-cmd`).value;
     }
+    updates.grid_enabled = card.querySelector(".grid-enable").checked;
+    updates.grid_copies = parseInt(card.querySelector(".grid-copies").value, 10);
+    updates.grid_gutter_mm = parseFloat(card.querySelector(".grid-gutter").value);
+    updates.grid_cut_marks = card.querySelector(".grid-cut-marks").checked;
   }
   Object.assign(updates, pending.explicit);
   // An emptied number field parses to NaN, which JSON-encodes as null — and a

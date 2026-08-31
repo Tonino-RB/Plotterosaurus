@@ -238,6 +238,8 @@ _JOB_DEFAULTS = {
     "transform_offset_x_mm": 0.0, "transform_offset_y_mm": 0.0,
     "speed_pendown": 25, "speed_penup": 75, "acceleration": 75,
     "optimize_svg": False,
+    "grid_enabled": False, "grid_copies": 4, "grid_gutter_mm": 0.0,
+    "grid_cut_marks": False,
 }
 
 

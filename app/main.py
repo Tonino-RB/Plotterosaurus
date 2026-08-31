@@ -14,7 +14,7 @@ from typing import Literal
 
 from fastapi import (
     Depends, FastAPI, File, Form, Header, HTTPException,
-    Request, UploadFile, WebSocket, WebSocketDisconnect,
+    Request, Response, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
@@ -38,7 +38,7 @@ STATIC_DIR = BASE_DIR / "static"
 # /api/v1/jobs endpoint to resolve paper_size.name into dimensions.
 PAPER_PRESETS: dict[str, tuple[float, float]] = {
     "A0": (841, 1189), "A1": (594, 841), "A2": (420, 594),
-    "A3": (297, 420),  "A4": (210, 297), "A5": (148, 210),
+    "A3": (297, 420),  "A4": (210, 297), "A5": (148, 210), "A6": (105, 148),
     "B0": (1000, 1414), "B1": (707, 1000), "B2": (500, 707),
     "B3": (353, 500),  "B4": (250, 353), "B5": (176, 250),
     "Letter": (216, 279), "Legal": (216, 356), "Ledger": (279, 432),
@@ -379,7 +379,13 @@ def get_job_svg(job_id: str):
     path = plot_worker._effective_svg_path(job)
     if not path.exists():
         raise HTTPException(404)
-    return FileResponse(str(path), media_type="image/svg+xml")
+    # The URL is stable but the file behind it is not: _effective_svg_path
+    # swings between the raw upload, the .opt.svg and the .grid.svg as the job's
+    # toggles change, often without the chosen file's own mtime moving. Without
+    # no-store the browser serves a cached body from a previous resolution — so
+    # toggling Grid on leaves the preview showing the un-tiled drawing.
+    return FileResponse(str(path), media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/jobs/{job_id}/export")
@@ -813,8 +819,30 @@ def _with_complexity(info: dict, path: Path) -> dict:
     return {**info, "complexity": data}
 
 
+def _with_source_size(info: dict, svg_id: str) -> dict:
+    """``info`` plus the *upload's* own mm size, alongside the served
+    document's.
+
+    svg-meta describes whatever ``_effective_svg_path`` resolves to, which for a
+    grid job is the tiled sheet. The card's arrangement readout needs the
+    drawing's own dimensions instead — the tiling is decided on those — and
+    reading the sheet's made it recompute a different arrangement the moment the
+    grid landed, disagreeing with the one the server had just built.
+
+    Read through the same mtime-keyed ``_doc_geometry`` cache as everything
+    else, so it costs a dict lookup per request.
+    """
+    src = UPLOAD_DIR / f"{svg_id}.svg"
+    try:
+        stamp = src.stat().st_mtime_ns
+    except OSError:
+        return info
+    width_mm, height_mm, _ = _doc_geometry(src, stamp)
+    return {**info, "source_width_mm": width_mm, "source_height_mm": height_mm}
+
+
 @app.get("/jobs/{job_id}/svg-meta")
-def get_job_svg_meta(job_id: str):
+def get_job_svg_meta(job_id: str, response: Response):
     """Layer list and page size for the SVG that ``/jobs/{job_id}/svg`` serves.
 
     The browser used to reconstruct this itself: fetch the document, run it
@@ -835,6 +863,9 @@ def get_job_svg_meta(job_id: str):
     job = state.get_job(job_id)
     if job is None:
         raise HTTPException(404)
+    # Same stable-URL / shifting-file problem as GET /jobs/{id}/svg — this must
+    # describe whatever that endpoint currently serves, so it can't be cached.
+    response.headers["Cache-Control"] = "no-store"
     path = plot_worker._effective_svg_path(job)
     try:
         stamp = path.stat().st_mtime_ns
@@ -846,7 +877,10 @@ def get_job_svg_meta(job_id: str):
         hit = _svg_meta_cache.get(key)
         if hit is not None:
             _svg_meta_cache.move_to_end(key)
-            return _with_complexity(hit, path)
+    if hit is not None:
+        # Outside the lock: _with_source_size reads _doc_geometry, which takes
+        # this same lock, and threading.Lock is not reentrant.
+        return _with_source_size(_with_complexity(hit, path), job["svg_id"])
     try:
         info = svg_utils.parse_layers(path)
     except etree.XMLSyntaxError:
@@ -856,7 +890,7 @@ def get_job_svg_meta(job_id: str):
         _svg_meta_cache.move_to_end(key)
         while len(_svg_meta_cache) > _SVG_META_CACHE_MAX:
             _svg_meta_cache.popitem(last=False)
-    return _with_complexity(info, path)
+    return _with_source_size(_with_complexity(info, path), job["svg_id"])
 
 
 # Placement ----------------------------------------------------------------
@@ -1072,7 +1106,29 @@ class _OptimizeOptionalFields(BaseModel):
     optimize_expert_3_cmd: str | None = None
 
 
-class JobCreate(_OptimizeCreateFields):
+class _GridCreateFields(BaseModel):
+    # "Grid" layout module: tile the whole drawing to fill the sheet, resizing
+    # each copy to its cell. Reversible — a toggle like optimize_svg, backed by
+    # a cached {svg_id}.grid.svg derivative. The arrangement (columns x rows) is
+    # derived from grid_copies and the sheet's aspect ratio; vpype does the
+    # tiling (see app/svg_optimize.grid_svg). Beginner mode only.
+    grid_enabled: bool = False
+    grid_copies: int = 4
+    grid_gutter_mm: float = 0.0
+    # Cutting marks: a dot at every grid line intersection, in a layer of its
+    # own inside the tiled derivative (see svg_utils.add_cut_marks). Drawn
+    # whatever layers are selected, since it is none of the upload's.
+    grid_cut_marks: bool = False
+
+
+class _GridOptionalFields(BaseModel):
+    grid_enabled: bool | None = None
+    grid_copies: int | None = None
+    grid_gutter_mm: float | None = None
+    grid_cut_marks: bool | None = None
+
+
+class JobCreate(_OptimizeCreateFields, _GridCreateFields):
     svg_id: str
     filename: str = "upload.svg"
     # Set when the source is a copy promoted out of a .opt.svg (see
@@ -1230,6 +1286,8 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "transform_scale": (0.01, 5.0),
     "transform_rotation_deg": (-360.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
+    "grid_copies": (2, 64),
+    "grid_gutter_mm": (0.0, 100.0),
 }
 
 
@@ -1257,6 +1315,7 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
     "optimize_expert_2_enabled", "optimize_expert_2_cmd",
     "optimize_expert_3_enabled", "optimize_expert_3_cmd",
+    "grid_enabled", "grid_copies", "grid_gutter_mm", "grid_cut_marks",
 })
 
 
@@ -1293,7 +1352,7 @@ def _clamp_job_fields(d: dict,
                                              min(paper_height_mm, v))
 
 
-class JobUpdate(_OptimizeOptionalFields):
+class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     layer_selections: list[dict] | None = None
     layer_mode: Literal["layer", "group", "pen"] | None = None
     name: str | None = None
@@ -1611,7 +1670,7 @@ class ApiLayer(BaseModel):
     pen: ApiPen | None = None
 
 
-class ApiJobMetadata(_OptimizeOptionalFields):
+class ApiJobMetadata(_OptimizeOptionalFields, _GridOptionalFields):
     name: str | None = None
     paper_size: ApiPaperSize | None = None
     # Display-only: the paper stock, shown under the preview next to the size.
@@ -1804,6 +1863,10 @@ async def api_create_job(file: UploadFile = File(...),
         "optimize_expert_2_cmd": pick(meta.optimize_expert_2_cmd, config.OPTIMIZE_EXPERT_2_CMD_DEFAULT),
         "optimize_expert_3_enabled": bool(meta.optimize_expert_3_enabled),
         "optimize_expert_3_cmd": pick(meta.optimize_expert_3_cmd, config.OPTIMIZE_EXPERT_3_CMD_DEFAULT),
+        "grid_enabled": pick(meta.grid_enabled, False),
+        "grid_copies": pick(meta.grid_copies, 4),
+        "grid_gutter_mm": pick(meta.grid_gutter_mm, 0.0),
+        "grid_cut_marks": pick(meta.grid_cut_marks, False),
     }
     _clamp_job_fields(job_payload, paper_width_mm, paper_height_mm)
     # auto_plot: only kick the worker if no other job is in a runnable or

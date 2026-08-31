@@ -198,11 +198,12 @@ def _process(task: _Task) -> None:
         # Plot worker already picked this up (or it's terminal). Don't fight it.
         return
 
-    # Wait for the SVG's optimize task to complete first, if any. on_running=None
-    # so we don't flip the job's status — the user's job stays "ready" and
-    # plot_status moves through pending → planning → ready. Expert mode's
-    # optimize is triggered explicitly (optimize_expert_queue), never here.
-    if job.get("optimize_mode", "beginner") == "beginner" and job.get("optimize_svg"):
+    # Wait for the SVG's optimize (and grid) task to complete first, if any.
+    # on_running=None so we don't flip the job's status — the user's job stays
+    # "ready" and plot_status moves through pending → planning → ready. Expert
+    # mode's optimize is triggered explicitly (optimize_expert_queue), never here.
+    if job.get("optimize_mode", "beginner") == "beginner" \
+            and (job.get("optimize_svg") or job.get("grid_enabled")):
         settings = optimize_queue.settings_from_job(job)
         ok, err = optimize_queue.request_for_job(
             job["svg_id"], settings, on_running=None, cancel_flag=task.cancel_event,

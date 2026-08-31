@@ -49,7 +49,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
 - Staged plotting: optional pause between layers for pen changes
 - No queue to manage: a job is `ready` from the moment it is created, Plot runs the topmost ready one, and the run ends with that job — so the paper can be changed with the machine genuinely idle
-- Paper presets (A0–A5, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
+- Paper presets (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
 - 4-sided margins, fit-content-to-page, and a per-job scale / rotation / X-Y offset transform
 - Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
 - Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
