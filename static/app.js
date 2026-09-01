@@ -1958,8 +1958,8 @@ function applyPreOptimizedLock(card, job) {
 // job right now, in mm — {dx: 0, dy: 0} if neither applies.
 // The delta actually baked into the active job's physical run right now —
 // null for any other job, including one that's merely queued next (see
-// effectiveDeltaForJob, which also previews a manual jog for that case:
-// aiming, not yet drawn). Both pieces stay in effect for every stage of the
+// effectiveDeltaForJob, which previews the standing manual jog for every
+// non-running card). Both pieces stay in effect for every stage of the
 // run, not just while paused: a manual jog becomes the run's physical zero
 // the moment its first stage starts (nothing re-homes the carriage mid-run
 // — see plot_worker.py, manual_jog is idle-only), and an origin nudge
@@ -1976,20 +1976,14 @@ function activeRunDelta(job) {
 function effectiveDeltaForJob(job) {
   const running = activeRunDelta(job);
   if (running) return running;
+  // The manual jog is one session-wide offset from the declared origin, not a
+  // per-job aim: nothing resets it between runs (see state.manual_origin_offset),
+  // so every job on the list will plot from it, not just the one Plot takes
+  // next. While nothing is plotting, preview it on every card regardless of
+  // status — the overlay shows where the carriage sits relative to that card's
+  // artwork, which is as true for a finished job as for the next one.
   if (serverState.status === "idle") {
-    const firstReady = serverState.queue.find((j) => j.status === "ready");
-    if (firstReady && firstReady.job_id === job.job_id) {
-      return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
-    }
-    // Nothing else is actually queued, and this is the job that was last
-    // running (e.g. cancelled) — the manual jog is still physically applied
-    // (nothing resets it on cancel), so keep showing it "as if queued"
-    // rather than snapping to zero the instant the job stops being active.
-    // Server-tracked (state.last_active_id), not just client memory, so
-    // this survives a page reload after the cancel already happened.
-    if (!firstReady && job.job_id === serverState.last_active_id) {
-      return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
-    }
+    return { dx: serverState.manual_origin_offset_x_mm || 0, dy: serverState.manual_origin_offset_y_mm || 0 };
   }
   return { dx: 0, dy: 0 };
 }
