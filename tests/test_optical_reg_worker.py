@@ -397,3 +397,148 @@ def test_a_cross_too_big_for_the_bed_is_refused(cross_driver):
     bounds[1] = [2.0, 2.0]
     with pytest.raises(RuntimeError, match="does not fit the bed"):
         plot_worker._plot_cross(0.0, 0.0, 20.0)
+
+
+# optical_reg_calibrate ------------------------------------------------------
+#
+# Calibrate walks the carriage to the reference mark, plots the cross there and
+# jogs +/-3 mm to learn the pixel<->mm scale, then walks every move back. It used
+# to draw at (0, 0) relative to wherever the carriage happened to sit: with the
+# carriage at the declared origin, the cross's own arms (drawn in full — see the
+# _plot_cross note above) plus the -d calibrate jog reached into -X/-Y past the
+# bed's near edge, into the end stops.
+
+@pytest.fixture
+def calibrating(monkeypatch):
+    """Idle, camera on, every hardware/vision call stubbed. Yields
+    (jog_log, cross_log, updates): the args each _jog_carriage / _plot_cross
+    call got, and the kwargs handed to config.update."""
+    from app import optical_reg
+
+    jog = []
+    monkeypatch.setattr(plot_worker, "_jog_carriage",
+                        lambda dx, dy: jog.append((dx, dy)))
+    cross = []
+    monkeypatch.setattr(plot_worker, "_plot_cross",
+                        lambda x, y, size: cross.append((x, y, size)))
+    monkeypatch.setattr(plot_worker.camera, "grab_median_gray",
+                        lambda n=3: np.full((60, 80), 255, np.uint8))
+    monkeypatch.setattr(optical_reg, "cross_center", lambda frame: (100.0, 100.0))
+    monkeypatch.setattr(optical_reg, "solve_scale_rotation",
+                        lambda pairs: (0.08, 1.5, 0.02))
+    updates = []
+    monkeypatch.setattr(config, "update", lambda **kw: updates.append(kw))
+    monkeypatch.setattr(config, "CAMERA_ENABLED", True)
+    monkeypatch.setattr(config, "CAMERA_RESOLUTION_WIDTH", 1920)
+    monkeypatch.setattr(config, "CAMERA_RESOLUTION_HEIGHT", 1080)
+    monkeypatch.setattr(config, "OPTICAL_REG_MARK_X_MM", 10.0)
+    monkeypatch.setattr(config, "OPTICAL_REG_MARK_Y_MM", 10.0)
+    monkeypatch.setattr(config, "OPTICAL_REG_MARK_SIZE_MM", 3.0)
+    monkeypatch.setattr(config, "OPTICAL_REG_FRAMES", 3)
+    monkeypatch.setattr(config, "MACHINES", [{
+        "id": "cal-test", "name": "Cal", "width_mm": 400.0, "height_mm": 300.0,
+        "auto_rotate": "off", "skew_deg": 0.0, "skew_true_axis": "x",
+        "skew_mode": "clip",
+    }])
+    monkeypatch.setattr(config, "ACTIVE_MACHINE_ID", "cal-test")
+    state.set_active(None)
+    _reset_origin()
+    yield jog, cross, updates
+    _reset_origin()
+
+
+def test_calibrate_walks_to_the_reference_mark_and_back(calibrating):
+    jog, cross, updates = calibrating
+
+    plot_worker.optical_reg_calibrate()
+
+    # First move is the jog onto the mark (mark minus the manual offset, 0 here).
+    assert jog[0] == (10.0, 10.0)
+    # Cross drawn once, on the carriage's new spot — not offset by the mark again.
+    assert cross == [(0.0, 0.0, 3.0)]
+    # Every move undone: the carriage ends where it started.
+    assert sum(dx for dx, _ in jog) == pytest.approx(0.0)
+    assert sum(dy for _, dy in jog) == pytest.approx(0.0)
+    # Scale + rotation stored, nothing else.
+    assert updates and set(updates[-1]) == {"optical_reg_mm_per_px",
+                                            "optical_reg_cam_rotation_deg"}
+    # None of the three carriage-position values touched.
+    assert state.origin_base() == (0.0, 0.0)
+    assert state.manual_origin_offset() == (0.0, 0.0)
+    assert state.origin_nudge() == (0.0, 0.0)
+
+
+def test_calibrate_honours_an_outstanding_manual_jog(calibrating):
+    jog, _, _ = calibrating
+    state.set_manual_origin_offset(4.0, -2.0)
+
+    plot_worker.optical_reg_calibrate()
+
+    assert jog[0] == (6.0, 12.0)  # mark (10, 10) minus the offset (4, -2)
+    assert sum(dx for dx, _ in jog) == pytest.approx(0.0)
+    assert sum(dy for _, dy in jog) == pytest.approx(0.0)
+    assert state.manual_origin_offset() == (4.0, -2.0)  # left alone
+
+
+def test_calibrate_refuses_a_mark_at_the_near_edge(calibrating, monkeypatch):
+    jog, cross, _ = calibrating
+    monkeypatch.setattr(config, "OPTICAL_REG_MARK_X_MM", 0.0)  # a valid setting, at the corner
+
+    with pytest.raises(RuntimeError, match="too close to the bed edge"):
+        plot_worker.optical_reg_calibrate()
+
+    assert jog == [] and cross == []  # nothing moved
+
+
+def test_calibrate_refuses_a_mark_at_the_far_edge(calibrating, monkeypatch):
+    jog, cross, _ = calibrating
+    monkeypatch.setattr(config, "OPTICAL_REG_MARK_X_MM", 399.0)  # 1 mm shy of the 400 mm bed
+
+    with pytest.raises(RuntimeError, match="too close to the bed edge"):
+        plot_worker.optical_reg_calibrate()
+
+    assert jog == [] and cross == []
+
+
+def test_calibrate_refuses_when_the_jog_to_the_mark_is_longer_than_the_bed(calibrating):
+    jog, cross, _ = calibrating
+    state.set_manual_origin_offset(-500.0, 0.0)  # mark is now 510 mm away, past the bed
+
+    with pytest.raises(RuntimeError, match="too close to the bed edge"):
+        plot_worker.optical_reg_calibrate()
+
+    assert jog == [] and cross == []
+
+
+def test_calibrate_returns_the_carriage_after_a_vision_failure(calibrating, monkeypatch):
+    from app import optical_reg
+
+    jog, _, _ = calibrating
+    calls = []
+
+    def flaky(frame):
+        calls.append(1)
+        return None if len(calls) == 2 else (100.0, 100.0)
+
+    monkeypatch.setattr(optical_reg, "cross_center", flaky)
+
+    with pytest.raises(RuntimeError, match="cross not visible"):
+        plot_worker.optical_reg_calibrate()
+
+    assert jog[0] == (10.0, 10.0)  # got to the mark
+    assert sum(dx for dx, _ in jog) == pytest.approx(0.0)  # ...and all the way back
+    assert sum(dy for _, dy in jog) == pytest.approx(0.0)
+
+
+def test_calibrate_returns_the_carriage_after_a_plot_cross_failure(calibrating, monkeypatch):
+    jog, _, _ = calibrating
+
+    def boom(x, y, size):
+        raise RuntimeError("The registration mark does not fit the bed")
+
+    monkeypatch.setattr(plot_worker, "_plot_cross", boom)
+
+    with pytest.raises(RuntimeError, match="does not fit the bed"):
+        plot_worker.optical_reg_calibrate()
+
+    assert jog == [(10.0, 10.0), (-10.0, -10.0)]  # to the mark, then straight back

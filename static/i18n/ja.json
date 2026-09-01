@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "基準マーク Y (mm)",
   "camera.optical.mark_size": "マークのサイズ (mm)",
   "camera.optical.probe_offset": "プローブのオフセット (mm)",
-  "camera.optical.calibrate_hint": "ペンを紙の空いている場所へ動かしてから較正してください — 十字を描き、キャリッジを数 mm 動かして、カメラの縮尺と回転を求めます。",
+  "camera.optical.calibrate_hint": "較正では基準マークの位置に十字を描き、キャリッジをそこで数 mm 動かして、カメラの縮尺と回転を求めます — 用紙のその場所が空いていることを確認してください。",
   "camera.optical.calibrate": "カメラを較正",
   "camera.optical.calibrated": "較正済み: {mm_per_px} mm/px、回転 {rot}°、視野 約 {fov} mm",
   "camera.optical.uncalibrated": "まだ較正されていません。",

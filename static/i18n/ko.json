@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "기준 표시 Y (mm)",
   "camera.optical.mark_size": "표시 크기 (mm)",
   "camera.optical.probe_offset": "프로브 오프셋 (mm)",
-  "camera.optical.calibrate_hint": "펜을 종이의 빈 곳으로 옮긴 뒤 보정하세요 — 십자를 그리고 캐리지를 몇 mm 움직여 카메라의 배율과 회전을 알아냅니다.",
+  "camera.optical.calibrate_hint": "보정은 기준 표시 위치에 십자를 그리고 캐리지를 그 지점에서 몇 mm 움직여 카메라의 배율과 회전을 알아냅니다 — 종이의 그 자리가 비어 있는지 확인하세요.",
   "camera.optical.calibrate": "카메라 보정",
   "camera.optical.calibrated": "보정됨: {mm_per_px} mm/px, 회전 {rot}°, 시야 약 {fov} mm",
   "camera.optical.uncalibrated": "아직 보정하지 않았습니다.",

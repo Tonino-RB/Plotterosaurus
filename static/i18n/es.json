@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Marca de referencia Y (mm)",
   "camera.optical.mark_size": "Tamaño de la marca (mm)",
   "camera.optical.probe_offset": "Desplazamiento de la sonda (mm)",
-  "camera.optical.calibrate_hint": "Lleva la pluma sobre una zona de papel despejada y calibra — traza una cruz y mueve el carro unos milímetros para averiguar la escala y la rotación de la cámara.",
+  "camera.optical.calibrate_hint": "La calibración traza una cruz en la marca de referencia y mueve el carro unos milímetros allí para averiguar la escala y la rotación de la cámara — asegúrate de que esa zona del papel esté despejada.",
   "camera.optical.calibrate": "Calibrar la cámara",
   "camera.optical.calibrated": "Calibrada: {mm_per_px} mm/px, rotación {rot}°, campo de visión ~{fov} mm",
   "camera.optical.uncalibrated": "Todavía sin calibrar.",

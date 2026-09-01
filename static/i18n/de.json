@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Referenzmarke Y (mm)",
   "camera.optical.mark_size": "Größe der Marke (mm)",
   "camera.optical.probe_offset": "Sondenversatz (mm)",
-  "camera.optical.calibrate_hint": "Fahre den Stift über eine freie Stelle Papier und kalibriere dann — dabei wird ein Kreuz geplottet und der Schlitten ein paar mm bewegt, um Maßstab und Drehung der Kamera zu bestimmen.",
+  "camera.optical.calibrate_hint": "Beim Kalibrieren wird ein Kreuz an der Referenzmarke geplottet und der Schlitten dort ein paar mm bewegt, um Maßstab und Drehung der Kamera zu bestimmen — sorge dafür, dass diese Stelle auf dem Blatt frei ist.",
   "camera.optical.calibrate": "Kamera kalibrieren",
   "camera.optical.calibrated": "Kalibriert: {mm_per_px} mm/px, Drehung {rot}°, Sichtfeld ~{fov} mm",
   "camera.optical.uncalibrated": "Noch nicht kalibriert.",

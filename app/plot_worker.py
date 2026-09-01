@@ -2342,11 +2342,19 @@ def trigger_optical_reg(probe_mm: float | None = None) -> None:
 
 
 def optical_reg_calibrate() -> dict:
-    """One-shot image-scale + rotation calibration, run from idle. Assumes the
-    carriage has been jogged over a clear patch of paper. Draws a cross there,
-    jogs the carriage two known short vectors watching how far the cross slides
-    in the frame, solves the pixel<->mm similarity, and stores it. Returns the
-    fitted values plus the resulting field-of-view in mm.
+    """One-shot image-scale + rotation calibration, run from idle. Walks the
+    carriage to the configured reference mark (config optical_reg_mark_x_mm /
+    _y_mm, page mm from the declared origin), draws a cross there, jogs the
+    carriage two known short vectors watching how far the cross slides in the
+    frame, solves the pixel<->mm similarity, and stores it. Returns the fitted
+    values plus the resulting field-of-view in mm.
+
+    Positions itself rather than trusting the carriage to already sit over clear
+    paper: a cross centred on the declared origin drives its own arms
+    (_plot_cross defeats the driver's clip so the whole cross draws, negative
+    arms and all) plus the -d calibrate jog into the -X/-Y end stops. Aiming at
+    the mark — the same spot the run's real fiducial lands, and the coordinate
+    shown above the button in Settings — keeps the whole pattern on the bed.
     """
     from . import optical_reg
 
@@ -2359,6 +2367,36 @@ def optical_reg_calibrate() -> dict:
         size = config.OPTICAL_REG_MARK_SIZE_MM
         frames_n = config.OPTICAL_REG_FRAMES
 
+        # The jog to put the pen on the mark: an absolute page position, not a
+        # distance, so it's the mark minus the manual offset already standing on
+        # the carriage — the same logic as jog_to_paper_origin. origin_nudge is
+        # only ever set at a pen-change pause, so it's zero here.
+        mark_x, mark_y = config.OPTICAL_REG_MARK_X_MM, config.OPTICAL_REG_MARK_Y_MM
+        manual_x, manual_y = state.manual_origin_offset()
+        jog_dx, jog_dy = mark_x - manual_x, mark_y - manual_y
+
+        # Refuse before touching hardware if the calibration footprint — the
+        # cross's arms at +/- size/2 and the +d reach of the two wiggle jogs —
+        # would leave the bed. _plot_cross and _jog_carriage have no near-edge
+        # guard of their own (they defeat the driver's clip on purpose), so this
+        # is the only thing between a mark set near the bed corner and the end
+        # stops. Skew-corrects the mark centre the way manual_jog's far-edge
+        # guard does; pad is axis-aligned slack on top.
+        base_x, base_y = state.origin_base()
+        skew_machine = config.active_machine()
+        cx, cy = axis_skew.skew_delta(
+            base_x + mark_x, base_y + mark_y,
+            skew_machine["skew_deg"], skew_machine.get("skew_true_axis", "x"))
+        bed_w_mm, bed_h_mm = machine_bounds_mm()
+        pad = size / 2.0 + d
+        if (cx - pad < 0 or cy - pad < 0
+                or cx + pad > bed_w_mm or cy + pad > bed_h_mm
+                or not _move_fits_bed(jog_dx + d, jog_dy + d)):
+            raise RuntimeError(
+                f"Can't calibrate: the reference mark ({mark_x:.0f}, {mark_y:.0f} mm) "
+                f"is too close to the bed edge. Move it further onto the sheet, or "
+                f"give the paper origin more clearance.")
+
         def _center() -> tuple[float, float]:
             frame = camera.grab_median_gray(frames_n)
             if frame is None:
@@ -2368,10 +2406,12 @@ def optical_reg_calibrate() -> dict:
                 raise RuntimeError("Calibration cross not visible — check the camera aim and focus")
             return got[0], got[1]
 
-        _plot_cross(0.0, 0.0, size)
-        # Every jog is walked back, including on the way out: a cross that never
-        # came into focus would otherwise leave the carriage parked wherever the
-        # sequence gave up, with the app's own bookkeeping none the wiser.
+        # Every jog is walked back, including the move onto the mark and any jog
+        # made on the way out: a cross that never came into focus would otherwise
+        # leave the carriage parked wherever the sequence gave up, with the app's
+        # own bookkeeping none the wiser. (A _plot_cross that fails part-drawn
+        # can still leave the carriage up to size/2 off the mark, which walked_*
+        # can't see — but that beats the old no-walk-back-at-all.)
         walked_x = walked_y = 0.0
 
         def _step(dx: float, dy: float) -> None:
@@ -2381,6 +2421,8 @@ def optical_reg_calibrate() -> dict:
             walked_y += dy
 
         try:
+            _step(jog_dx, jog_dy)
+            _plot_cross(0.0, 0.0, size)
             c0 = _center()
             _step(d, 0.0)
             c1 = _center()

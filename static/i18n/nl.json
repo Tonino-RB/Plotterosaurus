@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Referentiemarkering Y (mm)",
   "camera.optical.mark_size": "Grootte van de markering (mm)",
   "camera.optical.probe_offset": "Offset van de sonde (mm)",
-  "camera.optical.calibrate_hint": "Zet de pen boven een leeg stuk papier en kalibreer dan — er wordt een kruis geplot en de slede beweegt een paar mm om de schaal en rotatie van de camera te leren.",
+  "camera.optical.calibrate_hint": "Bij het kalibreren wordt een kruis op de referentiemarkering geplot en de slede daar een paar mm bewogen om de schaal en rotatie van de camera te leren — zorg dat die plek op het papier leeg is.",
   "camera.optical.calibrate": "Camera kalibreren",
   "camera.optical.calibrated": "Gekalibreerd: {mm_per_px} mm/px, rotatie {rot}°, beeldveld ~{fov} mm",
   "camera.optical.uncalibrated": "Nog niet gekalibreerd.",

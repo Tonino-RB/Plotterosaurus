@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Segno di riferimento Y (mm)",
   "camera.optical.mark_size": "Dimensione del segno (mm)",
   "camera.optical.probe_offset": "Offset della sonda (mm)",
-  "camera.optical.calibrate_hint": "Porta la penna su una zona di foglio libera, poi calibra — traccia una croce e sposta il carrello di qualche mm per ricavare scala e rotazione della fotocamera.",
+  "camera.optical.calibrate_hint": "La calibrazione traccia una croce in corrispondenza del segno di riferimento e sposta lì il carrello di qualche mm per ricavare scala e rotazione della fotocamera — assicurati che quel punto del foglio sia libero.",
   "camera.optical.calibrate": "Calibra la fotocamera",
   "camera.optical.calibrated": "Calibrata: {mm_per_px} mm/px, rotazione {rot}°, campo visivo ~{fov} mm",
   "camera.optical.uncalibrated": "Non ancora calibrata.",

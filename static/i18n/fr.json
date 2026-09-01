@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Marque de référence Y (mm)",
   "camera.optical.mark_size": "Taille de la marque (mm)",
   "camera.optical.probe_offset": "Décalage de la sonde (mm)",
-  "camera.optical.calibrate_hint": "Amenez la plume sur une zone de papier dégagée, puis calibrez — une croix est tracée et le chariot se déplace de quelques mm pour apprendre l'échelle et la rotation de la caméra.",
+  "camera.optical.calibrate_hint": "Le calibrage trace une croix au niveau du repère de référence et déplace le chariot de quelques mm à cet endroit pour apprendre l'échelle et la rotation de la caméra — veillez à ce que cette zone du papier soit dégagée.",
   "camera.optical.calibrate": "Calibrer la caméra",
   "camera.optical.calibrated": "Calibré : {mm_per_px} mm/px, rotation {rot}°, champ de vision ~{fov} mm",
   "camera.optical.uncalibrated": "Pas encore calibré.",

@@ -518,7 +518,7 @@
   "camera.optical.mark_y": "Reference mark Y (mm)",
   "camera.optical.mark_size": "Mark size (mm)",
   "camera.optical.probe_offset": "Probe offset (mm)",
-  "camera.optical.calibrate_hint": "Jog the pen over a clear patch of paper, then calibrate — it plots a cross and moves the carriage a few mm to learn the camera's scale and rotation.",
+  "camera.optical.calibrate_hint": "Calibrate plots a cross at the reference mark and moves the carriage a few mm there to learn the camera's scale and rotation — make sure that spot on the sheet is clear.",
   "camera.optical.calibrate": "Calibrate camera",
   "camera.optical.calibrated": "Calibrated: {mm_per_px} mm/px, rotation {rot}°, field of view ~{fov} mm",
   "camera.optical.uncalibrated": "Not calibrated yet.",
