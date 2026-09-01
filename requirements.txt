@@ -18,6 +18,11 @@ lxml
 numpy
 scipy
 
+# Imported directly by app/svg_utils.py to get a curved path's analytic bounding
+# box when deciding whether it is a point-sized dot. Same story as lxml/numpy:
+# it is vpype's own SVG parser, so it is already installed — declared, not pinned.
+svgelements
+
 # The "Save As" export feature (app/export.py). cairosvg rasterizes/prints the
 # optimized SVG to PNG/PDF — pure Python, binds to the system libcairo, which is
 # already present on the Pi. vpype-gcode adds vpype's `gwrite` command and the

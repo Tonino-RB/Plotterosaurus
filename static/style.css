@@ -380,6 +380,17 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
   contain: paint;
 }
 .paper-content svg { width: 100%; height: 100%; display: block; }
+/* The grid's cutting-marks layer plots 1 mm ticks / 2 mm crosses — true size on
+   paper, but sub-pixel at preview zoom. Draw them as constant-size marks here so
+   the preview shows where the trims land; the plotted and exported files are
+   untouched. Red sets them apart from the black artwork, like the dashed margin
+   box. */
+.paper-content [data-plotterosaurus-cut-marks] line {
+  stroke: #FF4D4D;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
 
 .pen-cursor {
   position: absolute;
@@ -782,6 +793,13 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 .grid-options.disabled { opacity: 0.5; pointer-events: none; }
 .grid-options .field { margin-top: 0.5rem; }
 .grid-options .field input[type="number"] { max-width: 8rem; }
+.grid-spacing-row { display: flex; gap: 0.5rem; align-items: flex-end; margin-top: 0.5rem; }
+.grid-spacing-row .field { margin-top: 0; min-width: 0; flex: 1; }
+.grid-spacing-row .field input[type="number"] { max-width: none; width: 100%; }
+.grid-spacing-link { flex: 0 0 auto; min-width: 1.9rem; height: 1.9rem; padding: 0; margin-bottom: 0.1rem; }
+.grid-spacing-link svg { display: block; }
+.grid-spacing-link.is-linked { color: var(--accent-dark); opacity: 1; }
+.grid-spacing-link:not(.is-linked) { opacity: 0.45; }
 .grid-arrangement { margin-bottom: 0.25rem; font-variant-numeric: tabular-nums; }
 .card-section.disabled { opacity: 0.55; }
 

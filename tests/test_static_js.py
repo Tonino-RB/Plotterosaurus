@@ -148,6 +148,66 @@ def test_fit_to_page_waits_for_the_server():
     assert out["footprint_width_mm"] == 40
 
 
+# placementKey -----------------------------------------------------------
+#
+# The cache key that decides when the card refetches placement + ink. A grid
+# job's tiled file going ready swaps the served document from the un-tiled
+# drawing to the sheet; if the key does not move on that, the ink/placement
+# never refetch and the drawing renders against the wrong (tiny) footprint and
+# disappears.
+
+def _placement_keys(job_pending: str, job_ready: str) -> tuple[str, str]:
+    source = (STATIC / "app.js").read_text()
+    ctx = quickjs.Context()
+    ctx.eval("var serverState = {svgs: {}};\n"
+             + _extract_function(source, "gridActive") + "\n"
+             + _extract_function(source, "placementKey"))
+    pend = ctx.eval(
+        "serverState.svgs = {'s1:grid': {status: 'tiling', settings_key: 'K'}};"
+        f"placementKey({job_pending})")
+    ready = ctx.eval(
+        "serverState.svgs = {'s1:grid': {status: 'ready', settings_key: 'K'}};"
+        f"placementKey({job_ready})")
+    return pend, ready
+
+
+def test_placement_key_moves_when_the_grid_becomes_ready():
+    job = ("{svg_id:'s1', grid_enabled:true, grid_copies:4, grid_spacing_x_mm:0, grid_spacing_y_mm:0, "
+           "grid_cut_marks:false, paper_width_mm:297, paper_height_mm:420, "
+           "margin_top_mm:0, margin_right_mm:0, margin_bottom_mm:0, margin_left_mm:0, "
+           "fit_content:false, transform_scale:1, transform_rotation_deg:0, "
+           "transform_offset_x_mm:0, transform_offset_y_mm:0, layer_selections:[]}")
+    pending, ready = _placement_keys(job, job)
+    assert pending != ready
+
+
+def test_placement_key_moves_when_grid_is_switched_off():
+    on = ("{svg_id:'s1', grid_enabled:true, grid_copies:4, grid_spacing_x_mm:0, grid_spacing_y_mm:0, "
+          "grid_cut_marks:false, paper_width_mm:297, paper_height_mm:420, "
+          "margin_top_mm:0, margin_right_mm:0, margin_bottom_mm:0, margin_left_mm:0, "
+          "fit_content:false, transform_scale:1, transform_rotation_deg:0, "
+          "transform_offset_x_mm:0, transform_offset_y_mm:0, layer_selections:[]}")
+    off = on.replace("grid_enabled:true", "grid_enabled:false")
+    _pending, key_on = _placement_keys(on, on)
+    _p2, key_off = _placement_keys(on, off)
+    assert key_on != key_off
+
+
+def test_placement_key_moves_when_grid_fit_changes():
+    """page vs ink fit tiles a different sheet, so the served document — and the
+    footprint the drawing renders against — changes with it."""
+    page = ("{svg_id:'s1', grid_enabled:true, grid_copies:4, grid_fit:'page', "
+            "grid_spacing_x_mm:0, grid_spacing_y_mm:0, "
+            "grid_cut_marks:false, paper_width_mm:297, paper_height_mm:420, "
+            "margin_top_mm:0, margin_right_mm:0, margin_bottom_mm:0, margin_left_mm:0, "
+            "fit_content:false, transform_scale:1, transform_rotation_deg:0, "
+            "transform_offset_x_mm:0, transform_offset_y_mm:0, layer_selections:[]}")
+    ink = page.replace("grid_fit:'page'", "grid_fit:'ink'")
+    _p, key_page = _placement_keys(page, page)
+    _p2, key_ink = _placement_keys(page, ink)
+    assert key_page != key_ink
+
+
 # skewAngleDeg -------------------------------------------------------------
 #
 # The Settings-panel calculator: two measured diagonals of a plotted square

@@ -1229,16 +1229,30 @@
                     <input type="number" class="grid-copies" min="2" max="64" step="1" value="4" />
                   </label>
                   <label class="field">
-                    <span class="field-label" data-i18n="card.grid_gutter">Gap between copies (mm)</span>
-                    <input type="number" class="grid-gutter" min="0" max="100" step="0.5" value="0" />
+                    <span class="field-label" data-i18n="card.grid_fit">Scaling</span>
+                    <select class="grid-fit">
+                      <option value="page" data-i18n="card.grid_fit_page">Fit the whole page to each cell</option>
+                      <option value="ink" data-i18n="card.grid_fit_ink">Fill each cell with the drawing</option>
+                    </select>
                   </label>
+                  <div class="grid-spacing-row">
+                    <label class="field">
+                      <span class="field-label" data-i18n="card.grid_spacing_x">Horizontal spacing (mm)</span>
+                      <input type="number" class="grid-spacing-x" min="0" max="100" step="0.5" value="0" />
+                    </label>
+                    <button type="button" class="icon-btn grid-spacing-link is-linked" aria-pressed="true" title="Link horizontal and vertical spacing" aria-label="Link horizontal and vertical spacing" data-i18n-title="a11y.grid_spacing_link" data-i18n-aria-label="a11y.grid_spacing_link"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6.5 9.5 9.5 6.5"/><path d="M5 8 3.5 9.5a2.5 2.5 0 0 0 3.5 3.5L8.5 11.5"/><path d="M11 8 12.5 6.5a2.5 2.5 0 0 0-3.5-3.5L7.5 4.5"/></svg></button>
+                    <label class="field">
+                      <span class="field-label" data-i18n="card.grid_spacing_y">Vertical spacing (mm)</span>
+                      <input type="number" class="grid-spacing-y" min="0" max="100" step="0.5" value="0" />
+                    </label>
+                  </div>
                   <label class="inline-check">
                     <input type="checkbox" class="grid-cut-marks" />
                     <span data-i18n="card.grid_cut_marks">Add cutting marks</span>
                   </label>
                   <p class="muted grid-arrangement" hidden></p>
-                  <p class="muted" data-i18n="card.grid_help">Repeats the whole drawing to fill the sheet, resizing each copy. Reversible — turn it off to get the single drawing back.</p>
-                  <p class="muted" data-i18n="card.grid_cut_marks_help">Cutting marks add a dot at every corner of every copy — on the gap's centre line where there is a gap — in a layer of their own, always drawn.</p>
+                  <p class="muted" data-i18n="card.grid_help">Repeats the drawing across the sheet inside its margins, turning each copy to fit if that packs more in. Scaling decides whether the whole page or the drawn lines alone fill each cell. Horizontal and vertical spacing pad every side of every copy — doubling between neighbours and leaving a matching margin at the sheet edge. No line optimization is applied. Reversible — turn it off to get the single drawing back.</p>
+                  <p class="muted" data-i18n="card.grid_cut_marks_help">Trim marks between copies only, in a layer of their own that always plots: a 1 mm tick where a cut between two copies reaches the sheet edge, a 2 mm cross where two cuts meet between four. Nothing on the sheet's own corners or edges.</p>
                 </div>
               </div>
             </section>

@@ -1,4 +1,4 @@
-"""vpype subprocess wrapper for SVG optimization.
+"""vpype subprocess wrapper for SVG optimization, plus the Grid tiler.
 
 The plot worker invokes ``optimize_svg`` before planning when a job has
 ``optimize=True``. The pipeline composes a vpype command line from the four
@@ -8,6 +8,11 @@ two commands that accept it.
 vpype's default ``read``/``write`` round-trip preserves Inkscape layer
 structure (``inkscape:groupmode="layer"`` and ``inkscape:label``), so
 downstream ``svg_utils.filter_to_layers`` keeps working on the optimized file.
+
+``arrangement`` / ``clamp_spacing_mm`` / ``grid_svg`` are the Grid module's
+layout maths and tiler — one ``vpype begin grid … end`` block that replicates
+the drawing into the sheet, with no line-optimization verbs so the geometry is
+changed only by the layout itself.
 """
 import logging
 import math
@@ -19,6 +24,10 @@ import sys
 import threading
 from pathlib import Path
 from typing import Callable
+
+from lxml import etree
+
+from . import svg_utils
 
 log = logging.getLogger(__name__)
 
@@ -157,14 +166,23 @@ def optimize_svg(
 
 def arrangement(copies: int, paper_w_mm: float, paper_h_mm: float,
                 content_w_mm: float | None = None,
-                content_h_mm: float | None = None) -> tuple[int, int]:
+                content_h_mm: float | None = None) -> tuple[int, int, bool]:
     """Best columns x rows to fit ``copies`` cells on a ``paper_w`` x ``paper_h``
     sheet: the split that lets each copy be scaled up the most while keeping its
     aspect ratio. Falls back to the sheet's own aspect when the drawing has no
     resolvable size.
 
+    Returns ``(cols, rows, rotate)``. ``rotate`` is True when turning every copy
+    90 degrees fills its cell better than leaving it upright — two A4-portrait
+    copies on a portrait A3 sheet want ``(1, 2, True)``, the way two A4 pages fit
+    an A3, not stacked at 70% scale.
+
     ``cols * rows`` is >= ``copies`` and may exceed it (e.g. 5 -> 3x2); the extra
     cells are filled too. Common counts (2, 4, 6, 8, 9, 12, 16) land exactly.
+
+    Spacing-blind by design: the split is decided on the raw margin box, and
+    ``clamp_spacing_mm`` keeps every cell positive whatever spacing is applied
+    afterwards, so the arrangement need not know it.
     """
     copies = max(1, int(copies))
     w = paper_w_mm if paper_w_mm and paper_w_mm > 0 else 1.0
@@ -172,65 +190,136 @@ def arrangement(copies: int, paper_w_mm: float, paper_h_mm: float,
     cw = content_w_mm if content_w_mm and content_w_mm > 0 else w
     ch = content_h_mm if content_h_mm and content_h_mm > 0 else h
     best_key: tuple | None = None
-    best: tuple[int, int] = (1, copies)
+    best: tuple[int, int, bool] = (1, copies, False)
     for cols in range(1, copies + 1):
         rows = math.ceil(copies / cols)
-        fit = min((w / cols) / cw, (h / rows) / ch)
+        cell_w, cell_h = (w / cols), (h / rows)
+        fit_plain = min(cell_w / cw, cell_h / ch)
+        fit_rot = min(cell_w / ch, cell_h / cw)
+        rotate = fit_rot > fit_plain
+        fit = max(fit_plain, fit_rot)
         # Largest copies win; ties break toward fewer wasted cells, then toward
         # an arrangement whose own aspect is closest to the sheet's.
         key = (round(fit, 6), -(cols * rows - copies),
                -abs((cols / rows) - (w / h)))
         if best_key is None or key > best_key:
-            best_key, best = key, (cols, rows)
+            best_key, best = key, (cols, rows, rotate)
     return best
 
 
-def clamp_gutter_mm(gutter_mm: float, cell_w_mm: float, cell_h_mm: float) -> float:
-    """The largest gutter that still leaves a cell to draw in.
+def clamp_spacing_mm(spacing_mm: float, nat_cell_mm: float) -> float:
+    """The largest per-side spacing that still leaves a cell to draw in.
 
-    ``layout -m`` subtracts *twice* the margin from the cell and scales the copy
-    by ``min((w - 2m) / content_w, (h - 2m) / content_h)`` with no check that the
-    result is positive (see vpype_cli/operations.py). A gutter at or above the
-    cell size therefore produces a negative scale: every copy comes out mirrored,
-    enlarged and off the page, with vpype exiting 0 and reporting nothing.
-
-    Capped at half the smaller cell dimension, so the drawing always keeps at
-    least half of it. Clamped rather than refused for the same reason the job
-    fields in main.py are (``_CLAMP_RANGES``): the user dragged a slider past
-    what this sheet can hold, they didn't ask for the request to fail.
+    Spacing pads every side of a copy, so one axis eats ``2 * spacing`` of the
+    copy's natural (spacing-free) cell ``nat_cell_mm``. Capped at a quarter of
+    that, so the drawing always keeps at least half its cell. Clamped rather than
+    refused for the same reason the job fields in main.py are (``_CLAMP_RANGES``):
+    the user dragged a slider past what this sheet can hold, they didn't ask for
+    the request to fail.
     """
-    return min(max(0.0, gutter_mm), 0.5 * min(cell_w_mm, cell_h_mm))
+    return min(max(0.0, spacing_mm), 0.25 * nat_cell_mm)
 
 
 def grid_svg(src: Path, dst: Path, cols: int, rows: int,
-             cell_w_mm: float, cell_h_mm: float, gutter_mm: float) -> None:
-    """Tile ``src`` into a ``cols`` x ``rows`` grid, resizing each copy to fit a
-    ``cell_w`` x ``cell_h`` mm cell (minus ``gutter_mm`` between copies). Writes
-    ``dst`` atomically. Raises ``OptimizeError`` on vpype failure / empty output.
+             cell_w_mm: float, cell_h_mm: float,
+             spacing_x_mm: float, spacing_y_mm: float,
+             *, rotate_copies: bool = False, fit: str = "page") -> None:
+    """Tile ``src`` into a ``cols`` x ``rows`` grid on a sheet the size of the
+    margin box, each copy fitted to a ``cell_w`` x ``cell_h`` mm cell padded by
+    ``spacing_x_mm`` left/right and ``spacing_y_mm`` top/bottom. Writes ``dst``
+    atomically. Raises ``OptimizeError`` on vpype failure / empty output.
 
-    ``gutter_mm`` is expected to have been through ``clamp_gutter_mm`` already —
-    the caller needs the clamped value too, to put the cutting marks on the same
-    lines the copies were inset to (see optimize_queue._run_grid_phase).
+    ``fit`` decides what "fitted to a cell" scales:
 
-    Same atomic-write shape as ``optimize_svg`` (see its docstring): vpype writes
-    a sibling ``.partial`` file which is renamed into place, so a reader sees the
-    previous complete file or the new one, never a half-tiled document.
+    - ``"page"`` (default) fits the drawing's whole *page* — its ``width`` x
+      ``height`` — into the cell, so a layout with deliberate whitespace keeps
+      its proportions, the same rule ``placement.compute`` applies to "fit to
+      page". Realised by framing the page with a scratch ``rect`` on its own
+      layer, letting ``layout`` fit *that*, then ``ldelete``-ing it. ``read``
+      already crops geometry to the page, so the frame is exactly the page.
+    - ``"ink"`` fits the drawn geometry's bounding box, blowing each copy up
+      until its ink touches the cell edges.
+
+    Spacing pads *every* side of every copy: two neighbours end up ``2 * spacing``
+    apart, and the outer copies are inset ``spacing`` from the sheet edge — a
+    margin on top of the page margins the cell was already carved out of.
+
+    One ``vpype begin grid … end`` block: ``read`` per cell, the optional page
+    frame, an optional ``rotate`` (when ``arrangement`` decided each copy fills
+    its cell better turned 90 degrees — the "two A4 in an A3" case), ``layout``
+    to fit and centre the copy in its cell, the frame ``ldelete``, then
+    ``translate`` by the spacing so the pad lands on the top/left edge too. No
+    ``linemerge`` / ``linesort`` / ``linesimplify`` / ``reloop`` — the geometry
+    is changed only by the layout.
+
+    The spacing is realised through the *pitch*: ``grid``'s offset is
+    ``cell + 2 * spacing``, so the tiled page is ``cols * pitch`` x
+    ``rows * pitch``; with the cells sized ``avail / n - 2 * spacing`` that is
+    exactly the margin box, and ``write --page-size`` pins it there.
+
+    ``spacing_*_mm`` is expected to have been through ``clamp_spacing_mm``
+    already — the caller needs the clamped values too, to put the cutting marks
+    on the same lines the copies were spaced to (see
+    optimize_queue._run_grid_phase).
+
+    Round caps are forced afterwards by ``svg_utils.force_round_caps`` (vpype's
+    ``write`` emits no ``stroke-linecap``); the cutting marks, likewise, are a
+    separate pass.
+
+    Same atomic-write shape as ``optimize_svg``: vpype writes a sibling
+    ``.partial`` file which is renamed into place, so a reader sees the previous
+    complete file or the new one, never a half-tiled document.
     """
     tmp = _partial(dst)
-    inset = max(0.0, gutter_mm) / 2.0
+    sx, sy = max(0.0, spacing_x_mm), max(0.0, spacing_y_mm)
+    pitch_w, pitch_h = cell_w_mm + 2 * sx, cell_h_mm + 2 * sy
+    sheet_w_mm, sheet_h_mm = cols * pitch_w, rows * pitch_h
     # vpype's `layout` enforces portrait unless --landscape is given: it runs the
     # size through _normalize_page_size, which swaps any page whose width exceeds
     # its height. Without this flag every landscape cell is silently fitted to a
-    # portrait box of the same dimensions, so the copies come out too small in
-    # one axis and overflow their pitch in the other.
+    # portrait box of the same dimensions.
     landscape = ["-l"] if cell_w_mm > cell_h_mm else []
+    # `--` so vpype does not read a leading minus as an option; only emitted when
+    # there is a turn to make.
+    turn = ["rotate", "--", "90"] if rotate_copies else []
+    # `layout` centres the copy in a cell at the block origin; shift it by the
+    # spacing so the pad is on the top/left edge as well — `grid`'s offset then
+    # holds every later copy the same distance in.
+    shift = ["translate", f"{sx}mm", f"{sy}mm"] if (sx or sy) else []
+    # Page fit: a rect the size of the drawing's page, on a layer one past the
+    # drawing's own highest, is what `layout` fits — then `ldelete` drops it.
+    # `_vpype_layer_id` mirrors the id vpype assigns each source layer, so
+    # `max + 1` is free even if `read` drops an empty layer and leaves a gap a
+    # `-l new` would have reused. Emitted before `turn` so the frame rotates with
+    # the artwork. Falls back to ink fit for a document with no resolvable size.
+    frame: list[str] = []
+    unframe: list[str] = []
+    if fit == "page":
+        root = etree.parse(str(src)).getroot()
+        doc_w_mm, doc_h_mm = svg_utils.svg_size_mm(root)
+        src_ids = {
+            svg_utils._vpype_layer_id(g.get(svg_utils.LABEL_ATTR) or "",
+                                      g.get("id") or "", order)
+            for order, g in enumerate(svg_utils._top_level_layers(root), start=1)
+        }
+        if doc_w_mm and doc_h_mm and doc_w_mm > 0 and doc_h_mm > 0 and src_ids:
+            frame_id = str(max(src_ids) + 1)
+            frame = ["rect", "-l", frame_id, "0", "0",
+                     f"{doc_w_mm}mm", f"{doc_h_mm}mm"]
+            unframe = ["ldelete", frame_id]
+        else:
+            log.warning("grid: %s has no resolvable page size; fitting ink", src)
     cmd = _vpype_cmd() + [
         "begin",
-        "grid", "-o", f"{cell_w_mm}mm", f"{cell_h_mm}mm", str(int(cols)), str(int(rows)),
+        "grid", "-o", f"{pitch_w}mm", f"{pitch_h}mm", str(int(cols)), str(int(rows)),
         "read", str(src),
-        "layout", *landscape, "-m", f"{inset}mm", f"{cell_w_mm}mmx{cell_h_mm}mm",
+        *frame,
+        *turn,
+        "layout", *landscape, "-m", "0mm", f"{cell_w_mm}mmx{cell_h_mm}mm",
+        *unframe,
+        *shift,
         "end",
-        "write", str(tmp),
+        "write", "--page-size", f"{sheet_w_mm}mmx{sheet_h_mm}mm", str(tmp),
     ]
     _run_vpype(cmd, tmp, dst, "grid")
 

@@ -53,19 +53,22 @@ def grid_settings_key(settings: dict) -> str:
 
     Built on top of ``settings_key`` because the grid pass tiles the *optimized*
     file — a change to any optimize toggle changes what gets tiled. The grid
-    tuple carries the copy count, gutter, the cutting-marks toggle and the
-    sheet + margins (which set the cell size). The drawing's own dimensions are
-    not in the key: a given svg_id has fixed content, so the arrangement is
-    deterministic without them.
+    dict carries the copy count, the x/y spacing, the cutting-marks toggle and
+    the sheet + margins (which set the cell size). The drawing's own dimensions
+    are not in the key: a given svg_id has fixed content, so the arrangement is
+    deterministic without them. The job's transform is not in the key either —
+    it acts on the whole tiled sheet downstream, not on the tiled file. Nor is
+    ``spacing_linked``: it only steers the card's two inputs, not the output.
+    ``fit`` is in the key: page vs ink fit changes what gets tiled.
     """
     g = settings.get("grid")
     if not g:
         return f"{settings_key(settings)}|g=0"
-    copies, gutter, cut_marks, pw, ph, ml, mr, mt, mb = g
-    return (f"{settings_key(settings)}|g={int(copies)}x{float(gutter):.3f}"
-            f"x{int(bool(cut_marks))}"
-            f"x{float(pw):.1f}x{float(ph):.1f}"
-            f"x{float(ml):.1f}x{float(mr):.1f}x{float(mt):.1f}x{float(mb):.1f}")
+    return (f"{settings_key(settings)}"
+            f"|g={g['copies']}x{g['spacing_x_mm']:.3f}x{g['spacing_y_mm']:.3f}"
+            f"x{int(g['cut_marks'])}x{g['fit']}"
+            f"x{g['paper_w_mm']:.1f}x{g['paper_h_mm']:.1f}"
+            f"x{g['ml']:.1f}x{g['mr']:.1f}x{g['mt']:.1f}x{g['mb']:.1f}")
 
 
 def settings_from_config() -> dict:
@@ -83,17 +86,19 @@ def settings_from_config() -> dict:
 def settings_from_job(job: dict) -> dict:
     grid = None
     if job.get("grid_enabled"):
-        grid = (
-            int(job.get("grid_copies", 4)),
-            float(job.get("grid_gutter_mm", 0.0)),
-            bool(job.get("grid_cut_marks", False)),
-            float(job.get("paper_width_mm", 210.0)),
-            float(job.get("paper_height_mm", 297.0)),
-            float(job.get("margin_left_mm", 0.0)),
-            float(job.get("margin_right_mm", 0.0)),
-            float(job.get("margin_top_mm", 0.0)),
-            float(job.get("margin_bottom_mm", 0.0)),
-        )
+        grid = {
+            "copies": int(job.get("grid_copies", 4)),
+            "spacing_x_mm": float(job.get("grid_spacing_x_mm", 0.0)),
+            "spacing_y_mm": float(job.get("grid_spacing_y_mm", 0.0)),
+            "cut_marks": bool(job.get("grid_cut_marks", False)),
+            "fit": "ink" if job.get("grid_fit") == "ink" else "page",
+            "paper_w_mm": float(job.get("paper_width_mm", 210.0)),
+            "paper_h_mm": float(job.get("paper_height_mm", 297.0)),
+            "ml": float(job.get("margin_left_mm", 0.0)),
+            "mr": float(job.get("margin_right_mm", 0.0)),
+            "mt": float(job.get("margin_top_mm", 0.0)),
+            "mb": float(job.get("margin_bottom_mm", 0.0)),
+        }
     if not job.get("optimize_svg"):
         # Grid alone is enough to run a task, and phase 1 read the four toggles
         # straight off the job record — so a job with Optimize SVG *off* and
@@ -532,6 +537,14 @@ def _process_phases(task: _Task) -> None:
         state.clear_svg_status(task.svg_id)
         return
 
+    # vpype reads stroke-width="inherit" as 0 and stroke="inherit" as unset, so
+    # a drawing that sets the pen once on the layer <g> optimizes / tiles to a
+    # blank-looking, one-colour copy. It also drops any zero-length subpath, so a
+    # pen dot disappears. normalize_layer_structure fixes both at upload; repeat
+    # them here to also cover files uploaded before that landed.
+    svg_utils.resolve_inherit_presentation(src)
+    svg_utils.expand_degenerate_geometry(src)
+
     state.set_svg_status(task.svg_id, "optimizing", settings_key=task.settings_key)
     task.started.set()
 
@@ -604,7 +617,7 @@ def _process_phases(task: _Task) -> None:
 def _run_grid_phase(task: _Task, pre_grid: Path) -> bool:
     """Tile ``pre_grid`` into ``{svg_id}.grid.svg``. Returns whether it worked;
     on failure ``task.error`` says why, in the words the job's card will show."""
-    copies, gutter, cut_marks, pw, ph, ml, mr, mt, mb = task.grid
+    g = task.grid
     grid_path = _grid_path(task.svg_id)
     gsid = _grid_status_id(task.svg_id)
     try:
@@ -615,24 +628,32 @@ def _run_grid_phase(task: _Task, pre_grid: Path) -> bool:
         # Deciding on the sheet and then filling the margin box picks the wrong
         # split whenever the two have different aspects: A4 portrait with 100mm
         # top and bottom margins is a landscape strip, and 2 copies want 2x1.
-        avail_w = max(1.0, pw - ml - mr)
-        avail_h = max(1.0, ph - mt - mb)
-        cols, rows = svg_optimize.arrangement(copies, avail_w, avail_h,
-                                              content_w, content_h)
-        cell_w, cell_h = avail_w / cols, avail_h / rows
-        # Both the tiling and the cutting marks have to use the same gutter, or
-        # the marks stop landing on the lines the copies were inset to.
-        gutter = svg_optimize.clamp_gutter_mm(gutter, cell_w, cell_h)
+        avail_w = max(1.0, g["paper_w_mm"] - g["ml"] - g["mr"])
+        avail_h = max(1.0, g["paper_h_mm"] - g["mt"] - g["mb"])
+        cols, rows, rotate = svg_optimize.arrangement(
+            g["copies"], avail_w, avail_h, content_w, content_h)
+        # Spacing pads every side of every copy. Clamp each axis against the
+        # spacing-free ("natural") cell so the cap is stable, then take 2*spacing
+        # out of that cell — one spacing per side. The pitch stays the natural
+        # cell, so the tiled sheet is still exactly the margin box: the spacing
+        # shows up as a gap between copies (2*spacing) and an inset at the edge.
+        nat_cell_w, nat_cell_h = avail_w / cols, avail_h / rows
+        sx = svg_optimize.clamp_spacing_mm(g["spacing_x_mm"], nat_cell_w)
+        sy = svg_optimize.clamp_spacing_mm(g["spacing_y_mm"], nat_cell_h)
+        cell_w = nat_cell_w - 2.0 * sx
+        cell_h = nat_cell_h - 2.0 * sy
         state.set_svg_status(gsid, "tiling", settings_key=task.grid_key)
         with workload.heavy("grid"):
             svg_optimize.grid_svg(pre_grid, grid_path, cols, rows,
-                                  cell_w, cell_h, gutter)
+                                  cell_w, cell_h, sx, sy, rotate_copies=rotate,
+                                  fit=g["fit"])
         svg_utils.reconcile_layers(_src_path(task.svg_id), grid_path)
-        if cut_marks:
+        svg_utils.force_round_caps(grid_path)
+        if g["cut_marks"]:
             # After the reconcile, never before: the marks layer is not one of
             # the upload's, and matching it against a source label would move
             # it into an artwork layer's position (see svg_utils.add_cut_marks).
-            svg_utils.add_cut_marks(grid_path, cols, rows, cell_w, cell_h, gutter)
+            svg_utils.add_cut_marks(grid_path, cols, rows, cell_w, cell_h, sx, sy)
     except Exception as e:  # noqa: BLE001 — any failure here is the job's
         grid_path.unlink(missing_ok=True)
         if task.cancelled:

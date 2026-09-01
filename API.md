@@ -128,18 +128,21 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   "optimize_expert_3_enabled": false,
   "optimize_expert_3_cmd":     "",
 
-  // "Grid" layout: tile the whole drawing to fill the sheet, resizing each
-  // copy to its cell. Reversible (a cached derivative selected by grid_enabled).
-  // Follows optimize_svg — with it on the optimized geometry is what gets
-  // tiled, with it off the drawing as uploaded. Beginner mode only. The
-  // columns x rows arrangement is derived from grid_copies, the drawing's
-  // aspect ratio and the area inside the margins; grid_copies is rounded up to
-  // a full grid (e.g. 5 -> 3x2 = 6). A gutter too wide for the resulting cell
-  // is capped at half the cell's smaller side.
+  // "Grid" layout: tile the whole drawing to fill the sheet. Reversible (a
+  // cached derivative selected by grid_enabled). Follows optimize_svg — with it
+  // on the optimized geometry is what gets tiled, with it off the drawing as
+  // uploaded. Beginner mode only. The columns x rows arrangement is derived
+  // from grid_copies, the drawing's aspect ratio and the area inside the
+  // margins; grid_copies is rounded up to a full grid (e.g. 5 -> 3x2 = 6).
+  // Spacing that is too wide for the resulting cell is capped at a quarter of
+  // that cell.
   "grid_enabled":              false,  // Master toggle.
   "grid_copies":               4,      // 2–64. Number of copies to fit on the sheet.
-  "grid_gutter_mm":            0.0,    // 0–100. Gap between copies (for cutting).
-  "grid_cut_marks":            false,  // Dot every copy corner, in a layer of its own.
+  "grid_fit":                  "page", // "page" fits the drawing's whole page to each cell (margins kept), "ink" fits the drawn geometry alone.
+  "grid_spacing_x_mm":         0.0,    // 0–100. Per-side horizontal spacing (see below).
+  "grid_spacing_y_mm":         0.0,    // 0–100. Per-side vertical spacing.
+  "grid_spacing_linked":       true,   // UI-only: keeps the two spacings equal in the card.
+  "grid_cut_marks":            false,  // Trim marks between copies. Adds a "Cut marks" row to layer_selections.
 
   "layers": [                         // Per-layer overrides keyed by SVG layer index.
     {
@@ -416,11 +419,13 @@ Editable fields:
 | `optimize_mode` | `"beginner"` \| `"expert"` | See the metadata schema above. |
 | `optimize_expert_1_enabled`, `optimize_expert_2_enabled`, `optimize_expert_3_enabled` | bool | |
 | `optimize_expert_1_cmd`, `optimize_expert_2_cmd`, `optimize_expert_3_cmd` | string | Raw vpype command fragment for that box. |
-| `grid_enabled` | bool | "Grid" layout: tile the whole drawing to fill the sheet before placement, each copy resized to its cell. Reversible; follows `optimize_svg` (the optimized geometry when it is on, the upload as-is when it is off); beginner mode only. |
+| `grid_enabled` | bool | "Grid" layout: tile the whole drawing to fill the sheet before placement. Reversible; follows `optimize_svg` (the optimized geometry when it is on, the upload as-is when it is off); beginner mode only. |
 | `grid_copies` | int | 2–64. Copies to fit on the sheet; rounded up to a full columns×rows grid, arranged to fill the area inside the margins. |
-| `grid_gutter_mm` | number | 0–100. Gap between copies, capped at half the smaller side of the cell it is applied to. |
-| `grid_cut_marks` | bool | Add cutting marks to the tiled sheet: a dot at every copy corner, on the gutter's centre line between copies. They go in a layer of their own that no selection addresses, so they are drawn once per plot whatever layers are selected. |
-| `layer_selections` | array | `[{index, label, type?, selected?, pen_name?}]` — drives which layers plot. Entries with `selected: false` are kept in the list (so name/type metadata survives a toggle in the UI) but skipped when planning. |
+| `grid_fit` | `"page"` \| `"ink"` | What "fill the sheet" scales into each cell. `"page"` (default) fits the drawing's whole page — its own width/height, whitespace kept — the same rule "fit to page" uses. `"ink"` fits the drawn geometry's bounding box, blowing each copy up to the cell edges. |
+| `grid_spacing_x_mm`, `grid_spacing_y_mm` | number | 0–100. Per-side spacing: pads every edge of every copy, so neighbours end up `2×` the value apart and the outer copies are inset that value from the sheet edge (a margin on top of the page margins). Each axis is capped at a quarter of its spacing-free cell. |
+| `grid_spacing_linked` | bool | UI convenience only — the card keeps the two spacings equal while set. Ignored by the tiler. |
+| `grid_cut_marks` | bool | Add cutting marks to the tiled sheet: a short tick where a cut between two copies reaches the sheet edge, a small cross where two cuts meet between four; interior joins only. Setting this synthesises a leading `layer_selections` entry (`label: "Cut marks"`, `cut_marks: true`, `index` = artwork layer count) — its own row in the layer list: reorder it, or deselect it to skip the marks for a run without regenerating the sheet. Clearing `grid_cut_marks` (or `grid_enabled`) removes the row. |
+| `layer_selections` | array | `[{index, label, type?, selected?, pen_name?, cut_marks?}]` — drives which layers plot, in list order. Entries with `selected: false` are kept in the list (so name/type metadata survives a toggle in the UI) but skipped when planning. `cut_marks: true` marks the server-managed grid cut-marks row (see `grid_cut_marks`). |
 
 Returns the full updated job record. **`409 Conflict`** if the job is currently active (`plotting`, `planning`, `paused`, `awaiting_pen_change`, `homing`).
 

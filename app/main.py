@@ -1107,24 +1107,37 @@ class _OptimizeOptionalFields(BaseModel):
 
 
 class _GridCreateFields(BaseModel):
-    # "Grid" layout module: tile the whole drawing to fill the sheet, resizing
-    # each copy to its cell. Reversible — a toggle like optimize_svg, backed by
-    # a cached {svg_id}.grid.svg derivative. The arrangement (columns x rows) is
-    # derived from grid_copies and the sheet's aspect ratio; vpype does the
-    # tiling (see app/svg_optimize.grid_svg). Beginner mode only.
+    # "Grid" layout module: tile the whole drawing to fill the sheet. Reversible
+    # — a toggle like optimize_svg, backed by a cached {svg_id}.grid.svg
+    # derivative. The arrangement (columns x rows) is derived from grid_copies
+    # and the sheet's aspect ratio; vpype does the tiling (see
+    # app/svg_optimize.grid_svg). Beginner mode only.
     grid_enabled: bool = False
     grid_copies: int = 4
-    grid_gutter_mm: float = 0.0
-    # Cutting marks: a dot at every grid line intersection, in a layer of its
-    # own inside the tiled derivative (see svg_utils.add_cut_marks). Drawn
-    # whatever layers are selected, since it is none of the upload's.
+    # What "fill the sheet" scales into each cell: "page" fits the drawing's
+    # whole page (its own margins kept), "ink" fits the drawn geometry alone.
+    grid_fit: Literal["page", "ink"] = "page"
+    # Per-side spacing: pads every edge of every copy, so neighbours end up
+    # 2*spacing apart and the outer copies are inset spacing from the sheet
+    # edge (see app/svg_optimize.grid_svg). grid_spacing_linked only steers the
+    # card's two inputs — the server just reads the two numbers.
+    grid_spacing_x_mm: float = 0.0
+    grid_spacing_y_mm: float = 0.0
+    grid_spacing_linked: bool = True
+    # Cutting marks between the copies (see svg_utils.add_cut_marks), in a layer
+    # of their own appended to the tiled derivative. Turning this on synthesises
+    # a "Cut marks" row in layer_selections (see _sync_cut_marks_selection) —
+    # reorderable and deselectable like any other layer.
     grid_cut_marks: bool = False
 
 
 class _GridOptionalFields(BaseModel):
     grid_enabled: bool | None = None
     grid_copies: int | None = None
-    grid_gutter_mm: float | None = None
+    grid_fit: Literal["page", "ink"] | None = None
+    grid_spacing_x_mm: float | None = None
+    grid_spacing_y_mm: float | None = None
+    grid_spacing_linked: bool | None = None
     grid_cut_marks: bool | None = None
 
 
@@ -1290,7 +1303,8 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "transform_rotation_deg": (-360.0, 360.0),
     "optimize_svg_tolerance_mm": (0.01, 10.0),
     "grid_copies": (2, 64),
-    "grid_gutter_mm": (0.0, 100.0),
+    "grid_spacing_x_mm": (0.0, 100.0),
+    "grid_spacing_y_mm": (0.0, 100.0),
 }
 
 
@@ -1318,7 +1332,9 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
     "optimize_expert_2_enabled", "optimize_expert_2_cmd",
     "optimize_expert_3_enabled", "optimize_expert_3_cmd",
-    "grid_enabled", "grid_copies", "grid_gutter_mm", "grid_cut_marks",
+    "grid_enabled", "grid_copies", "grid_fit",
+    "grid_spacing_x_mm", "grid_spacing_y_mm",
+    "grid_spacing_linked", "grid_cut_marks",
 })
 
 
@@ -1387,6 +1403,28 @@ class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     optical_reg: bool | None = None
 
 
+def _sync_cut_marks_selection(selections: list[dict], *,
+                              grid_enabled, grid_cut_marks) -> list[dict]:
+    """Keep a "Cut marks" row in ``layer_selections`` exactly while the grid is
+    on with its cut-marks checkbox ticked.
+
+    ``svg_optimize`` appends the cutting-marks layer last in ``{svg_id}.grid.svg``
+    (after ``reconcile_layers`` restored the artwork sequence), so its index is
+    the artwork layer count. The row carries ``cut_marks: True`` so a rename or
+    reorder in the browser can't lose track of which entry it is; an existing
+    one keeps the position the user dragged it to, a new one lands first (drawn
+    before the artwork — registration marks). Turning either toggle off drops it.
+    """
+    artwork = [s for s in selections if not s.get("cut_marks")]
+    if not (grid_enabled and grid_cut_marks):
+        return artwork
+    n = len(artwork)
+    if any(s.get("cut_marks") for s in selections):
+        return [{**s, "index": n} if s.get("cut_marks") else s for s in selections]
+    return [{"index": n, "label": svg_utils.CUT_MARKS_LABEL,
+             "selected": True, "cut_marks": True}, *artwork]
+
+
 @app.post("/jobs")
 def create_job(req: JobCreate):
     path = UPLOAD_DIR / f"{req.svg_id}.svg"
@@ -1409,6 +1447,10 @@ def create_job(req: JobCreate):
         payload["layer_selections"] = [
             {"index": l["index"], "label": l["label"]} for l in info["layers"]
         ]
+    payload["layer_selections"] = _sync_cut_marks_selection(
+        payload["layer_selections"],
+        grid_enabled=payload.get("grid_enabled"),
+        grid_cut_marks=payload.get("grid_cut_marks"))
     _clamp_job_fields(payload, payload.get("paper_width_mm"),
                       payload.get("paper_height_mm"))
     job = state.add_job(payload)
@@ -1461,6 +1503,15 @@ def update_job(job_id: str, req: JobUpdate):
             updates["layer_selections"] = [
                 {"index": l["index"], "label": l["label"]} for l in info["layers"]
             ]
+    # Keep the "Cut marks" row in step with grid_enabled + grid_cut_marks, from
+    # whichever of the PATCH / the stored job carries each of the three.
+    base_sel = updates.get("layer_selections", j.get("layer_selections") or [])
+    synced = _sync_cut_marks_selection(
+        base_sel,
+        grid_enabled=updates.get("grid_enabled", j.get("grid_enabled")),
+        grid_cut_marks=updates.get("grid_cut_marks", j.get("grid_cut_marks")))
+    if synced != base_sel:
+        updates["layer_selections"] = synced
     _clamp_job_fields(updates, paper_w, paper_h)
     # Editing a finished/cancelled job makes it runnable again, so the user can
     # re-plot without any extra step. One already sitting at `ready` is already
@@ -1868,9 +1919,16 @@ async def api_create_job(file: UploadFile = File(...),
         "optimize_expert_3_cmd": pick(meta.optimize_expert_3_cmd, config.OPTIMIZE_EXPERT_3_CMD_DEFAULT),
         "grid_enabled": pick(meta.grid_enabled, False),
         "grid_copies": pick(meta.grid_copies, 4),
-        "grid_gutter_mm": pick(meta.grid_gutter_mm, 0.0),
+        "grid_fit": "ink" if meta.grid_fit == "ink" else "page",
+        "grid_spacing_x_mm": pick(meta.grid_spacing_x_mm, 0.0),
+        "grid_spacing_y_mm": pick(meta.grid_spacing_y_mm, 0.0),
+        "grid_spacing_linked": pick(meta.grid_spacing_linked, True),
         "grid_cut_marks": pick(meta.grid_cut_marks, False),
     }
+    job_payload["layer_selections"] = _sync_cut_marks_selection(
+        job_payload["layer_selections"],
+        grid_enabled=job_payload["grid_enabled"],
+        grid_cut_marks=job_payload["grid_cut_marks"])
     _clamp_job_fields(job_payload, paper_width_mm, paper_height_mm)
     # auto_plot: only kick the worker if no other job is in a runnable or
     # in-progress state (queued / paused / plotting / planning / optimizing /

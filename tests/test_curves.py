@@ -179,6 +179,37 @@ def test_layers_that_collide_in_vpype_measure_correctly_once_normalized(tmp_path
     assert rects[0][2] < rects[1][0]
 
 
+def test_normalize_inlines_inherited_pen_from_the_layer_group(tmp_path):
+    """DrawingBotV3 / Inkscape put the pen width and colour on the layer <g>
+    and write stroke-width="inherit" / stroke="inherit" on every path. vpype's
+    reader takes "inherit" as 0 / unset, so an optimized or tiled copy renders
+    blank and one-colour. normalize_layer_structure (the upload path) inlines
+    the value the browser would have computed so vpype sees the real pen.
+    """
+    path = tmp_path / "inherit.svg"
+    path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape='
+        '"http://www.inkscape.org/namespaces/inkscape" width="120mm" '
+        'height="80mm" viewBox="0 0 120 80">'
+        '<g inkscape:groupmode="layer" inkscape:label="fine" fill="none" '
+        'stroke="#0088ff" stroke-width="0.35">'
+        '<path stroke="inherit" stroke-width="inherit" d="M10,10 L110,70"/></g>'
+        '<g inkscape:groupmode="layer" inkscape:label="bold" fill="none" '
+        'stroke="#ff2d54" stroke-width="0.7">'
+        '<path stroke="inherit" stroke-width="inherit" d="M10,70 L110,10"/></g>'
+        '</svg>')
+
+    assert svg_utils.normalize_layer_structure(path) is True
+
+    from lxml import etree
+    paths = etree.parse(str(path)).getroot().findall(
+        ".//{http://www.w3.org/2000/svg}path")
+    assert [p.get("stroke") for p in paths] == ["#0088ff", "#ff2d54"]
+    assert [p.get("stroke-width") for p in paths] == ["0.35", "0.7"]
+    # Nothing left to inline the second time.
+    assert svg_utils.normalize_layer_structure(path) is False
+
+
 def test_curved_layers_union_the_same_way_flat_ones_do(curvy_svg):
     """The per-layer measurement has to be right on curves too — a subset's
     rectangle is the union of its layers', and that is what the endpoint

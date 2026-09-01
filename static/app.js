@@ -342,7 +342,10 @@ function buildJobPayload(svg, fallbackName) {
       record_speed_multiplier: appSettings.camera_speed_multiplier_default,
       grid_enabled: false,
       grid_copies: 4,
-      grid_gutter_mm: 0,
+      grid_fit: "page",
+      grid_spacing_x_mm: 0,
+      grid_spacing_y_mm: 0,
+      grid_spacing_linked: true,
       grid_cut_marks: false,
       optimize_svg: appSettings.optimize_svg_default,
       optimize_svg_tolerance_mm: appSettings.optimize_svg_tolerance_default_mm,
@@ -844,6 +847,14 @@ function applyMachineAutoRotate({ w, h }) {
 const placementInflight = new Map();   // job_id -> {geom, ink} AbortControllers
 const placementTimers = new Map();     // job_id -> {geom, ink} debounce timers
 
+// Is the tiled {svg_id}.grid.svg the file the server is serving for this job
+// right now (Grid on and its build finished)?
+function gridActive(job) {
+  if (!job.grid_enabled) return false;
+  const gi = (serverState.svgs || {})[job.svg_id + ":grid"];
+  return !!(gi && gi.status === "ready");
+}
+
 // Everything the answer depends on. A card refetches only when one of these
 // actually changes, so dragging a slider back where it started costs nothing.
 function placementKey(job) {
@@ -853,6 +864,21 @@ function placementKey(job) {
     job.fit_content, job.transform_scale, job.transform_rotation_deg,
     job.transform_offset_x_mm, job.transform_offset_y_mm,
     (job.layer_selections || []).filter((l) => l.selected !== false).map((l) => l.index),
+    // Toggling Grid, its knobs, or a rebuild landing all change which file the
+    // server serves for this job — and so what the placement and ink describe.
+    // `gridActive` has to be in the key in its own right: the tiled file going
+    // ready flips the served document from the un-tiled drawing to the sheet
+    // even when every field above is unchanged, and without a key change the
+    // ink/placement never refetch — the red footprint overlay then keeps the
+    // un-tiled drawing's size (or the sheet's, after Grid is switched off).
+    gridActive(job),
+    !!job.grid_enabled,
+    job.grid_enabled ? job.grid_copies : 0,
+    job.grid_enabled ? (job.grid_fit || "page") : "",
+    job.grid_enabled ? job.grid_spacing_x_mm : 0,
+    job.grid_enabled ? job.grid_spacing_y_mm : 0,
+    job.grid_enabled ? !!job.grid_cut_marks : false,
+    job.grid_enabled ? (((serverState.svgs || {})[job.svg_id + ":grid"] || {}).settings_key || "") : "",
   ]);
 }
 
@@ -1240,8 +1266,11 @@ function createCardForJob(job) {
   card.querySelector(".optimize-tolerance").value = (job.optimize_svg_tolerance_mm ?? 0.10).toFixed(2);
   card.querySelector(".grid-enable").checked = !!job.grid_enabled;
   card.querySelector(".grid-copies").value = job.grid_copies ?? 4;
-  card.querySelector(".grid-gutter").value = job.grid_gutter_mm ?? 0;
+  card.querySelector(".grid-fit").value = job.grid_fit === "ink" ? "ink" : "page";
+  card.querySelector(".grid-spacing-x").value = job.grid_spacing_x_mm ?? 0;
+  card.querySelector(".grid-spacing-y").value = job.grid_spacing_y_mm ?? 0;
   card.querySelector(".grid-cut-marks").checked = !!job.grid_cut_marks;
+  setGridSpacingLinked(card, job.grid_spacing_linked !== false);
   applyGridEnabledStyle(card);
   updateGridArrangement(card, job);
   applyOptimizeEnabledStyle(card);
@@ -1335,9 +1364,25 @@ function createCardForJob(job) {
     queueCardUpdate(card);
   });
   card.querySelector(".grid-cut-marks").addEventListener("change", () => queueCardUpdate(card));
-  [".grid-copies", ".grid-gutter"].forEach((sel) => {
+  card.querySelector(".grid-fit").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".grid-spacing-link").addEventListener("click", () => {
+    const linked = !card.querySelector(".grid-spacing-link").classList.contains("is-linked");
+    setGridSpacingLinked(card, linked);
+    // Closing the chain snaps vertical onto horizontal so the two agree.
+    if (linked) {
+      card.querySelector(".grid-spacing-y").value = card.querySelector(".grid-spacing-x").value;
+    }
+    queueCardUpdate(card);
+  });
+  [".grid-copies", ".grid-spacing-x", ".grid-spacing-y"].forEach((sel) => {
     const el = card.querySelector(sel);
     el.addEventListener("input", () => {
+      // Linked: editing one spacing mirrors it onto the other.
+      if ((sel === ".grid-spacing-x" || sel === ".grid-spacing-y") &&
+          card.querySelector(".grid-spacing-link").classList.contains("is-linked")) {
+        const other = sel === ".grid-spacing-x" ? ".grid-spacing-y" : ".grid-spacing-x";
+        card.querySelector(other).value = el.value;
+      }
       const j = serverState.queue.find((x) => x.job_id === card.dataset.id);
       if (j) updateGridArrangement(card, { ...j, ...readGridFromCard(card) });
     });
@@ -1752,12 +1797,14 @@ function updateCard(card, job) {
     const gridSettled = !job.grid_enabled || !gridInfo ||
       gridInfo.status === "ready" || gridInfo.status === "failed";
     const settled = optSettled && gridSettled;
-    // Grid supersedes optimize in _effective_svg_path, and its output depends
-    // on the copy count / gap / sheet, so encode those in the key.
+    // Grid supersedes optimize in _effective_svg_path. Its tiled output depends
+    // on copies / gap / cut marks / sheet / margins — all of which the server
+    // folds into gridInfo.settings_key, so keying off that reloads the preview
+    // whenever the rebuild lands, whatever moved. (The job transform is not in
+    // it: that acts on the whole sheet via the CSS transform, not the file.)
     const effectiveKind =
       (job.grid_enabled && gridSettled && gridInfo && gridInfo.status === "ready")
-        ? `grid:${job.grid_copies}:${job.grid_gutter_mm}:${job.grid_cut_marks ? 1 : 0}`
-          + `:${job.paper_width_mm}x${job.paper_height_mm}`
+        ? `grid:${gridInfo.settings_key || ""}`
         : (job.optimize_svg && optSettled ? "optimized" : "raw");
     if (settled && ctx.previewEffectiveKind !== effectiveKind) {
       ctx.previewEffectiveKind = effectiveKind;
@@ -2300,8 +2347,11 @@ function resetOptimize(card) {
 function resetGrid(card) {
   card.querySelector(".grid-enable").checked = false;
   card.querySelector(".grid-copies").value = 4;
-  card.querySelector(".grid-gutter").value = 0;
+  card.querySelector(".grid-fit").value = "page";
+  card.querySelector(".grid-spacing-x").value = 0;
+  card.querySelector(".grid-spacing-y").value = 0;
   card.querySelector(".grid-cut-marks").checked = false;
+  setGridSpacingLinked(card, true);
   applyGridEnabledStyle(card);
   const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
   if (job) updateGridArrangement(card, { ...job, ...readGridFromCard(card) });
@@ -2428,7 +2478,10 @@ function readGridFromCard(card) {
   return {
     grid_enabled: card.querySelector(".grid-enable").checked,
     grid_copies: parseInt(card.querySelector(".grid-copies").value, 10),
-    grid_gutter_mm: parseFloat(card.querySelector(".grid-gutter").value),
+    grid_fit: card.querySelector(".grid-fit").value,
+    grid_spacing_x_mm: parseFloat(card.querySelector(".grid-spacing-x").value),
+    grid_spacing_y_mm: parseFloat(card.querySelector(".grid-spacing-y").value),
+    grid_spacing_linked: card.querySelector(".grid-spacing-link").classList.contains("is-linked"),
     grid_cut_marks: card.querySelector(".grid-cut-marks").checked,
   };
 }
@@ -2448,13 +2501,17 @@ function gridArrangement(copies, availW, availH, contentW, contentH) {
   const W = availW > 0 ? availW : 1, H = availH > 0 ? availH : 1;
   const cw = contentW > 0 ? contentW : W, ch = contentH > 0 ? contentH : H;
   const cmp = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
-  let best = [1, copies], bestKey = null;
+  let best = [1, copies, false], bestKey = null;
   for (let cols = 1; cols <= copies; cols++) {
     const rows = Math.ceil(copies / cols);
-    const fit = Math.min((W / cols) / cw, (H / rows) / ch);
+    const cellW = W / cols, cellH = H / rows;
+    const fit0 = Math.min(cellW / cw, cellH / ch);
+    const fit90 = Math.min(cellW / ch, cellH / cw);
+    const rot = fit90 > fit0;
+    const fit = Math.max(fit0, fit90);
     const key = [Math.round(fit * 1e6), -(cols * rows - copies),
                  -Math.abs((cols / rows) - (W / H))];
-    if (!bestKey || cmp(key, bestKey) > 0) { bestKey = key; best = [cols, rows]; }
+    if (!bestKey || cmp(key, bestKey) > 0) { bestKey = key; best = [cols, rows, rot]; }
   }
   return best;
 }
@@ -2473,14 +2530,24 @@ function updateGridArrangement(card, job) {
   const ch = ctx?.svg?.source_height_mm ?? ctx?.svg?.height_mm;
   const availW = (job.paper_width_mm || 0) - (job.margin_left_mm || 0) - (job.margin_right_mm || 0);
   const availH = (job.paper_height_mm || 0) - (job.margin_top_mm || 0) - (job.margin_bottom_mm || 0);
-  const [cols, rows] = gridArrangement(copies, availW, availH, cw, ch);
-  el.textContent = t("card.grid_arrangement", { cols, rows, copies: cols * rows });
+  const [cols, rows, rot] = gridArrangement(copies, availW, availH, cw, ch);
+  el.textContent = t(rot ? "card.grid_arrangement_rotated" : "card.grid_arrangement",
+                     { cols, rows, copies: cols * rows });
   el.hidden = false;
 }
 
 function applyGridEnabledStyle(card) {
   const on = card.querySelector(".grid-enable").checked;
   card.querySelector(".grid-options").classList.toggle("disabled", !on);
+}
+
+// The chain between the two spacing inputs: `is-linked` on the button both
+// styles it and is the single source of truth the input handlers read.
+function setGridSpacingLinked(card, linked) {
+  const btn = card.querySelector(".grid-spacing-link");
+  if (!btn) return;
+  btn.classList.toggle("is-linked", linked);
+  btn.setAttribute("aria-pressed", linked ? "true" : "false");
 }
 
 // The paper's top-left corner on the bed, and the bed's own size, from the
@@ -2600,7 +2667,9 @@ function syncPreviewLayers(card, job) {
   const svgEl = card.querySelector(".paper-content svg");
   if (!svgEl) return;
   const groups = Array.from(svgEl.children).filter(
-    (el) => el.tagName.toLowerCase() === "g" && el.getAttribute("inkscape:groupmode") === "layer"
+    (el) =>
+      el.tagName.toLowerCase() === "g" &&
+      el.getAttribute("inkscape:groupmode") === "layer"
   );
   // `selected !== false` keeps backward-compat with old job records that
   // never carried an explicit selected flag.
@@ -2679,6 +2748,7 @@ function renderLayers(card, job) {
         };
         if (ovr.type) sel.type = ovr.type;
         if (ovr.pen_name) sel.pen_name = ovr.pen_name;
+        if (ovr.cut_marks) sel.cut_marks = true;   // the grid's cut-marks row
         // Carry through API-set per-layer speed overrides — there's no UI
         // control for them, so a checkbox toggle here must not drop them.
         for (const k of ["speed_pendown", "speed_penup", "acceleration"]) {
@@ -2972,7 +3042,10 @@ async function sendCardUpdate(card, pending) {
     }
     updates.grid_enabled = card.querySelector(".grid-enable").checked;
     updates.grid_copies = parseInt(card.querySelector(".grid-copies").value, 10);
-    updates.grid_gutter_mm = parseFloat(card.querySelector(".grid-gutter").value);
+    updates.grid_fit = card.querySelector(".grid-fit").value;
+    updates.grid_spacing_x_mm = parseFloat(card.querySelector(".grid-spacing-x").value);
+    updates.grid_spacing_y_mm = parseFloat(card.querySelector(".grid-spacing-y").value);
+    updates.grid_spacing_linked = card.querySelector(".grid-spacing-link").classList.contains("is-linked");
     updates.grid_cut_marks = card.querySelector(".grid-cut-marks").checked;
   }
   Object.assign(updates, pending.explicit);
