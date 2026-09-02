@@ -48,6 +48,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Drag-and-drop SVG upload; Inkscape layers parsed and selectable, each shown with an icon inferred from its type (pattern, text, svg, calibration, image, map, 3D model)
 - SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
 - Staged plotting: optional pause between layers for pen changes
+- Choose how a drawing is split into rows and pen-change stages: by Inkscape layer (default), by top-level group, or one stage per stroke width + colour ("pen" mode) — the last two re-partition the SVG into a standalone copy the job points at
 - No queue to manage: a job is `ready` from the moment it is created, Plot runs the topmost ready one, and the run ends with that job — so the paper can be changed with the machine genuinely idle
 - Paper presets (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
 - The preview canvas is the machine bed (grey, from the active profile), with the job's paper (white) drawn on it at the machine's configured "paper origin" — where the sheet's top-left corner usually sits — and the artwork on the paper
@@ -55,6 +56,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
 - Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
 - Background pre-optimization and pre-planning queues: uploads are vpype-optimized and time/distance-estimated ahead of time (on upload and on job create/edit), so clicking Plot is usually an instant cache hit rather than a 20–30s wait
+- "Grid" n-up layout: tile one drawing to fill the sheet — pick a copy count (2–64) and the column × row arrangement is derived from the sheet's aspect ratio, each copy scaled to its cell (its whole page, or just the drawn ink), with optional per-side spacing and interior cutting marks as their own reorderable layer. Reversible like Optimize SVG — a cached derivative, tiling the optimized geometry when that is on — and beginner mode only
 - "Save As" on the job card: download the processed drawing as SVG, PNG (white or transparent), PDF, G-code, or HPGL — either "as optimized" (the drawing's own coordinates) or "as plotted" (selected layers only, placed on the page with the job's size/margins/transform; G-code and HPGL additionally carry the active machine's axis-skew correction, SVG/PNG/PDF stay square), so the export is a ready-to-run toolpath for another plotter / GRBL machine
 
 **During the plot**
@@ -64,6 +66,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Live pen cursor on the preview (blue while drawing, grey while traveling)
 - UI Pause / Resume / Cancel — cancel returns to origin via `res_home`
 - "Pause at Pen Lift" — a deferred pause that waits for the next pen-up so pump-action pens don't leave a dot mid-stroke
+- "Redraw last (mm)" from a paused plot: rewind the resume point by a chosen distance of pen-down travel and carry on, so a stretch a dry or skipping pen missed is traced again without restarting the job (clamped to the start of the layer currently plotting)
 - Live speed / acceleration / pen-height adjustment while a stage is actively plotting, applied at the next motion checkpoint; a speed/acceleration change also recalibrates the remaining-time estimate in the background so the progress bar stays accurate
 - Physical pause button toggles: press to pause, press again to resume
 
