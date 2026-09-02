@@ -141,9 +141,6 @@ _WORKER_ERROR_CODES: dict[str, str] = {
     "Nothing to continue": "nothing_to_continue",
     "Calibration plot only available at a pen-change pause": "calibrate_not_at_pause",
     "Origin nudge only available at a pen-change pause": "nudge_not_at_pause",
-    "Optical registration only available at a pen-change pause": "optical_reg_not_at_pause",
-    "Camera is not calibrated for optical registration": "optical_reg_not_calibrated",
-    "No optical registration reference mark for this run": "optical_reg_no_reference",
     "Camera is not enabled": "camera_not_enabled",
     "Manual jog only available while idle": "jog_not_idle",
     # Not failures — the UI turns these two into a confirm/cancel prompt and
@@ -1181,7 +1178,6 @@ class JobCreate(_OptimizeCreateFields, _GridCreateFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
-    optical_reg: bool = False
 
 
 class MoveRequest(BaseModel):
@@ -1206,9 +1202,9 @@ class MachineProfile(BaseModel):
     # the page edge — see config.MACHINE_SKEW_MODE / app.axis_skew.
     skew_mode: Literal["clip", "absorb"] = "clip"
     # Where the sheet's top-left corner sits on the bed, mm from the machine's
-    # own corner — a deliberately non-zero offset so a skew / nudge / optical-
-    # registration correction has room before the near edge. Drives the preview
-    # and the toolbar's "jog to paper origin" button; never the declared origin.
+    # own corner — a deliberately non-zero offset so a skew or nudge correction
+    # has room before the near edge. Drives the preview and the toolbar's "jog
+    # to paper origin" button; never the declared origin.
     paper_origin_x_mm: float = Field(0.0, ge=0.0)
     paper_origin_y_mm: float = Field(0.0, ge=0.0)
 
@@ -1269,18 +1265,6 @@ class SettingsUpdate(BaseModel):
     camera_timelapse_interval_s_default: float | None = Field(None, gt=0)
     camera_speed_multiplier_default: float | None = Field(None, gt=1.0)
     record_plot_default: bool | None = None
-    optical_reg_default: bool | None = None
-    optical_reg_mm_per_px: float | None = Field(None, ge=0.0)
-    optical_reg_cam_rotation_deg: float | None = Field(None, ge=-180.0, le=180.0)
-    optical_reg_cam_offset_x_mm: float | None = Field(None, ge=-50.0, le=50.0)
-    optical_reg_cam_offset_y_mm: float | None = Field(None, ge=-50.0, le=50.0)
-    optical_reg_mark_x_mm: float | None = Field(None, ge=0.0)
-    optical_reg_mark_y_mm: float | None = Field(None, ge=0.0)
-    optical_reg_mark_size_mm: float | None = Field(None, ge=0.5, le=20.0)
-    optical_reg_probe_offset_mm: float | None = Field(None, ge=0.2, le=20.0)
-    optical_reg_probe_offset_max_mm: float | None = Field(None, ge=0.5, le=40.0)
-    optical_reg_frames: int | None = Field(None, ge=1, le=15)
-    optical_reg_max_correction_mm: float | None = Field(None, ge=0.1, le=20.0)
     draw_stream_enabled: bool | None = None
     draw_stream_stroke_width_px: int | None = Field(None, ge=1, le=40)
     draw_stream_background: Literal["black", "white"] | None = None
@@ -1326,7 +1310,7 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "transform_offset_x_mm", "transform_offset_y_mm",
     "fit_content", "pause_between_layers", "layer_mode",
     "delete_on_complete", "disable_motors_on_complete", "record_plot",
-    "optical_reg", "layer_selections",
+    "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
@@ -1400,7 +1384,6 @@ class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
-    optical_reg: bool | None = None
 
 
 def _sync_cut_marks_selection(selections: list[dict], *,
@@ -1743,7 +1726,6 @@ class ApiJobMetadata(_OptimizeOptionalFields, _GridOptionalFields):
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
     record_speed_multiplier: float | None = None
-    optical_reg: bool | None = None
     # Request-only directive: when true AND the queue is empty at the moment of
     # the POST, kick off the worker so this job plots immediately. Not stored
     # on the job record.
@@ -1903,7 +1885,6 @@ async def api_create_job(file: UploadFile = File(...),
                                            config.CAMERA_TIMELAPSE_INTERVAL_S_DEFAULT),
         "record_speed_multiplier": pick(meta.record_speed_multiplier,
                                        config.CAMERA_SPEED_MULTIPLIER_DEFAULT),
-        "optical_reg": pick(meta.optical_reg, config.OPTICAL_REG_DEFAULT),
         "optimize_svg": pick(meta.optimize_svg, config.OPTIMIZE_SVG_DEFAULT),
         "optimize_svg_tolerance_mm": pick(meta.optimize_svg_tolerance_mm, config.OPTIMIZE_SVG_TOLERANCE_DEFAULT_MM),
         "optimize_svg_linemerge": pick(meta.optimize_svg_linemerge, config.OPTIMIZE_SVG_LINEMERGE_DEFAULT),
@@ -2319,48 +2300,6 @@ def api_nudge_origin_queue(req: NudgeOriginRequest):
     return nudge_origin_queue(req)
 
 
-class OpticalRegMeasureRequest(BaseModel):
-    # Nominal probe-cross offset; None -> the configured default. The
-    # "measure with a bigger offset" button sends a larger value.
-    probe_mm: float | None = Field(None, ge=0.2, le=40.0)
-
-
-@app.post("/queue/optical-reg/measure")
-def optical_reg_measure(req: OpticalRegMeasureRequest):
-    try:
-        plot_worker.trigger_optical_reg(req.probe_mm)
-    except RuntimeError as e:
-        raise _worker_error(e)
-    return {"ok": True}
-
-
-@app.post("/api/v1/queue/optical-reg/measure", dependencies=[Depends(require_api_key)])
-def api_optical_reg_measure(req: OpticalRegMeasureRequest):
-    return optical_reg_measure(req)
-
-
-@app.get("/camera/optical-reg/preview")
-def optical_reg_preview():
-    if not camera.OPTICAL_REG_PREVIEW.exists():
-        raise HTTPException(404, "no optical-registration preview yet")
-    return FileResponse(str(camera.OPTICAL_REG_PREVIEW), media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
-
-
-@app.post("/optical-reg/calibrate")
-def optical_reg_calibrate():
-    try:
-        result = plot_worker.optical_reg_calibrate()
-    except RuntimeError as e:
-        raise _worker_error(e)
-    return result
-
-
-@app.post("/api/v1/optical-reg/calibrate", dependencies=[Depends(require_api_key)])
-def api_optical_reg_calibrate():
-    return optical_reg_calibrate()
-
-
 class LivePenHeightRequest(BaseModel):
     pen_pos_up: int | None = Field(None, ge=29, le=85)
     pen_pos_down: int | None = Field(None, ge=29, le=85)
@@ -2720,28 +2659,10 @@ def patch_settings(req: SettingsUpdate):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise _coded(400, "no_settings")
-    # optical_reg_mm_per_px is millimetres per *pixel*, so it only means
-    # anything at the resolution it was fitted at (plot_worker.optical_reg_
-    # calibrate). Changing the stream resolution silently rescales every later
-    # measurement while the UI still reports "Calibrated", so drop it back to
-    # the uncalibrated sentinel and make the user recalibrate. Skipped when the
-    # same request sets the scale itself — then they mean that value.
-    if ("optical_reg_mm_per_px" not in updates
-            and _changes_camera_resolution(updates)):
-        updates["optical_reg_mm_per_px"] = 0.0
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()
     return _settings_payload()
-
-
-def _changes_camera_resolution(updates: dict) -> bool:
-    return (updates.get("camera_resolution_width",
-                        config.CAMERA_RESOLUTION_WIDTH)
-            != config.CAMERA_RESOLUTION_WIDTH
-            or updates.get("camera_resolution_height",
-                           config.CAMERA_RESOLUTION_HEIGHT)
-            != config.CAMERA_RESOLUTION_HEIGHT)
 
 
 # System -----------------------------------------------------------------

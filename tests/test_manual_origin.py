@@ -312,8 +312,8 @@ def test_set_origin_and_home_are_refused_mid_run(paused):
 # The one-press button between Move and Return to Origin. It walks the carriage
 # to the active machine's configured paper origin — an absolute *position*, not
 # a distance, so what it must guarantee is where the carriage ends up. It never
-# declares an origin: the whole point of the offset is slack for skew / nudge /
-# optical-registration corrections, so it stays a plain move.
+# declares an origin: the whole point of the offset is slack for skew / nudge
+# corrections, so it stays a plain move.
 
 
 @pytest.fixture

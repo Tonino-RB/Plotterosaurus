@@ -73,7 +73,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - A standalone calibration-file library (the gitignored `calibration/` folder) of reusable test SVGs, runnable the same way independent of any job
 - Fine origin nudge (X/Y, in mm) during a pen-change pause to correct for paper drift between layers — also physically jogs the carriage so you see/feel the correction
 - Manual jog d-pad + "Set Origin Here" to walk the carriage over the paper while idle and capture that position as the default offset for new jobs
-- One-press "jog to paper origin" (the ⇱ button) to walk the carriage from the bed corner to the machine's configured paper origin — a plain move, it does not set the origin; keep the paper origin a little off 0, 0 so a skew / nudge / optical-registration correction has room before the near edge
+- One-press "jog to paper origin" (the ⇱ button) to walk the carriage from the bed corner to the machine's configured paper origin — a plain move, it does not set the origin; keep the paper origin a little off 0, 0 so a skew / nudge correction has room before the near edge
 - Manual pen up/down and motor enable/disable, usable any time the plotter isn't actively driving a plot (e.g. to move the carriage by hand)
 - Bounds protection: a nudge, jog, or leftover un-homed jog that would push the artwork's actual ink (not just its canvas) off the machine bed, or the carriage past the bed's far edge, is rejected up front, with a precise "nudge back by (x, y) mm" correction — surfaced as a one-click button on the job card if it blocks a plot from starting. Running off the *paper* but still on the bed is a crop, not an error, and a plot that still slips through is clipped at the real bed edge rather than driven into the end stops
 - Live preview overlay (red dot + outline) showing exactly where the current jog/nudge places the artwork's origin and footprint on the bed, before it's committed
@@ -141,7 +141,7 @@ Tested on a Raspberry Pi 3 Model B and a Raspberry Pi Zero 2 W, both running Ras
 - [`pyaxidraw`](https://axidraw.com/doc/py_api/) (from the Evil Mad Scientist [AxiDraw API zip](https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip))
 - [`vpype`](https://vpype.readthedocs.io/) — invoked as a subprocess for optional pre-plot optimization
 - [`lxml`](https://lxml.de/) — SVG parsing (`app/svg_utils.py`)
-- [`numpy`](https://numpy.org/) / [`scipy`](https://scipy.org/) — the complexity guard's KD-tree (`app/svg_complexity.py`) and the optical-registration line fits (`app/optical_reg.py`)
+- [`numpy`](https://numpy.org/) / [`scipy`](https://scipy.org/) — the complexity guard's KD-tree (`app/svg_complexity.py`)
 - [`cairosvg`](https://cairosvg.org/) — PNG/PDF "Save As" export (`app/export.py`); needs the `libcairo2` apt package above
 - [`vpype-gcode`](https://github.com/plottertools/vpype-gcode) — adds vpype's `gwrite`, used for the G-code and HPGL exports
 
@@ -226,7 +226,7 @@ ENABLE_CAMERA=1 ./install.sh
 
 #### Plot recording (camera)
 
-Records the plot through a Raspberry Pi Camera Module 3 — realtime, timelapse, or sped-up — with a live RTSP / HLS / WebRTC stream, in-UI focus and image controls, a local retention cap, and optional `rclone` push to cloud storage. It also unlocks **optical layer registration**: a carriage-mounted camera measures how far a pen change left the next layer off the first, and offers the correction as an origin nudge you confirm before it is applied.
+Records the plot through a Raspberry Pi Camera Module 3 — realtime, timelapse, or sped-up — with a live RTSP / HLS / WebRTC stream, in-UI focus and image controls, a local retention cap, and optional `rclone` push to cloud storage.
 
 - **Needs:** a Camera Module 3 on the CSI connector; the service user in the `video` group (`sudo usermod -a -G video $USER`, then log out and back in — `install.sh` aborts with this hint if it's missing); and a 64-bit OS, since the MediaMTX build the script downloads is `linux_arm64`.
 - **Enable:** `ENABLE_CAMERA=1 ./install.sh`

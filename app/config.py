@@ -171,41 +171,6 @@ _SETTINGS: list[_Setting] = [
     _Setting("camera_timelapse_interval_s_default", float, 5.0, lambda v: v > 0),
     _Setting("camera_speed_multiplier_default", float, 4.0, lambda v: v > 1.0),
     _Setting("record_plot_default", bool, False),
-    # Optical layer registration (see app/optical_reg.py, app/plot_worker.py
-    # _run_optical_reg_phase). A carriage-mounted macro camera measures how far
-    # a pen-change left the next layer off the first, and proposes it as an
-    # origin nudge the user confirms. optical_reg_default is the per-job
-    # checkbox's remembered state, like record_plot_default.
-    _Setting("optical_reg_default", bool, False),
-    # Image scale and rotation, set once by the "Calibrate camera" routine.
-    # mm_per_px == 0 means uncalibrated — the Measure button stays disabled.
-    _Setting("optical_reg_mm_per_px", float, 0.0, lambda v: v >= 0.0),
-    _Setting("optical_reg_cam_rotation_deg", float, 0.0,
-             lambda v: -180.0 <= v <= 180.0),
-    # Rough pen-tip -> camera-centre offset, only used to frame the two crosses
-    # before a grab (the measurement itself is differential and offset-free).
-    _Setting("optical_reg_cam_offset_x_mm", float, 0.0, lambda v: -50.0 <= v <= 50.0),
-    _Setting("optical_reg_cam_offset_y_mm", float, 0.0, lambda v: -50.0 <= v <= 50.0),
-    # Where on the page the reference cross is drawn (page mm, inside the sheet).
-    _Setting("optical_reg_mark_x_mm", float, 10.0, lambda v: v >= 0.0),
-    _Setting("optical_reg_mark_y_mm", float, 10.0, lambda v: v >= 0.0),
-    _Setting("optical_reg_mark_size_mm", float, 3.0, lambda v: 0.5 <= v <= 20.0),
-    # Deliberate nominal offset of the probe cross from the reference, so the
-    # two never overlap however different the nib widths; doubled and retried
-    # up to _max if the crosses still merge. Has to clear both the mark size and
-    # the max correction below, or the crosses merge on every attempt and no
-    # pair can be told apart — plot_worker._run_optical_reg_phase floors it at
-    # whatever those two imply, so setting this lower than the floor does
-    # nothing.
-    _Setting("optical_reg_probe_offset_mm", float, 6.0, lambda v: 0.2 <= v <= 20.0),
-    _Setting("optical_reg_probe_offset_max_mm", float, 24.0, lambda v: 0.5 <= v <= 40.0),
-    _Setting("optical_reg_frames", int, 3, lambda v: 1 <= v <= 15),
-    # Largest misalignment worth reporting. Doubles as the tolerance the marks
-    # are identified with and as the pitch of the probe lanes (see
-    # plot_worker._reg_tolerance_mm / _probe_offset), so a tighter value buys a
-    # tighter, more reliably readable pattern; a reading past it is refused
-    # rather than clamped.
-    _Setting("optical_reg_max_correction_mm", float, 3.0, lambda v: 0.1 <= v <= 20.0),
     # Live "draw progress" page for an OBS Browser Source (see app/main.py's
     # /draw-stream routes). Opt-in the same way camera_enabled is: only present
     # when install.sh was run with ENABLE_DRAW_STREAM=1.
@@ -329,9 +294,8 @@ def _normalize_machine(raw: Any, used_ids: set[str]) -> dict | None:
         skew_mode = "clip"
     # Where the sheet's top-left corner sits on the bed, measured from the
     # machine's own corner. A deliberately non-zero offset gives the carriage
-    # room to absorb a skew correction / origin nudge / optical-registration
-    # shift without running off the near edge. Non-negative and coerced rather
-    # than fatal, same as skew_deg.
+    # room to absorb a skew correction or origin nudge without running off the
+    # near edge. Non-negative and coerced rather than fatal, same as skew_deg.
     try:
         paper_origin_x = max(0.0, float(raw.get("paper_origin_x_mm") or 0.0))
         paper_origin_y = max(0.0, float(raw.get("paper_origin_y_mm") or 0.0))

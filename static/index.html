@@ -269,7 +269,7 @@
               <input type="number" id="settings-machine-paper-origin-y" min="0" step="0.1" value="0" />
             </label>
           </div>
-          <p class="muted" data-i18n="settings.machine.paper_origin_note">Where the top-left corner of your paper usually sits on the bed. Shown as the white sheet on the grey bed in every preview, and the spot the ⇱ button jogs the carriage to. Keep it a little off 0, 0 so a skew, nudge or optical-registration correction has room before the near edge — it is not the plot origin, "Set origin here" still is.</p>
+          <p class="muted" data-i18n="settings.machine.paper_origin_note">Where the top-left corner of your paper usually sits on the bed. Shown as the white sheet on the grey bed in every preview, and the spot the ⇱ button jogs the carriage to. Keep it a little off 0, 0 so a skew or nudge correction has room before the near edge — it is not the plot origin, "Set origin here" still is.</p>
           <label class="field">
             <span class="field-label" data-i18n="settings.machine.skew_label">Skew angle (°)</span>
             <input type="number" id="settings-machine-skew" min="-5" max="5" step="0.001" value="0" />
@@ -547,39 +547,6 @@
               <input type="number" id="camera-lens-position" min="0" max="32" step="0.1" value="0" />
             </div>
           </label>
-        </div>
-      </section>
-
-      <section class="card-section collapsed" data-section="camera-optical-reg">
-        <header class="card-section-head">
-          <span class="card-section-title" data-i18n="camera.optical.title">Optical Layer Registration</span>
-          <span class="card-section-caret" aria-hidden="true">▼</span>
-        </header>
-        <div class="card-section-body">
-          <p class="muted" data-i18n="camera.optical.note">Measures how far a pen-change left the next layer off the first and proposes an origin nudge, at each pen-change pause. Enable it per job on the job card.</p>
-          <div class="form-row">
-            <label class="field">
-              <span class="field-label" data-i18n="camera.optical.mark_x">Reference mark X (mm)</span>
-              <input type="number" id="optical-reg-mark-x" min="0" step="1" value="10" />
-            </label>
-            <label class="field">
-              <span class="field-label" data-i18n="camera.optical.mark_y">Reference mark Y (mm)</span>
-              <input type="number" id="optical-reg-mark-y" min="0" step="1" value="10" />
-            </label>
-          </div>
-          <div class="form-row">
-            <label class="field">
-              <span class="field-label" data-i18n="camera.optical.mark_size">Mark size (mm)</span>
-              <input type="number" id="optical-reg-mark-size" min="0.5" max="20" step="0.5" value="3" />
-            </label>
-            <label class="field">
-              <span class="field-label" data-i18n="camera.optical.probe_offset">Probe offset (mm)</span>
-              <input type="number" id="optical-reg-probe-offset" min="0.2" max="20" step="0.5" value="2" />
-            </label>
-          </div>
-          <p class="muted" data-i18n="camera.optical.calibrate_hint">Jog the pen over a clear patch of paper, then calibrate — it plots a cross and moves the carriage a few mm to learn the camera's scale and rotation.</p>
-          <button type="button" id="optical-reg-calibrate-btn" class="secondary" data-i18n="camera.optical.calibrate">Calibrate camera</button>
-          <div id="optical-reg-calibrate-status" class="muted"></div>
         </div>
       </section>
 
@@ -940,26 +907,6 @@
           <span class="nudge-readout" id="nudge-y-readout">0.0</span>
           <button type="button" class="nudge-btn" data-axis="y" data-step="0.1">+0.1</button>
           <button type="button" class="nudge-btn" data-axis="y" data-step="1">+1</button>
-        </div>
-      </div>
-      <div id="optical-reg" class="origin-nudge" hidden>
-        <span class="field-label" data-i18n="controls.optical_reg_label">Optical registration (camera)</span>
-        <div class="optical-reg-actions">
-          <button type="button" id="optical-reg-measure-btn" class="secondary"
-                  data-i18n="controls.optical_reg_measure">Measure alignment</button>
-          <button type="button" id="optical-reg-widen-btn" class="neutral" hidden
-                  data-i18n="controls.optical_reg_widen">Bigger offset &amp; retry</button>
-        </div>
-        <div id="optical-reg-status" class="muted"></div>
-        <div id="optical-reg-result" hidden>
-          <img id="optical-reg-preview" class="optical-reg-preview" alt="Registration measurement" />
-          <div id="optical-reg-readout" class="muted"></div>
-          <div class="optical-reg-actions">
-            <button type="button" id="optical-reg-apply-btn" class="primary"
-                    data-i18n="controls.optical_reg_apply">Apply as nudge</button>
-            <button type="button" id="optical-reg-dismiss-btn" class="neutral"
-                    data-i18n="controls.optical_reg_dismiss">Dismiss</button>
-          </div>
         </div>
       </div>
       <div id="redraw-controls" class="redraw-controls" hidden>
@@ -1357,10 +1304,6 @@
                   <label class="inline-check">
                     <input type="checkbox" class="record-plot" />
                     <span data-i18n="job.record_plot">Record this plot</span>
-                  </label>
-                  <label class="inline-check">
-                    <input type="checkbox" class="optical-reg" />
-                    <span data-i18n="job.optical_reg">Optical layer registration (camera)</span>
                   </label>
                   <div class="record-plot-options" hidden>
                     <label class="field">

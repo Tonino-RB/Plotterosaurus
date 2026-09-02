@@ -26,15 +26,6 @@ const penControlsMessage = $("pen-controls-message");
 const originNudge = $("origin-nudge");
 const nudgeXReadout = $("nudge-x-readout");
 const nudgeYReadout = $("nudge-y-readout");
-const opticalReg = $("optical-reg");
-const opticalRegMeasureBtn = $("optical-reg-measure-btn");
-const opticalRegWidenBtn = $("optical-reg-widen-btn");
-const opticalRegStatus = $("optical-reg-status");
-const opticalRegResult = $("optical-reg-result");
-const opticalRegPreview = $("optical-reg-preview");
-const opticalRegReadout = $("optical-reg-readout");
-const opticalRegApplyBtn = $("optical-reg-apply-btn");
-const opticalRegDismissBtn = $("optical-reg-dismiss-btn");
 const jogXReadout = $("jog-x-readout");
 const jogYReadout = $("jog-y-readout");
 const jogXInput = $("jog-x-input");
@@ -92,12 +83,6 @@ const cameraRecordingsList = $("camera-recordings-list");
 const cameraRecordingsNote = $("camera-recordings-note");
 const cameraRecordingsRefresh = $("camera-recordings-refresh");
 const cameraFinalizeFailures = $("camera-finalize-failures");
-const opticalRegMarkX = $("optical-reg-mark-x");
-const opticalRegMarkY = $("optical-reg-mark-y");
-const opticalRegMarkSize = $("optical-reg-mark-size");
-const opticalRegProbeOffset = $("optical-reg-probe-offset");
-const opticalRegCalibrateBtn = $("optical-reg-calibrate-btn");
-const opticalRegCalibrateStatus = $("optical-reg-calibrate-status");
 const cameraRtspUrl = $("camera-rtsp-url");
 const cameraHlsUrl = $("camera-hls-url");
 const cameraSettingsMessage = $("camera-settings-message");
@@ -336,7 +321,6 @@ function buildJobPayload(svg, fallbackName) {
       pen_pos_up: appSettings.pen_pos_up_default,
       pen_pos_down: appSettings.pen_pos_down_default,
       record_plot: appSettings.record_plot_default,
-      optical_reg: appSettings.optical_reg_default,
       record_mode: appSettings.camera_recording_mode_default,
       record_timelapse_interval_s: appSettings.camera_timelapse_interval_s_default,
       record_speed_multiplier: appSettings.camera_speed_multiplier_default,
@@ -1252,7 +1236,6 @@ function createCardForJob(job) {
   card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
   card.querySelector(".record-plot").checked = !!job.record_plot;
   card.querySelector(".record-plot-options").hidden = !job.record_plot;
-  card.querySelector(".optical-reg").checked = !!job.optical_reg;
   card.querySelector(".record-mode").value = job.record_mode || appSettings.camera_recording_mode_default;
   card.querySelector(".record-timelapse-interval").value =
     job.record_timelapse_interval_s ?? appSettings.camera_timelapse_interval_s_default;
@@ -3018,7 +3001,6 @@ async function sendCardUpdate(card, pending) {
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
     updates.disable_motors_on_complete = card.querySelector(".disable-motors-on-complete").checked;
     updates.record_plot = card.querySelector(".record-plot").checked;
-    updates.optical_reg = card.querySelector(".optical-reg").checked;
     updates.record_mode = card.querySelector(".record-mode").value;
     updates.record_timelapse_interval_s = parseFloat(card.querySelector(".record-timelapse-interval").value) || 5;
     updates.record_speed_multiplier = parseFloat(card.querySelector(".record-speed-multiplier").value) || 4;
@@ -3421,112 +3403,6 @@ originNudge.querySelectorAll(".nudge-btn").forEach((btn) => {
   });
 });
 
-// Optical registration — a camera measurement at a pen-change pause that
-// proposes a dx/dy, which the user confirms via the same postNudge() path as
-// the manual nudge above. It never moves the carriage on its own.
-let opticalRegDismissedSig = null;
-// Signature of the reading already sent to nudge_origin, so it can never be
-// applied twice (see the Apply handler).
-let opticalRegAppliedSig = null;
-
-function rerenderOpticalReg() {
-  const active = serverState.active_id
-    ? serverState.queue.find((j) => j.job_id === serverState.active_id)
-    : null;
-  renderOpticalReg(active, active ? active.status : "idle");
-}
-
-function opticalRegSig(r) {
-  return `${r.status}|${r.dx_mm}|${r.dy_mm}|${r.probe_mm}`;
-}
-
-async function postOpticalRegMeasure(probeMm) {
-  try {
-    const res = await fetch("/queue/optical-reg/measure", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(probeMm == null ? {} : { probe_mm: probeMm }),
-    });
-    if (!res.ok) throw new Error((await readErrDetail(res)).text);
-  } catch (e) {
-    topMessage.textContent = t("error.request_failed", { message: e.message });
-    topMessage.className = "error";
-  }
-}
-
-function renderOpticalReg(active, status) {
-  const reg = serverState.optical_reg || { status: "idle" };
-  const eligible = !!active
-    && (status === "awaiting_pen_change" || status === "measuring_registration")
-    && !!appSettings.camera_enabled
-    && !!active.optical_reg
-    // reg.ready: the run actually got its reference cross down. Without it
-    // there is nothing to measure against, and measuring would draw probe
-    // crosses on the artwork and report the gap between two of those.
-    && !!reg.ready
-    && (appSettings.optical_reg_mm_per_px || 0) > 0;
-  opticalReg.hidden = !eligible;
-  if (!eligible) return;
-
-  const busy = reg.status === "measuring" || status === "measuring_registration";
-  opticalRegMeasureBtn.disabled = busy;
-  opticalRegWidenBtn.disabled = busy;
-  opticalRegWidenBtn.hidden = !(reg.status === "measured" || reg.status === "failed");
-  const dismissed = opticalRegDismissedSig === opticalRegSig(reg);
-
-  if (busy) {
-    opticalRegStatus.textContent = t("controls.optical_reg_measuring");
-    opticalRegResult.hidden = true;
-  } else if (reg.status === "measured" && !dismissed) {
-    opticalRegStatus.textContent = "";
-    opticalRegPreview.src = `/camera/optical-reg/preview?t=${Date.now()}`;
-    opticalRegReadout.textContent = t("controls.optical_reg_readout", {
-      dx: (reg.dx_mm ?? 0).toFixed(2),
-      dy: (reg.dy_mm ?? 0).toFixed(2),
-      conf: Math.round((reg.confidence || 0) * 100),
-      probe: (reg.probe_mm ?? 0).toFixed(1),
-    });
-    opticalRegResult.hidden = false;
-  } else if (reg.status === "failed" && !dismissed) {
-    opticalRegStatus.textContent = reg.reason || t("controls.optical_reg_failed");
-    opticalRegResult.hidden = true;
-  } else {
-    opticalRegStatus.textContent = "";
-    opticalRegResult.hidden = true;
-  }
-}
-
-opticalRegMeasureBtn.addEventListener("click", () => postOpticalRegMeasure(null));
-opticalRegWidenBtn.addEventListener("click", () => {
-  const reg = serverState.optical_reg || {};
-  postOpticalRegMeasure(Math.max(0.4, (reg.probe_mm || 2) * 2));
-});
-opticalRegApplyBtn.addEventListener("click", async () => {
-  const reg = serverState.optical_reg || {};
-  const sig = opticalRegSig(reg);
-  // The nudge is *relative* and the reading stays "measured" after it lands, so
-  // a second click would apply the same correction a second time. Retire the
-  // reading up front, by signature, so neither a double click nor a re-render
-  // from the WebSocket can offer it again; the result card disappearing is also
-  // the only confirmation the user gets that it went through. Put back on a
-  // definite failure. (The below-origin confirmation hands off to a modal and
-  // resolves undefined here — the reading stays retired either way, so
-  // cancelling that prompt means measuring again.)
-  if (reg.status !== "measured" || opticalRegAppliedSig === sig) return;
-  opticalRegAppliedSig = sig;
-  opticalRegDismissedSig = sig;
-  rerenderOpticalReg();
-  if ((await postNudge(reg.dx_mm || 0, reg.dy_mm || 0, false)) === false) {
-    opticalRegAppliedSig = null;
-    opticalRegDismissedSig = null;
-    rerenderOpticalReg();
-  }
-});
-opticalRegDismissBtn.addEventListener("click", () => {
-  opticalRegDismissedSig = opticalRegSig(serverState.optical_reg || { status: "idle" });
-  rerenderOpticalReg();
-});
-
 // Manual jog — idle-only (see applyTopControls, which enables/disables
 // #jog-controls and updates the readouts from the broadcast state).
 // Distinct from the fine origin nudge above, which only applies mid-plot
@@ -3740,8 +3616,6 @@ function applyTopControls() {
   originNudge.hidden = !(active && status === "awaiting_pen_change");
   nudgeXReadout.textContent = (s.origin_nudge_x_mm ?? 0).toFixed(1);
   nudgeYReadout.textContent = (s.origin_nudge_y_mm ?? 0).toFixed(1);
-
-  renderOpticalReg(active, status);
 
   // Manual jog: idle-only. A run ends with its own job, so between jobs the
   // machine really is idle and these stay available for re-aiming.
@@ -4135,13 +4009,6 @@ function applyAppSettings(data) {
     camera_timelapse_interval_s_default: data.camera_timelapse_interval_s_default ?? appSettings.camera_timelapse_interval_s_default,
     camera_speed_multiplier_default: data.camera_speed_multiplier_default ?? appSettings.camera_speed_multiplier_default,
     record_plot_default: data.record_plot_default ?? appSettings.record_plot_default,
-    optical_reg_default: data.optical_reg_default ?? appSettings.optical_reg_default,
-    optical_reg_mm_per_px: data.optical_reg_mm_per_px ?? appSettings.optical_reg_mm_per_px,
-    optical_reg_cam_rotation_deg: data.optical_reg_cam_rotation_deg ?? appSettings.optical_reg_cam_rotation_deg,
-    optical_reg_mark_x_mm: data.optical_reg_mark_x_mm ?? appSettings.optical_reg_mark_x_mm,
-    optical_reg_mark_y_mm: data.optical_reg_mark_y_mm ?? appSettings.optical_reg_mark_y_mm,
-    optical_reg_mark_size_mm: data.optical_reg_mark_size_mm ?? appSettings.optical_reg_mark_size_mm,
-    optical_reg_probe_offset_mm: data.optical_reg_probe_offset_mm ?? appSettings.optical_reg_probe_offset_mm,
     draw_stream_enabled: data.draw_stream_enabled ?? appSettings.draw_stream_enabled,
     draw_stream_stroke_width_px: data.draw_stream_stroke_width_px ?? appSettings.draw_stream_stroke_width_px,
     draw_stream_background: data.draw_stream_background ?? appSettings.draw_stream_background,
@@ -4653,11 +4520,6 @@ async function openCameraSettings() {
     cameraRcloneTarget.value = appSettings.camera_rclone_target || "";
     cameraRcloneDeleteLocal.checked = !!appSettings.camera_rclone_delete_local;
     cameraRetentionGb.value = appSettings.camera_retention_gb ?? 10;
-    opticalRegMarkX.value = appSettings.optical_reg_mark_x_mm ?? 10;
-    opticalRegMarkY.value = appSettings.optical_reg_mark_y_mm ?? 10;
-    opticalRegMarkSize.value = appSettings.optical_reg_mark_size_mm ?? 3;
-    opticalRegProbeOffset.value = appSettings.optical_reg_probe_offset_mm ?? 2;
-    renderOpticalRegCalibrationStatus();
 
     const statusRes = await fetch("/camera/status");
     if (statusRes.ok) {
@@ -4705,10 +4567,6 @@ async function saveCameraSettings() {
       camera_rclone_target: cameraRcloneTarget.value.trim(),
       camera_rclone_delete_local: cameraRcloneDeleteLocal.checked,
       camera_retention_gb: Math.max(0, numOr(cameraRetentionGb.value, 10)),
-      optical_reg_mark_x_mm: numOr(opticalRegMarkX.value, 10),
-      optical_reg_mark_y_mm: numOr(opticalRegMarkY.value, 10),
-      optical_reg_mark_size_mm: numOr(opticalRegMarkSize.value, 3),
-      optical_reg_probe_offset_mm: numOr(opticalRegProbeOffset.value, 2),
     };
     const res = await fetch("/settings", {
       method: "PATCH",
@@ -4904,40 +4762,6 @@ cameraRecordingsRefresh.addEventListener("click", () => {
   // no longer exists.
   recordingPreviewOpen = null;
   startRecordingsPolling();
-});
-
-function renderOpticalRegCalibrationStatus() {
-  opticalRegCalibrateStatus.className = "muted";
-  const mmpp = appSettings.optical_reg_mm_per_px || 0;
-  if (mmpp > 0) {
-    const w = appSettings.camera_resolution_width || 1920;
-    const h = appSettings.camera_resolution_height || 1080;
-    opticalRegCalibrateStatus.textContent = t("camera.optical.calibrated", {
-      mm_per_px: mmpp.toFixed(4),
-      rot: (appSettings.optical_reg_cam_rotation_deg || 0).toFixed(1),
-      fov: (mmpp * Math.min(w, h)).toFixed(0),
-    });
-  } else {
-    opticalRegCalibrateStatus.textContent = t("camera.optical.uncalibrated");
-  }
-}
-
-opticalRegCalibrateBtn.addEventListener("click", async () => {
-  opticalRegCalibrateBtn.disabled = true;
-  opticalRegCalibrateStatus.textContent = t("camera.optical.calibrating");
-  try {
-    const res = await fetch("/optical-reg/calibrate", { method: "POST" });
-    if (!res.ok) throw new Error((await readErrDetail(res)).text);
-    const r = await res.json();
-    appSettings.optical_reg_mm_per_px = r.mm_per_px;
-    appSettings.optical_reg_cam_rotation_deg = r.cam_rotation_deg;
-    renderOpticalRegCalibrationStatus();
-  } catch (e) {
-    opticalRegCalibrateStatus.textContent = t("settings.save_failed", { message: e.message });
-    opticalRegCalibrateStatus.className = "error";
-  } finally {
-    opticalRegCalibrateBtn.disabled = false;
-  }
 });
 
 // AF mode + live focus: PATCHes /camera/focus immediately (debounced for the

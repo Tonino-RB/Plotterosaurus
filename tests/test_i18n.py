@@ -139,9 +139,8 @@ MOSTLY_ENGLISH = 5
 def test_no_key_ships_as_raw_english():
     """A key present everywhere but still holding its English text is invisible
     to every check above: key parity passes, placeholder parity passes, nothing
-    is empty. That is how the whole optical-registration feature shipped in
-    English in eight of the nine catalogs — the strings existed, so the suite
-    stayed green.
+    is empty. That is how a whole feature once shipped in English in eight of
+    the nine catalogs — the strings existed, so the suite stayed green.
     """
     catalogs = _catalogs()
     en = catalogs[FALLBACK]

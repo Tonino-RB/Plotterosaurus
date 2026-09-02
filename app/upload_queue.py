@@ -88,8 +88,8 @@ def free_bytes(path: Path | None = None) -> int | None:
 
 def is_recording_file(path: Path) -> bool:
     """Recordings only. The folder also holds camera scratch — the segment
-    directory and the optical-registration still — which are named with a
-    leading underscore and must never be uploaded or offered for deletion."""
+    directory — which is named with a leading underscore and must never be
+    uploaded or offered for deletion."""
     return (path.is_file() and not path.name.startswith("_")
             and path.suffix.lower() in _MEDIA_SUFFIXES)
 

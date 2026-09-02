@@ -1079,18 +1079,6 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 }
 .calibration-file-row[hidden] { display: none; }
 
-#optical-reg { flex-direction: column; align-items: stretch; gap: 0.5rem; }
-#optical-reg[hidden] { display: none; }
-.optical-reg-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-#optical-reg-result[hidden] { display: none; }
-.optical-reg-preview {
-  display: block;
-  max-width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  margin-bottom: 0.4rem;
-}
-
 /* ───── Settings: About & Updates ───── */
 .settings-update-row {
   display: flex;

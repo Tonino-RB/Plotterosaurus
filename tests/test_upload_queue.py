@@ -129,10 +129,10 @@ def test_sweep_forgets_entries_whose_file_is_gone(rig):
 
 def test_sweep_does_not_touch_camera_scratch(rig):
     out, _ = rig
-    (out / "_optical_reg_preview.jpg").write_bytes(b"x")
+    (out / "_snapshot.jpg").write_bytes(b"x")
     (out / "_segments").mkdir()
     old = time.time() - 3600
-    os.utime(out / "_optical_reg_preview.jpg", (old, old))
+    os.utime(out / "_snapshot.jpg", (old, old))
     upload_queue.sweep()
     assert upload_queue._uploads == {}
 
@@ -152,7 +152,7 @@ def test_list_recordings_reports_the_folder_and_target(rig):
     out, dst = rig
     _recording(out, "a-20260101-120000.mp4")
     _recording(out, "b-20260101-130000.mp4")
-    (out / "_optical_reg_preview.jpg").write_bytes(b"x")
+    (out / "_snapshot.jpg").write_bytes(b"x")
     listing = upload_queue.list_recordings()
     assert listing["rclone_target"] == str(dst)
     assert listing["delete_local"] is False
@@ -163,7 +163,7 @@ def test_list_recordings_reports_the_folder_and_target(rig):
 
 @pytest.mark.parametrize("name", [
     "../../etc/passwd", "sub/dir.mp4", "..", ".hidden.mp4", "",
-    "_optical_reg_preview.jpg", "notes.txt",
+    "_snapshot.jpg", "notes.txt",
 ])
 def test_path_for_rejects_anything_but_a_recording_in_the_folder(rig, name):
     with pytest.raises(ValueError):
@@ -198,7 +198,7 @@ def test_preview_route_serves_the_file_inline(rig, client):
     assert res.content == path.read_bytes()
 
 
-@pytest.mark.parametrize("name", ["..%2F..%2Fetc%2Fpasswd", "_optical_reg_preview.jpg"])
+@pytest.mark.parametrize("name", ["..%2F..%2Fetc%2Fpasswd", "_snapshot.jpg"])
 def test_preview_route_refuses_anything_outside_the_folder(rig, client, name):
     assert client.get(f"/camera/recordings/{name}").status_code == 404
 

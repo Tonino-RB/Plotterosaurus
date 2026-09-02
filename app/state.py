@@ -63,13 +63,8 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
                              "completed", "failed"},
     "paused":               {"plotting", "homing", "cancelled", "failed"},
     "awaiting_pen_change":  {"plotting", "plotting_calibration",
-                             "measuring_registration", "cancelled", "failed"},
+                             "cancelled", "failed"},
     "plotting_calibration": {"awaiting_pen_change", "cancelled", "failed"},
-    # Camera-driven layer-registration measurement, run as a side action from
-    # an awaiting_pen_change pause (see plot_worker._run_optical_reg_phase):
-    # plots a probe cross, grabs a frame, returns to the pause. Same shape as
-    # plotting_calibration.
-    "measuring_registration": {"awaiting_pen_change", "cancelled", "failed"},
     "homing":               {"cancelled"},
     "completed":            {"ready"},
     "failed":               {"ready"},
@@ -175,19 +170,6 @@ _origin_base: dict = {"x_mm": 0.0, "y_mm": 0.0}
 # Camera recording state (see app/camera.py). job_id is None for a manually
 # started recording that isn't tied to any job.
 _recording: dict = {"status": "idle", "job_id": None}  # idle | recording | paused
-# Result of the last camera layer-registration measurement at a pen-change
-# pause (see plot_worker._run_optical_reg_phase). Advisory only — the user
-# reviews it and clicks Apply, which routes the dx/dy through the ordinary
-# nudge_origin path. Belongs to one run: reset when a pause begins and when the
-# run ends. status: idle | measuring | measured | failed.
-_optical_reg: dict = {"status": "idle", "dx_mm": 0.0, "dy_mm": 0.0,
-                      "confidence": 0.0, "probe_mm": 0.0, "reason": ""}
-# Whether this run got its reference cross onto the paper — the once-per-run
-# mark every measurement is taken against. Outlives the per-measurement result
-# above (which resets at each pause), because it is a fact about the run: a job
-# that never opted in, or one resumed past the stage that draws it, has nothing
-# to measure against and must not offer the button.
-_optical_reg_ready: bool = False
 
 # ws -> _Client. Each connected socket gets its own bounded backlog and its
 # own send task (see _Client / drain_events), so a socket that has stopped
@@ -381,7 +363,6 @@ def snapshot() -> dict:
         "manual_origin_offset_y_mm": _manual_origin_offset["y_mm"],
         "recording_status": _recording["status"],
         "recording_job_id": _recording["job_id"],
-        "optical_reg": dict(_optical_reg, ready=_optical_reg_ready),
         "status": _derive_top_status(),
         "error": _error,
     }
@@ -606,35 +587,6 @@ def set_recording(status: str, job_id: str | None) -> None:
 
 def recording() -> tuple[str, str | None]:
     return _recording["status"], _recording["job_id"]
-
-
-def set_optical_reg(status: str, *, dx_mm: float = 0.0, dy_mm: float = 0.0,
-                    confidence: float = 0.0, probe_mm: float = 0.0,
-                    reason: str = "") -> None:
-    global _optical_reg
-    new = {"status": status, "dx_mm": dx_mm, "dy_mm": dy_mm,
-           "confidence": confidence, "probe_mm": probe_mm, "reason": reason}
-    if _optical_reg == new:
-        return
-    _optical_reg = new
-    _broadcast()
-
-
-def set_optical_reg_ready(ready: bool) -> None:
-    """Record whether this run has a reference cross to measure against.
-
-    Separate from set_optical_reg, which resets at every pause: this one is a
-    property of the run, not of the last reading.
-    """
-    global _optical_reg_ready
-    if _optical_reg_ready == ready:
-        return
-    _optical_reg_ready = ready
-    _broadcast()
-
-
-def optical_reg() -> dict:
-    return dict(_optical_reg, ready=_optical_reg_ready)
 
 
 def set_svg_status(svg_id: str, status: str,
