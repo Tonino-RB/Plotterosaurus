@@ -216,7 +216,15 @@ def parse_layers(svg_path: Path) -> dict:
     root = tree.getroot()
     layers = []
     for i, g in enumerate(_top_level_layers(root)):
-        layers.append({"index": i, "label": g.get(LABEL_ATTR) or f"Layer {i + 1}"})
+        layers.append({
+            "index": i,
+            "label": g.get(LABEL_ATTR) or f"Layer {i + 1}",
+            # The id vpype gives this layer — what an Expert-mode command targets
+            # with `--layer N` / `lmove` / `lcopy`. Surfaced so the layer row can
+            # show it (see static/app.js renderLayers).
+            "vpype_id": _vpype_layer_id(g.get(LABEL_ATTR) or "", g.get("id") or "",
+                                       i + 1),
+        })
     width_mm, height_mm = svg_size_mm(root)
     return {
         "layers": layers,
@@ -369,6 +377,82 @@ def filter_to_layers(svg_path: Path, keep_indices: list[int], out_path: Path,
         for el in _top_level_orphans(root):
             el.getparent().remove(el)
     tree.write(str(out_path), xml_declaration=True, encoding="utf-8")
+
+
+def _user_units_per_mm(root) -> float:
+    """The factor a physical mm must be multiplied by to become an SVG user
+    coordinate for this document. Same derivation as add_cut_marks."""
+    doc_w_mm, _ = svg_size_mm(root)
+    viewbox = parse_viewbox(root.get("viewBox", ""))
+    if viewbox and doc_w_mm:
+        return viewbox[2] / doc_w_mm
+    return PX_PER_MM
+
+
+def _style_without(style: str, props: set[str]) -> str:
+    """``style`` with every ``prop: value`` declaration for a name in ``props``
+    removed. Returns the trimmed remainder (possibly empty)."""
+    kept = []
+    for decl in style.split(";"):
+        name, sep, _ = decl.partition(":")
+        if sep and name.strip() in props:
+            continue
+        if decl.strip():
+            kept.append(decl.strip())
+    return "; ".join(kept)
+
+
+def apply_layer_styles(src: Path, out: Path, styles: list[dict]) -> None:
+    """Write ``out`` as ``src`` with per-layer pen colour / stroke width applied.
+
+    ``styles`` is ``[{"index": int, "stroke"?: str, "stroke_width_mm"?: float},
+    ...]`` keyed by positional top-level layer index (the index parse_layers
+    reports). Unknown or out-of-range indices are ignored, so the grid's
+    trailing cut-marks row is harmless.
+
+    Each value is set as a presentation attribute on the layer <g>, and the same
+    property is cleared from the group's own ``style=""`` and from every
+    descendant (attribute and ``style``), so nothing inside the layer overrides
+    it. A stroke defined by a CSS ``<style>`` rule is left alone — rare in
+    plotter SVGs, and out of scope here.
+    """
+    tree = etree.parse(str(src))
+    root = tree.getroot()
+    layers = _top_level_layers(root)
+    per_mm = _user_units_per_mm(root)
+    for spec in styles or []:
+        try:
+            idx = int(spec["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= idx < len(layers):
+            continue
+        props: dict[str, str] = {}
+        stroke = spec.get("stroke")
+        if isinstance(stroke, str) and stroke.strip():
+            props["stroke"] = stroke.strip()
+        width_mm = spec.get("stroke_width_mm")
+        if isinstance(width_mm, (int, float)) and not isinstance(width_mm, bool) \
+                and width_mm >= 0:
+            props["stroke-width"] = f"{width_mm * per_mm:.4f}"
+        if not props:
+            continue
+        names = set(props)
+        g = layers[idx]
+        for name, value in props.items():
+            g.set(name, value)
+        for el in g.iter("*"):
+            for name in names:
+                if el is not g and el.get(name) is not None:
+                    del el.attrib[name]
+            el_style = el.get("style")
+            if el_style:
+                cleaned = _style_without(el_style, names)
+                if cleaned:
+                    el.set("style", cleaned)
+                else:
+                    del el.attrib["style"]
+    tree.write(str(out), xml_declaration=True, encoding="utf-8")
 
 
 def rewind_resume_distance(resume_path: Path, distance_mm: float) -> float:

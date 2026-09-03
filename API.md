@@ -521,6 +521,7 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "optimize_svg_linesimplify_default": true,
   "optimize_svg_linesort_default": true,
   "optimize_svg_reloop_default": true,
+  "saved_pen_colors": [],                       // curated palette for the layer-colour popover; array of "#rrggbb", max 24
   "display_unit": null,                         // null | "mm" | "cm" | "in" — UI labels only
   "machine_custom_enabled": false,              // Custom bed-size profile layered on plotter_model (UI/bounds only)
   "machine_width_mm": 297.0,
@@ -595,6 +596,7 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `optimize_svg_default` | bool |
 | `optimize_svg_tolerance_default_mm` | float 0.01–10.0 |
 | `optimize_svg_linemerge_default`, `optimize_svg_linesimplify_default`, `optimize_svg_linesort_default`, `optimize_svg_reloop_default` | bool |
+| `saved_pen_colors` | array of `"#rrggbb"` strings. Normalised on save: lower-cased, non-hex dropped, de-duplicated, capped at 24. |
 | `display_unit` | `"mm"` \| `"cm"` \| `"in"` — UI display only. PATCH cannot clear it back to `null`; that state only exists before any value has been saved. |
 
 Out-of-range values return `400`. The API key cannot be set through this endpoint — to rotate it, edit `config.json` on the Pi and restart the service.

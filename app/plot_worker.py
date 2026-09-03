@@ -1773,16 +1773,61 @@ def _effective_svg_path(job: dict) -> Path:
     that built it, and serving a stale arrangement means the preview, the export
     and the plot all disagree with the UI. Until a rebuild lands we fall through
     to the un-tiled file.
+
+    Layer styles: whichever of the above resolves, a job carrying
+    ``layer_styles`` gets a {svg_id}.styled.svg rendered on top of it (see
+    _build_styled_svg) — the per-layer pen colour / stroke width the layer panel
+    set. This is the tail step so it composes with every other derivative and
+    with an Expert-mode ``color`` / ``penwidth`` command.
     """
     src = _uploads() / f"{job['svg_id']}.svg"
     opt_path = src.with_name(f"{job['svg_id']}.opt.svg")
     if job.get("optimize_mode", "beginner") == "expert":
-        return opt_path if opt_path.exists() else src
-    if job.get("grid_enabled") and optimize_queue.grid_is_current(job):
-        return src.with_name(f"{job['svg_id']}.grid.svg")
-    if not job.get("optimize_svg"):
-        return src
-    return opt_path if opt_path.exists() else src
+        base = opt_path if opt_path.exists() else src
+    elif job.get("grid_enabled") and optimize_queue.grid_is_current(job):
+        base = src.with_name(f"{job['svg_id']}.grid.svg")
+    elif not job.get("optimize_svg"):
+        base = src
+    else:
+        base = opt_path if opt_path.exists() else src
+    styles = job.get("layer_styles")
+    return _build_styled_svg(job, base, styles) if styles else base
+
+
+# svg_id -> the (base, base mtime, styles) the on-disk {svg_id}.styled.svg was
+# last built from. One entry per svg_id, not an LRU: every build writes the same
+# path, so caching several keys against it would hand back a file whose contents
+# belong to a different key (e.g. red -> blue -> red would reuse the blue file).
+_styled_built: dict[str, tuple] = {}
+
+
+def _build_styled_svg(job: dict, base: Path, styles: list) -> Path:
+    """``{svg_id}.styled.svg`` — ``base`` with the job's per-layer pen colour /
+    stroke width applied (svg_utils.apply_layer_styles). Rewritten only when the
+    base file's mtime or the styles change, and best-effort: any failure logs
+    and falls back to ``base`` so a bad override can never wedge the preview or
+    a plot."""
+    svg_id = job["svg_id"]
+    out = _uploads() / f"{svg_id}.styled.svg"
+    try:
+        stamp = base.stat().st_mtime_ns
+    except OSError:
+        return base
+    key = (str(base), stamp, json.dumps(styles, sort_keys=True, default=str))
+    if _styled_built.get(svg_id) == key and out.exists():
+        return out
+    try:
+        # Atomic: a preview fetch may read {svg_id}.styled.svg at any moment.
+        tmp = out.with_name(f".{out.name}.partial")
+        svg_utils.apply_layer_styles(base, tmp, styles)
+        tmp.replace(out)
+    except Exception:
+        log.warning("layer styles failed for job %s; using unstyled file",
+                    job.get("job_id"), exc_info=True)
+        _styled_built.pop(svg_id, None)
+        return base
+    _styled_built[svg_id] = key
+    return out
 
 
 def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | None:
@@ -1815,7 +1860,9 @@ def _run_optimize_phase(job_id: str, src_path: Path, stages: list) -> Path | Non
     # tiled file is rebuilt whenever a grid setting changed.
     if opt_path.exists() and job.get("optimized_with_key") == cache_key \
             and not job.get("grid_enabled"):
-        return opt_path
+        # Through _effective_svg_path, not opt_path directly, so a job with
+        # layer_styles still gets its {svg_id}.styled.svg built on top.
+        return _effective_svg_path(job)
 
     state.update_job(job_id,
                      status="awaiting_optimize",

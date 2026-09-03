@@ -46,6 +46,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 **Plotting**
 
 - Drag-and-drop SVG upload; Inkscape layers parsed and selectable, each shown with an icon inferred from its type (pattern, text, svg, calibration, image, map, 3D model)
+- Each layer row also shows the number vpype gives that layer (for `--layer N` / `lmove` in Expert mode), a clickable pen-colour swatch (set by name, `#hex` or `rgb()`, with a saved-colours palette to reuse an exact value across layers) and an mm stroke-width box — colour and width are written into a derived copy the preview, plot and export all read, and update live when an Expert `color` / `penwidth` command changes them
 - SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
 - Staged plotting: optional pause between layers for pen changes, with a sub-option to skip that pause between consecutive layers drawn in the same pen colour and width
 - Choose how a drawing is split into rows and pen-change stages: by Inkscape layer (default), by top-level group, or one stage per stroke width + colour ("pen" mode) — the last two re-partition the SVG into a standalone copy the job points at

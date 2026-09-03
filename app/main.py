@@ -1143,6 +1143,11 @@ class JobCreate(_OptimizeCreateFields, _GridCreateFields):
     paper_size_name: str | None = None
     paper_name: str | None = None
     layer_selections: list[dict]
+    # Per-layer pen colour / stroke width overrides, keyed by positional layer
+    # index: [{"index": int, "stroke"?: "#rrggbb", "stroke_width_mm"?: float}].
+    # Rendered into a {svg_id}.styled.svg the whole pipeline reads through
+    # plot_worker._effective_svg_path.
+    layer_styles: list[dict] = []
     # How the layer rows / plot stages are derived from the SVG. "group" and
     # "pen" re-partition the drawing into a standalone copy the job points at
     # (see _regroup_svg); switchable per job while it's being prepared.
@@ -1220,6 +1225,9 @@ class SettingsUpdate(BaseModel):
     optimize_svg_linesimplify_default: bool | None = None
     optimize_svg_linesort_default: bool | None = None
     optimize_svg_reloop_default: bool | None = None
+    # Palette behind the layer-colour popover — a list of "#rrggbb". Stored in
+    # config.json as a JSON string; _clean_saved_pen_colors normalises it here.
+    saved_pen_colors: list[str] | None = None
     display_unit: Literal["auto", "mm", "cm", "in"] | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
@@ -1304,7 +1312,7 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "transform_offset_x_mm", "transform_offset_y_mm",
     "fit_content", "pause_between_layers", "skip_same_pen_pause", "layer_mode",
     "delete_on_complete", "disable_motors_on_complete", "record_plot",
-    "layer_selections",
+    "layer_selections", "layer_styles",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
     "optimize_svg_linesimplify", "optimize_svg_linesort", "optimize_svg_reloop",
     "optimize_mode", "optimize_expert_1_enabled", "optimize_expert_1_cmd",
@@ -1351,6 +1359,7 @@ def _clamp_job_fields(d: dict,
 
 class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     layer_selections: list[dict] | None = None
+    layer_styles: list[dict] | None = None
     layer_mode: Literal["layer", "group", "pen"] | None = None
     name: str | None = None
     paper_size_name: str | None = None
@@ -1481,6 +1490,10 @@ def update_job(job_id: str, req: JobUpdate):
             updates["layer_selections"] = [
                 {"index": l["index"], "label": l["label"]} for l in info["layers"]
             ]
+        # layer_styles is keyed by positional index into the *current* file; the
+        # re-partitioned copy has a different layer set, so the overrides no
+        # longer mean anything.
+        updates.setdefault("layer_styles", [])
     # Keep the "Cut marks" row in step with grid_enabled + grid_cut_marks, from
     # whichever of the PATCH / the stored job carries each of the three.
     base_sel = updates.get("layer_selections", j.get("layer_selections") or [])
@@ -2643,6 +2656,11 @@ def _settings_payload() -> dict:
     machine = config.active_machine()
     snap["machine_paper_origin_x_mm"] = machine.get("paper_origin_x_mm", 0.0)
     snap["machine_paper_origin_y_mm"] = machine.get("paper_origin_y_mm", 0.0)
+    # Stored as text (see config._SETTINGS); the UI wants a real array.
+    try:
+        snap["saved_pen_colors"] = _json.loads(config.SAVED_PEN_COLORS or "[]")
+    except ValueError:
+        snap["saved_pen_colors"] = []
     return snap
 
 
@@ -2651,11 +2669,27 @@ def get_settings():
     return _settings_payload()
 
 
+def _clean_saved_pen_colors(colors: list) -> str:
+    """A client-supplied palette → the JSON-array string config.json stores.
+    Lower-cases, keeps only ``#rrggbb``, de-dupes keeping first-seen order, caps
+    at 24."""
+    seen: list[str] = []
+    for c in colors:
+        if not isinstance(c, str):
+            continue
+        c = c.strip().lower()
+        if config._HEX_COLOR_RE.match(c) and c not in seen:
+            seen.append(c)
+    return _json.dumps(seen[:24])
+
+
 @app.patch("/settings")
 def patch_settings(req: SettingsUpdate):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise _coded(400, "no_settings")
+    if "saved_pen_colors" in updates:
+        updates["saved_pen_colors"] = _clean_saved_pen_colors(updates["saved_pen_colors"])
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()

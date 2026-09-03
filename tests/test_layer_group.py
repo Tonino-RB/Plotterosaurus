@@ -152,3 +152,24 @@ def test_unknown_mode_is_rejected(tmp_path):
     src.write_text(TWO_LAYERS)
     with pytest.raises(layer_group.RegroupError):
         layer_group.regroup(src, "sideways", tmp_path / "out.svg")
+
+
+# --- parse_layers surfaces the vpype id --------------------------------------
+
+MIXED_IDS = """<svg xmlns="http://www.w3.org/2000/svg"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  width="160mm" height="90mm" viewBox="0 0 160 90">
+  <g inkscape:groupmode="layer" inkscape:label="Layer 3"><path d="M0,0 L120,0" stroke="#111"/></g>
+  <g inkscape:groupmode="layer" inkscape:label="Contours"><path d="M0,20 L120,20" stroke="#111"/></g>
+  <g inkscape:groupmode="layer" id="named-only"><path d="M0,40 L120,40" stroke="#111"/></g>
+</svg>"""
+
+
+def test_parse_layers_reports_the_vpype_id(tmp_path):
+    src = tmp_path / "in.svg"
+    src.write_text(MIXED_IDS)
+    layers = svg_utils.parse_layers(src)["layers"]
+    # "Layer 3" -> digit group; "Contours" (no digits) -> 1-based order;
+    # label-less, id without digits -> 1-based order.
+    assert [l["vpype_id"] for l in layers] == [3, 2, 3]
+    assert [l["vpype_id"] for l in layers] == _vpype_ids(src)

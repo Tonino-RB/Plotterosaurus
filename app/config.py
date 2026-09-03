@@ -12,6 +12,7 @@ External callers keep accessing values as module-level uppercase attributes
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 from dataclasses import dataclass
@@ -44,6 +45,24 @@ def _read_version() -> str:
 
 
 APP_VERSION: str = _read_version()
+
+
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$")
+
+
+def _valid_saved_pen_colors(v: Any) -> bool:
+    """A JSON-array string of at most 24 ``#rrggbb`` colours. Stored as text so
+    it fits the scalar ``_Setting`` table (the ``machines`` list is the only
+    structured setting, and it is special-cased). main normalises the array
+    before it gets here; this guards a hand-edited config.json."""
+    if not isinstance(v, str):
+        return False
+    try:
+        items = json.loads(v)
+    except ValueError:
+        return False
+    return (isinstance(items, list) and len(items) <= 24
+            and all(isinstance(c, str) and _HEX_COLOR_RE.match(c) for c in items))
 
 
 @dataclass(frozen=True)
@@ -89,6 +108,10 @@ _SETTINGS: list[_Setting] = [
     _Setting("optimize_expert_1_cmd_default", str, ""),
     _Setting("optimize_expert_2_cmd_default", str, ""),
     _Setting("optimize_expert_3_cmd_default", str, ""),
+    # User-curated palette for the layer-colour popover (static/app.js) — a
+    # JSON-array string of #rrggbb. main._settings_payload hands the UI a real
+    # array; PATCH /settings normalises one back to text.
+    _Setting("saved_pen_colors", str, "[]", _valid_saved_pen_colors),
     # "auto" derives the unit from the browser's locale (app.js
     # effectiveDisplayUnit). It is a stored value rather than None because
     # update() below ignores a None — so with None as the sentinel there was

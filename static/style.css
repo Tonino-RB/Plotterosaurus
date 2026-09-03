@@ -497,6 +497,18 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 /* Optional pen name, trailing the layer name in the same grey as .muted. */
 .layer-pen { color: var(--text-faint); font-size: 0.85rem; margin-left: 0.6em; }
 .layer-time { flex: 0 0 auto; color: var(--text-soft); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+/* The vpype layer id, at the head of each row — a stable column so the swatches
+   line up whether the number is one or two digits. */
+.layer-vpype-id { flex: 0 0 auto; min-width: 1.25rem; text-align: right;
+  color: var(--text-faint); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+/* Per-layer stroke width, in mm. */
+.layer-stroke-width-wrap { flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 0.15rem; }
+.layer-stroke-width {
+  width: 3.4rem; font: inherit; font-size: 0.85rem; text-align: right;
+  padding: 0.15rem 0.3rem; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--surface); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.layer-sw-unit { color: var(--text-faint); font-size: 0.75rem; }
 .draw-stream-bg-thumb { display: block; max-width: 100%; max-height: 8rem; border-radius: 6px; border: 1px solid var(--border); margin: 0.4rem 0; }
 .layer-swatch {
   width: 18px; height: 18px; flex: 0 0 18px;
@@ -510,6 +522,50 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 .layer-swatch.faint svg, .layer-swatch.faint .layer-swatch-dot {
   filter: drop-shadow(0 0 0.6px rgba(128,128,128,0.95));
 }
+/* The swatch is a button — clicking it opens the colour popover. */
+.layer-swatch-btn {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  display: inline-flex; flex: 0 0 auto; border-radius: 50%;
+}
+.layer-swatch-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.layer-color-popover {
+  position: fixed; z-index: 60; width: 15rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18); padding: 0.6rem;
+}
+.layer-color-popover .lcp-row { display: flex; gap: 0.4rem; align-items: center; }
+.layer-color-popover .lcp-picker {
+  flex: 0 0 auto; width: 1.9rem; height: 1.9rem; padding: 0; border: 1px solid var(--border);
+  border-radius: 4px; background: none; cursor: pointer;
+}
+.layer-color-popover .lcp-text {
+  flex: 1; min-width: 0; font: inherit; padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text);
+}
+.layer-color-popover .lcp-save {
+  flex: 0 0 auto; width: 1.9rem; height: 1.9rem; padding: 0; line-height: 1;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--surface-alt);
+  color: var(--text); cursor: pointer; font-size: 1rem;
+}
+.layer-color-popover .lcp-swatches {
+  display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.5rem; min-height: 1rem;
+}
+.layer-color-popover .lcp-empty { color: var(--text-faint); font-size: 0.8rem; }
+.layer-color-popover .lcp-saved { position: relative; display: inline-flex; }
+.layer-color-popover .lcp-saved-apply {
+  width: 1.25rem; height: 1.25rem; padding: 0; border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 4px; cursor: pointer;
+}
+.layer-color-popover .lcp-saved-x {
+  position: absolute; top: -0.4rem; right: -0.4rem; width: 0.9rem; height: 0.9rem;
+  padding: 0; line-height: 0.8rem; font-size: 0.7rem; border: 1px solid var(--border);
+  border-radius: 50%; background: var(--surface); color: var(--text-soft); cursor: pointer;
+  opacity: 0.55;
+}
+.layer-color-popover .lcp-saved:hover .lcp-saved-x,
+.layer-color-popover .lcp-saved-x:focus-visible { opacity: 1; }
+.layer-color-popover .lcp-error { color: #FF4D4D; font-size: 0.8rem; margin-top: 0.4rem; }
 
 .api-key-row { display: flex; gap: 0.5rem; align-items: center; }
 .api-key-row input { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; padding: 0.4rem 0.6rem; }

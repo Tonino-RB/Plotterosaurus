@@ -117,6 +117,8 @@ let appSettings = {
   optimize_expert_1_cmd_default: "",
   optimize_expert_2_cmd_default: "",
   optimize_expert_3_cmd_default: "",
+  // User-curated palette for the layer-colour popover (array of "#rrggbb").
+  saved_pen_colors: [],
   display_unit: null,
 };
 
@@ -1789,8 +1791,14 @@ function updateCard(card, job) {
       (job.grid_enabled && gridSettled && gridInfo && gridInfo.status === "ready")
         ? `grid:${gridInfo.settings_key || ""}`
         : (job.optimize_svg && optSettled ? "optimized" : "raw");
-    if (settled && ctx.previewEffectiveKind !== effectiveKind) {
-      ctx.previewEffectiveKind = effectiveKind;
+    // Per-layer colour / width overrides render into a {svg_id}.styled.svg the
+    // server serves on top of whichever file the above resolves to, so the
+    // preview must refetch when they change too.
+    const effectiveKey = effectiveKind +
+      ((job.layer_styles && job.layer_styles.length)
+        ? `+styled:${JSON.stringify(job.layer_styles)}` : "");
+    if (settled && ctx.previewEffectiveKind !== effectiveKey) {
+      ctx.previewEffectiveKind = effectiveKey;
       reloadCardSvg(card, job);
     } else if (!settled) {
       ctx.previewEffectiveKind = null;
@@ -2671,6 +2679,9 @@ function renderLayers(card, job) {
   // A rename is in progress — leave the list alone so a state broadcast
   // doesn't yank the input out from under the cursor. The commit re-renders.
   if (ul.querySelector(".layer-label-edit")) return;
+  // Same for an open colour popover: rebuilding the list detaches the swatch
+  // button it is anchored to. closeLayerColorPopover re-renders on the way out.
+  if (openColorPopover && openColorPopover.cardId === card.dataset.id) return;
   // Layer entries carry their own metadata (label, type) plus an optional
   // `selected` flag; entries with selected===false stay in the list so the
   // metadata is preserved across toggles. The array order IS the plot/
@@ -2690,20 +2701,38 @@ function renderLayers(card, job) {
     const displayLabel = sel.label || (layer && layer.label) || "";
     // Optional pen name (API-set), trailing the layer name in grey.
     const penName = sel.pen_name || "";
+    // A stored per-layer colour override shows on the dot straight away, before
+    // the styled SVG has round-tripped back into the preview.
+    const styleOvr = (job.layer_styles || []).find((s) => s.index === sel.index);
     const swatch = layerSwatch(
       sel.type,
-      (ctx.svg.layerColors || {})[sel.index] || null,
+      (styleOvr && styleOvr.stroke) || (ctx.svg.layerColors || {})[sel.index] || null,
       ctx.svg.pageColor || null,
     );
     const estSecs = layerEstimateSeconds(job, ctx, sel.index);
+    // The id vpype assigns this layer — shown so an Expert-mode command can
+    // target the row with `--layer N` / `lmove`. Outside the <label> so a click
+    // on the number doesn't toggle the checkbox.
+    const vpypeId = layer && layer.vpype_id != null ? layer.vpype_id : "";
+    // Stroke width box, in mm: the stored override, else what the artwork
+    // currently carries (ensureSvgColors), else blank.
+    const widthMm = (styleOvr && styleOvr.stroke_width_mm != null)
+      ? styleOvr.stroke_width_mm
+      : (ctx.svg.layerWidths || {})[sel.index];
+    const widthVal = widthMm != null ? Math.round(widthMm * 1000) / 1000 : "";
     li.innerHTML = `
+      <span class="layer-vpype-id" title="${t("a11y.layer_vpype_id")}" data-i18n-title="a11y.layer_vpype_id">${escapeHtml(String(vpypeId))}</span>
       <label>
         <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} />
-        ${swatch}
+        <button type="button" class="layer-swatch-btn" data-index="${sel.index}" title="${t("a11y.edit_layer_color")}" data-i18n-title="a11y.edit_layer_color">${swatch}</button>
         <span class="layer-label" title="${t("a11y.rename_layer")}" data-i18n-title="a11y.rename_layer">${escapeHtml(displayLabel)}${
           penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
         }</span>
       </label>
+      <span class="layer-stroke-width-wrap" title="${t("a11y.layer_stroke_width")}" data-i18n-title="a11y.layer_stroke_width">
+        <input type="number" class="layer-stroke-width" data-index="${sel.index}" min="0" step="0.05" inputmode="decimal" value="${widthVal}" aria-label="${t("a11y.layer_stroke_width")}" />
+        <span class="layer-sw-unit">mm</span>
+      </span>
       ${estSecs != null ? `<span class="layer-time">${escapeHtml(formatHoursMinutes(estSecs))}</span>` : ""}
       <div class="layer-move">
         <button type="button" class="icon-btn layer-move-up" data-index="${sel.index}" ${i === 0 ? "disabled" : ""} title="${t("a11y.move_up")}" data-i18n-title="a11y.move_up">↑</button>
@@ -2713,7 +2742,16 @@ function renderLayers(card, job) {
   });
   // Attach change/click handlers once
   if (!ul.dataset.wired) {
-    ul.addEventListener("change", () => {
+    ul.addEventListener("change", (e) => {
+      // Per-layer stroke width box — its own field, not a layer toggle.
+      if (e.target && e.target.classList.contains("layer-stroke-width")) {
+        const idx = parseInt(e.target.dataset.index);
+        const raw = e.target.value.trim();
+        const mm = raw === "" ? null : Math.max(0, parseFloat(raw));
+        if (raw !== "" && !isFinite(mm)) return;
+        upsertLayerStyle(card, idx, { stroke_width_mm: mm });
+        return;
+      }
       const cur = serverState.queue.find((j) => j.job_id === card.dataset.id);
       const checkedIndices = new Set(
         Array.from(ul.querySelectorAll("input[type=checkbox]:checked"))
@@ -2750,7 +2788,22 @@ function renderLayers(card, job) {
       syncPreviewLayers(card, { ...job, layer_selections: layers });
       queueCardUpdate(card, { layer_selections: layers });
     });
+    // Keep the stroke-width box's keystrokes (Enter especially) off the
+    // card-level shortcuts; commit on Enter.
+    ul.addEventListener("keydown", (e) => {
+      if (!e.target || !e.target.classList.contains("layer-stroke-width")) return;
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
+    });
     ul.addEventListener("click", (e) => {
+      const swatchBtn = e.target.closest(".layer-swatch-btn");
+      if (swatchBtn) {
+        e.preventDefault();
+        const cur = serverState.queue.find((j) => j.job_id === card.dataset.id);
+        if (!cur || !["ready", "completed", "failed", "cancelled"].includes(cur.status)) return;
+        openLayerColorPopover(card, parseInt(swatchBtn.dataset.index), swatchBtn);
+        return;
+      }
       const btn = e.target.closest(".layer-move-up, .layer-move-down");
       if (!btn || btn.disabled) return;
       const delta = btn.classList.contains("layer-move-up") ? -1 : 1;
@@ -2818,6 +2871,180 @@ function moveLayer(card, layerIndex, delta) {
   job.layer_selections = layers;
   renderLayers(card, { ...job, layer_selections: layers });
   queueCardUpdate(card, { layer_selections: layers });
+}
+
+// ───── Per-layer colour popover ────────────────────────────────────────────
+//
+// The layer swatch is a button; clicking it opens this. Choosing a colour
+// upserts a { index, stroke } entry into the job's layer_styles — the server
+// renders those into a {svg_id}.styled.svg the preview / plot / export all read
+// (app/plot_worker._build_styled_svg). A curated palette in
+// appSettings.saved_pen_colors (a server setting) lets the exact same hex be
+// reused across layers.
+
+let openColorPopover = null;
+
+function closeLayerColorPopover() {
+  if (!openColorPopover) return;
+  const { el, onOutside, onKey, cardId } = openColorPopover;
+  el.remove();
+  document.removeEventListener("pointerdown", onOutside, true);
+  document.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("resize", closeLayerColorPopover);
+  window.removeEventListener("scroll", closeLayerColorPopover, true);
+  openColorPopover = null;
+  const card = document.querySelector(`.job-card[data-id="${cardId}"]`);
+  const job = serverState.queue.find((j) => j.job_id === cardId);
+  if (card && job) renderLayers(card, job);
+}
+
+// Merge a { stroke?, stroke_width_mm? } patch into the job's layer_styles entry
+// for `index`, dropping members set to null/"" and the whole entry when nothing
+// is left. Writes serverState immediately (like the checkbox / reorder
+// handlers), then PATCHes. Returns the new list.
+function upsertLayerStyle(card, index, patch) {
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job) return null;
+  const styles = (job.layer_styles || []).map((s) => ({ ...s }));
+  let entry = styles.find((s) => s.index === index);
+  if (!entry) { entry = { index }; styles.push(entry); }
+  Object.assign(entry, patch);
+  for (const k of ["stroke", "stroke_width_mm"]) {
+    if (entry[k] == null || entry[k] === "") delete entry[k];
+  }
+  const cleaned = styles.filter((s) => s.stroke != null || s.stroke_width_mm != null);
+  job.layer_styles = cleaned;
+  queueCardUpdate(card, { layer_styles: cleaned });
+  return cleaned;
+}
+
+// Optimistic dot recolour while the styled SVG round-trips — mirrors the inline
+// style layerSwatch() writes.
+function recolorLayerSwatch(card, index, hex) {
+  const ctx = cardCtx.get(card.dataset.id);
+  const sw = card.querySelector(`.layers .layer-swatch-btn[data-index="${index}"] .layer-swatch`);
+  if (!sw) return;
+  sw.style.background = (ctx && ctx.svg && ctx.svg.pageColor) || "#ffffff";
+  sw.style.color = hex || "#9ca3af";
+}
+
+async function persistSavedPenColors(colors) {
+  appSettings.saved_pen_colors = colors;   // optimistic
+  try {
+    const res = await fetch("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ saved_pen_colors: colors }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.saved_pen_colors)) appSettings.saved_pen_colors = data.saved_pen_colors;
+    }
+  } catch (e) {}
+}
+
+function openLayerColorPopover(card, layerIndex, anchorBtn) {
+  closeLayerColorPopover();
+  const ctx = cardCtx.get(card.dataset.id);
+  const job = serverState.queue.find((j) => j.job_id === card.dataset.id);
+  if (!job) return;
+  const current =
+    ((job.layer_styles || []).find((s) => s.index === layerIndex) || {}).stroke ||
+    ((ctx && ctx.svg && ctx.svg.layerColors) || {})[layerIndex] ||
+    "#000000";
+
+  const pop = document.createElement("div");
+  pop.className = "layer-color-popover";
+  pop.innerHTML = `
+    <div class="lcp-row">
+      <input type="color" class="lcp-picker" value="${escapeHtml(current)}" aria-label="${escapeHtml(t("a11y.edit_layer_color"))}" />
+      <input type="text" class="lcp-text" value="${escapeHtml(current)}" spellcheck="false"
+        placeholder="${escapeHtml(t("layer.color_input_placeholder"))}" />
+      <button type="button" class="lcp-save" title="${escapeHtml(t("layer.color_save"))}">＋</button>
+    </div>
+    <div class="lcp-swatches" aria-label="${escapeHtml(t("layer.saved_colors"))}"></div>
+    <div class="lcp-error" hidden></div>`;
+  document.body.appendChild(pop);
+
+  const r = anchorBtn.getBoundingClientRect();
+  pop.style.top = `${Math.round(r.bottom + 4)}px`;
+  pop.style.left =
+    `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)))}px`;
+
+  const picker = pop.querySelector(".lcp-picker");
+  const text = pop.querySelector(".lcp-text");
+  const errEl = pop.querySelector(".lcp-error");
+  const swatchWrap = pop.querySelector(".lcp-swatches");
+
+  const apply = (raw) => {
+    const hex = parseColorInput(raw);
+    if (!hex) {
+      errEl.textContent = t("layer.color_invalid");
+      errEl.hidden = false;
+      return false;
+    }
+    errEl.hidden = true;
+    picker.value = hex;
+    text.value = hex;
+    upsertLayerStyle(card, layerIndex, { stroke: hex });
+    recolorLayerSwatch(card, layerIndex, hex);
+    return true;
+  };
+
+  const renderSwatches = () => {
+    const saved = appSettings.saved_pen_colors || [];
+    if (!saved.length) {
+      swatchWrap.innerHTML = `<span class="lcp-empty">${escapeHtml(t("layer.saved_colors"))}: —</span>`;
+      return;
+    }
+    swatchWrap.innerHTML = "";
+    for (const hex of saved) {
+      const s = document.createElement("span");
+      s.className = "lcp-saved";
+      s.innerHTML = `
+        <button type="button" class="lcp-saved-apply" style="background:${escapeHtml(hex)}" title="${escapeHtml(hex)}"></button>
+        <button type="button" class="lcp-saved-x" title="${escapeHtml(t("a11y.color_unsave"))}">×</button>`;
+      s.querySelector(".lcp-saved-apply").addEventListener("click", () => apply(hex));
+      s.querySelector(".lcp-saved-x").addEventListener("click", async () => {
+        await persistSavedPenColors((appSettings.saved_pen_colors || []).filter((c) => c !== hex));
+        renderSwatches();
+      });
+      swatchWrap.appendChild(s);
+    }
+  };
+  renderSwatches();
+
+  picker.addEventListener("input", () => apply(picker.value));
+  text.addEventListener("change", () => apply(text.value));
+  text.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); apply(text.value); }
+    else if (e.key === "Escape") { e.preventDefault(); closeLayerColorPopover(); }
+  });
+  pop.querySelector(".lcp-save").addEventListener("click", async () => {
+    const hex = parseColorInput(text.value);
+    if (!hex) { errEl.textContent = t("layer.color_invalid"); errEl.hidden = false; return; }
+    const cur = appSettings.saved_pen_colors || [];
+    if (!cur.includes(hex)) {
+      await persistSavedPenColors([...cur, hex].slice(0, 24));
+      renderSwatches();
+    }
+  });
+
+  openColorPopover = {
+    el: pop,
+    cardId: card.dataset.id,
+    onOutside: (e) => {
+      if (!pop.contains(e.target) && !anchorBtn.contains(e.target)) closeLayerColorPopover();
+    },
+    onKey: (e) => { if (e.key === "Escape") closeLayerColorPopover(); },
+  };
+  document.addEventListener("pointerdown", openColorPopover.onOutside, true);
+  document.addEventListener("keydown", openColorPopover.onKey, true);
+  window.addEventListener("resize", closeLayerColorPopover);
+  window.addEventListener("scroll", closeLayerColorPopover, true);
+  text.focus();
+  text.select();
 }
 
 // Per-stage status is a fixed small set; translate the known ones and fall
@@ -3818,18 +4045,28 @@ function ensureSvgColors(card, ctx) {
   if (!svgRoot) return;  // preview not in the DOM yet — retried next render
   const bg = getComputedStyle(svgRoot).backgroundColor;
   ctx.svg.pageColor = isPaintedColor(bg) ? colorToHex(bg) : null;
+  // User units per mm — a computed stroke-width (px == user units for an inline
+  // SVG) divided by this is millimetres. Mirrors svg_utils._user_units_per_mm.
+  const vbParts = String(ctx.svg.viewBox || "").trim().split(/[\s,]+/).map(Number);
+  const vbW = vbParts.length === 4 && isFinite(vbParts[2]) ? vbParts[2] : null;
+  const docWmm = parseDimToMm(ctx.svg.width) || (vbW ? (vbW * 25.4) / 96 : null);
+  const perMm = vbW && docWmm ? vbW / docWmm : 96 / 25.4;
   // Walk top-level layer groups in the same order as fetchSvgMeta so the
   // running index lines up with ctx.svg.layers[].index.
   const layerColors = {};
+  const layerWidths = {};
   let index = 0;
   for (const g of svgRoot.children) {
     if (g.tagName.toLowerCase() !== "g") continue;
     if (g.getAttribute("inkscape:groupmode") !== "layer") continue;
     const c = resolveLayerColor(g);
     if (c) layerColors[index] = c;
+    const w = resolveLayerWidth(g);
+    if (w != null && isFinite(perMm) && perMm > 0) layerWidths[index] = w / perMm;
     index++;
   }
   ctx.svg.layerColors = layerColors;
+  ctx.svg.layerWidths = layerWidths;
   ctx.svg.colorsReady = true;
 }
 
@@ -3975,6 +4212,7 @@ function applyAppSettings(data) {
     optimize_expert_1_cmd_default: data.optimize_expert_1_cmd_default ?? appSettings.optimize_expert_1_cmd_default,
     optimize_expert_2_cmd_default: data.optimize_expert_2_cmd_default ?? appSettings.optimize_expert_2_cmd_default,
     optimize_expert_3_cmd_default: data.optimize_expert_3_cmd_default ?? appSettings.optimize_expert_3_cmd_default,
+    saved_pen_colors: Array.isArray(data.saved_pen_colors) ? data.saved_pen_colors : appSettings.saved_pen_colors,
     display_unit: data.display_unit ?? appSettings.display_unit,
     machine_custom_enabled: data.machine_custom_enabled ?? appSettings.machine_custom_enabled,
     machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
