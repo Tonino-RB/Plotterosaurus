@@ -177,7 +177,7 @@ def test_endpoint_unknown_job_is_404(client):
     assert res.status_code == 404
 
 
-# "As plotted" scope --------------------------------------------------
+# Placement & skew ----------------------------------------------------
 
 MULTI = [{"index": 0, "label": "outline"},
          {"index": 1, "label": "detail"},
@@ -231,21 +231,17 @@ def placed_job(job_from_svg):
 
 @pytest.mark.parametrize("fmt", ["svg", "png", "pdf", "gcode", "hpgl"])
 def test_placed_endpoint_returns_attachment(client, placed_job, fmt):
-    res = client.get(f"/jobs/{placed_job['job_id']}/export",
-                     params={"fmt": fmt, "placed": "true"})
+    res = client.get(f"/jobs/{placed_job['job_id']}/export", params={"fmt": fmt})
     assert res.status_code == 200, res.text
-    assert f'.placed.{fmt}"' in res.headers["content-disposition"]
+    assert f'.{fmt}"' in res.headers["content-disposition"]
 
 
 def test_placed_gcode_is_page_framed(client, placed_job):
-    """Placed output sits inside the 210 x 297 page; the un-placed export uses
-    the document's own 100 x 75 coordinates."""
+    """The export is always placed: the toolpath sits inside the 210 x 297
+    page, not in the document's own 100 x 75 coordinates."""
     import re
-    plain = client.get(f"/jobs/{placed_job['job_id']}/export",
-                       params={"fmt": "gcode"}).text
     placed = client.get(f"/jobs/{placed_job['job_id']}/export",
-                        params={"fmt": "gcode", "placed": "true"}).text
-    assert placed != plain
+                        params={"fmt": "gcode"}).text
     xs = [float(v) for v in re.findall(r"X(-?[\d.]+)", placed)]
     ys = [float(v) for v in re.findall(r"Y(-?[\d.]+)", placed)]
     assert min(xs) >= 0 and max(xs) <= 210.01
@@ -261,12 +257,11 @@ def test_placed_svg_has_placement_but_no_skew(client, placed_job, monkeypatch):
     from app import config
     monkeypatch.setattr(config, "active_machine",
                         lambda: {"skew_deg": 3.0, "skew_true_axis": "x"})
-    optimized = client.get(f"/jobs/{placed_job['job_id']}/export",
-                           params={"fmt": "svg"}).text
+    source = client.get(f"/jobs/{placed_job['job_id']}/svg").text
     placed = client.get(f"/jobs/{placed_job['job_id']}/export",
-                        params={"fmt": "svg", "placed": "true"}).text
+                        params={"fmt": "svg"}).text
     assert "matrix(" not in placed        # not sheared
-    assert placed != optimized            # but placement was applied
+    assert placed != source               # but placement was applied
 
 
 def test_placed_gcode_carries_the_skew(client, placed_job, monkeypatch):
@@ -280,22 +275,21 @@ def test_placed_gcode_carries_the_skew(client, placed_job, monkeypatch):
     monkeypatch.setattr(config, "active_machine",
                         lambda: {"skew_deg": 0.0, "skew_true_axis": "x"})
     straight = client.get(f"/jobs/{placed_job['job_id']}/export",
-                          params={"fmt": "gcode", "placed": "true"}).text
+                          params={"fmt": "gcode"}).text
     monkeypatch.setattr(config, "active_machine",
                         lambda: {"skew_deg": 4.0, "skew_true_axis": "x"})
     skewed = client.get(f"/jobs/{placed_job['job_id']}/export",
-                        params={"fmt": "gcode", "placed": "true"}).text
+                        params={"fmt": "gcode"}).text
 
     assert skewed != straight
     # shearing a page-tall rectangle about X widens its X footprint
     assert bbox(skewed) > bbox(straight) + 1.0
 
 
-def test_placed_endpoint_no_selection_is_422(client, job_from_svg):
+def test_endpoint_no_selection_is_422(client, job_from_svg):
     job = job_from_svg(FIXTURE, layers=[{**MULTI[0], "selected": False}],
                        optimize_svg=False)
-    res = client.get(f"/jobs/{job['job_id']}/export",
-                     params={"fmt": "svg", "placed": "true"})
+    res = client.get(f"/jobs/{job['job_id']}/export", params={"fmt": "svg"})
     assert res.status_code == 422
     assert res.json()["detail"]["code"] == "select_one_layer"
 
@@ -328,7 +322,7 @@ def test_each_export_gets_its_own_output_path(client, export_job, monkeypatch):
 @pytest.mark.parametrize("params", [
     {"fmt": "png"},
     {"fmt": "png", "bg": "transparent"},
-    {"fmt": "svg", "placed": "true"},
+    {"fmt": "svg"},
 ])
 def test_an_export_leaves_nothing_behind(client, export_job, params):
     before = _exports_in_uploads()
@@ -344,7 +338,6 @@ def test_a_failed_export_leaves_nothing_behind(client, export_job, monkeypatch):
 
     monkeypatch.setattr(export, "export", boom)
     before = _exports_in_uploads()
-    res = client.get(f"/jobs/{export_job['job_id']}/export",
-                     params={"fmt": "svg", "placed": "true"})
+    res = client.get(f"/jobs/{export_job['job_id']}/export", params={"fmt": "svg"})
     assert res.status_code == 422
     assert _exports_in_uploads() == before

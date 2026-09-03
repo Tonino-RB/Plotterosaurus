@@ -1,17 +1,13 @@
 """Convert a job's processed drawing to other file formats for download.
 
-Two scopes:
-
-* **As optimized** — the input is whatever ``plot_worker._effective_svg_path``
-  resolves to (the vpype ``.opt.svg`` once optimization has run, else the raw
-  upload). The drawing in its own coordinate space: no placement, no skew, no
-  layer selection. Feed it to another tool that does its own placement.
-* **As plotted** (``build_placed_svg``) — the drawing rendered as a plot would
-  lay it down: only the selected layers, positioned on the page by the job's
-  placement settings (layers merged, not staged). G-code and HPGL are also
-  sheared by the *active machine's* axis skew — that correction only belongs
-  in a machine toolpath, so SVG / PNG / PDF stay square. This is the
-  post-processing output for driving another plotter / GRBL machine directly.
+The drawing is rendered as a plot would lay it down (``build_placed_svg``):
+only the selected layers, positioned on the page by the job's placement
+settings (layers merged, not staged), starting from whatever
+``plot_worker._effective_svg_path`` resolves to (the vpype ``.opt.svg`` once
+optimization has run, else the raw upload). G-code and HPGL are also sheared
+by the *active machine's* axis skew — that correction only belongs in a
+machine toolpath, so SVG / PNG / PDF stay square. This is the post-processing
+output for driving another plotter / GRBL machine directly.
 
 Formats:
 

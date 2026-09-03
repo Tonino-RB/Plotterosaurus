@@ -386,15 +386,11 @@ def get_job_svg(job_id: str):
 
 
 @app.get("/jobs/{job_id}/export")
-def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
+def export_job(job_id: str, fmt: str, bg: str = "white"):
     """Download the job's processed drawing in another file format.
 
-    ``placed=false`` (default): the same file GET /jobs/{id}/svg serves — the
-    optimized .opt.svg when optimization has run, else the raw upload — in the
-    document's own coordinates, no placement or layer filtering.
-
-    ``placed=true``: the drawing rendered as a plot would lay it down —
-    selected layers only, positioned on the page by the job's settings, then
+    The drawing is rendered as a plot would lay it down — selected layers
+    only, positioned on the page by the job's settings, and for G-code / HPGL
     sheared by the *active machine's* axis skew (see app/export.py's
     build_placed_svg). This is the post-processing output for driving another
     plotter directly.
@@ -409,6 +405,8 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
         raise HTTPException(404)
     if fmt not in export.FORMATS:
         raise _coded(422, "export_bad_format")
+    if not any(s.get("selected", True) for s in job.get("layer_selections", [])):
+        raise _coded(422, "select_one_layer")
     src = plot_worker._effective_svg_path(job)
     if not src.exists():
         raise HTTPException(404)
@@ -422,23 +420,18 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     # crashed request leaves behind inside delete_svg_files' glob.
     token = uuid.uuid4().hex[:8]
     scratch: list[Path] = []
-    if placed:
-        if not any(s.get("selected", True) for s in job.get("layer_selections", [])):
-            raise _coded(422, "select_one_layer")
-        # Skew is a machine correction — it belongs only in a toolpath that
-        # drives the machine (G-code / HPGL). SVG / PNG / PDF are pictures of
-        # the drawing and stay square. Placement + transform apply to all.
-        apply_skew = fmt in ("gcode", "hpgl")
-        convert_src = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.placed-src.svg"
-        scratch.append(convert_src)
-        try:
-            _offload_export(export.build_placed_svg, job, src, convert_src,
-                            apply_skew=apply_skew)
-        except export.ExportError as e:
-            _unlink_all(scratch)
-            raise _coded(422, "export_failed", message=str(e))
-    else:
-        convert_src = src
+    # Skew is a machine correction — it belongs only in a toolpath that drives
+    # the machine (G-code / HPGL). SVG / PNG / PDF are pictures of the drawing
+    # and stay square. Placement + transform apply to all.
+    apply_skew = fmt in ("gcode", "hpgl")
+    convert_src = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.placed-src.svg"
+    scratch.append(convert_src)
+    try:
+        _offload_export(export.build_placed_svg, job, src, convert_src,
+                        apply_skew=apply_skew)
+    except export.ExportError as e:
+        _unlink_all(scratch)
+        raise _coded(422, "export_failed", message=str(e))
     out = UPLOAD_DIR / f"{job['svg_id']}.export-{token}.{ext}"
     scratch.append(out)
 
@@ -452,9 +445,8 @@ def export_job(job_id: str, fmt: str, bg: str = "white", placed: bool = False):
     meta = state.get_upload_meta(job["svg_id"]) or {}
     name = job.get("filename") or meta.get("filename") or f"{job['svg_id']}.svg"
     stem = Path(name).stem
-    suffix = ".placed" if placed else ""
     return FileResponse(str(out), media_type=export.media_type(fmt),
-                        filename=f"{stem}{suffix}.{ext}",
+                        filename=f"{stem}.{ext}",
                         background=BackgroundTask(_unlink_all, scratch))
 
 

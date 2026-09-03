@@ -1279,14 +1279,6 @@ function createCardForJob(job) {
   card.querySelector(".job-move-up").addEventListener("click", () => moveJob(job.job_id, -1));
   card.querySelector(".job-move-down").addEventListener("click", () => moveJob(job.job_id, +1));
   card.querySelector(".job-requeue").addEventListener("click", () => requeueJob(job.job_id));
-  card.querySelectorAll(".export-scope button").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      setSegmentedValue(card.querySelector(".export-scope"), btn.dataset.val);
-      const placed = btn.dataset.val === "placed";
-      card.querySelector(".export-note-optimized").hidden = placed;
-      card.querySelector(".export-note-placed").hidden = !placed;
-    });
-  });
   card.querySelector(".export-download").addEventListener("click", () => exportJob(card, job.job_id));
   card.querySelector(".job-error-nudge-btn").addEventListener("click", (e) =>
     nudgeBack(job.job_id, e.currentTarget.dataset.dx, e.currentTarget.dataset.dy)
@@ -3179,23 +3171,20 @@ async function nudgeBack(jobId, dxStr, dyStr) {
   }
 }
 
-// "Save As": download the job's processed drawing in the chosen format. The
-// source is whatever GET /jobs/{id}/svg would serve (the vpype .opt.svg once
-// optimization has run, else the raw upload) — exported in its own
-// coordinates, not placed on the page. The fetch goes through a blob so a
-// failed conversion shows in the card instead of navigating the tab to a JSON
-// error body.
+// "Save As": download the job's processed drawing in the chosen format,
+// rendered as a plot would lay it down — selected layers only, placed on the
+// page by the job's size/margins/transform, and for G-code / HPGL sheared by
+// the active machine's axis skew. The fetch goes through a blob so a failed
+// conversion shows in the card instead of navigating the tab to a JSON error
+// body.
 async function exportJob(card, id) {
   const sel = card.querySelector(".export-format");
   const btn = card.querySelector(".export-download");
   const errEl = card.querySelector(".export-error");
   const raw = sel.value;
-  let params = raw === "png-transparent"
+  const params = raw === "png-transparent"
     ? "fmt=png&bg=transparent"
     : `fmt=${encodeURIComponent(raw)}`;
-  if (getSegmentedValue(card.querySelector(".export-scope"), "optimized") === "placed") {
-    params += "&placed=true";
-  }
   errEl.hidden = true;
   btn.disabled = true;
   try {

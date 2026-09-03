@@ -1342,15 +1342,7 @@
                 <span class="card-section-caret" aria-hidden="true">▼</span>
               </header>
               <div class="card-section-body">
-                <div class="field">
-                  <span class="field-label" data-i18n="export.scope_label">Content</span>
-                  <div class="segmented export-scope">
-                    <button type="button" data-val="optimized" class="active" data-i18n="export.scope_optimized">As optimized</button>
-                    <button type="button" data-val="placed" data-i18n="export.scope_placed">As plotted</button>
-                  </div>
-                </div>
-                <p class="muted export-note-optimized" data-i18n="export.note">Exports the drawing as vpype optimized it — in its own coordinates, not positioned on the page or filtered to the selected layers.</p>
-                <p class="muted export-note-placed" hidden data-i18n="export.note_placed">Rendered as a plot would lay it down: selected layers only, positioned on the page by this job's size/margins/transform, then sheared by the active machine's axis skew. Set your target machine's profile in Settings first.</p>
+                <p class="muted export-note" data-i18n="export.note">As a plot lays it down: selected layers, placed on the page with this job's size, margins and transform. G-code and HPGL also carry the active machine's axis-skew correction (set its profile in Settings); SVG, PNG and PDF stay square.</p>
                 <label class="field">
                   <span class="field-label" data-i18n="export.format_label">Format</span>
                   <select class="export-format">
