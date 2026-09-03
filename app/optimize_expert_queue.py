@@ -197,6 +197,12 @@ def _process(task: _Task) -> None:
         return
 
     task.started.set()
+
+    # The three boxes run on top of vpype's own "read", which drops a pen dot
+    # and misreads inherit-ed strokes; repair the source first, the same as the
+    # beginner-mode optimize (see svg_utils.prepare_for_vpype).
+    svg_utils.prepare_for_vpype(task.src_path)
+
     opt_path = task.src_path.with_name(f"{task.svg_id}.opt.svg")
     try:
         # One heavy job at a time across all background subsystems

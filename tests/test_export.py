@@ -57,6 +57,25 @@ def test_hpgl_export_looks_like_hpgl(tmp_path):
     assert ";PD" in text          # pen-down segments
 
 
+_DOT_ONLY = """<svg xmlns="http://www.w3.org/2000/svg"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  width="50mm" height="50mm" viewBox="0 0 50 50">
+  <g inkscape:groupmode="layer" inkscape:label="marks">
+    <path d="M25,25" stroke="#000" stroke-width="0.4" fill="none"/>
+  </g>
+</svg>"""
+
+
+def test_gcode_export_keeps_a_lone_pen_dot(tmp_path):
+    """vpype's read discards a bare-moveto dot; _gwrite must expand it first
+    (see svg_utils.prepare_for_vpype) or the toolpath comes out empty."""
+    src = tmp_path / "dot.svg"
+    src.write_text(_DOT_ONLY)
+    out = tmp_path / "dot.gcode"
+    export.export(src, out, "gcode")
+    assert "G01" in out.read_text()          # the dot survived as a draw move
+
+
 def _hpgl_abs_points(text):
     """Every absolute HPGL coordinate pair (PU + PD), in mm (40 units/mm)."""
     import re

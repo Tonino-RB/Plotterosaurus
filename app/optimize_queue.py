@@ -537,13 +537,10 @@ def _process_phases(task: _Task) -> None:
         state.clear_svg_status(task.svg_id)
         return
 
-    # vpype reads stroke-width="inherit" as 0 and stroke="inherit" as unset, so
-    # a drawing that sets the pen once on the layer <g> optimizes / tiles to a
-    # blank-looking, one-colour copy. It also drops any zero-length subpath, so a
-    # pen dot disappears. normalize_layer_structure fixes both at upload; repeat
-    # them here to also cover files uploaded before that landed.
-    svg_utils.resolve_inherit_presentation(src)
-    svg_utils.expand_degenerate_geometry(src)
+    # Resolve inherit + expand point-sized geometry before vpype optimizes /
+    # tiles: normalize_layer_structure does it at upload, this covers files
+    # uploaded before that landed (see svg_utils.prepare_for_vpype).
+    svg_utils.prepare_for_vpype(src)
 
     state.set_svg_status(task.svg_id, "optimizing", settings_key=task.settings_key)
     task.started.set()

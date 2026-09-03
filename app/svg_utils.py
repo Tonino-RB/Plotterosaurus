@@ -700,6 +700,24 @@ def expand_degenerate_geometry(svg_path: Path) -> bool:
     return True
 
 
+def prepare_for_vpype(svg_path: Path) -> bool:
+    """Repair ``svg_path`` in place so a ``vpype read`` of it neither drops
+    geometry nor misreads pens: resolve ``inherit`` presentation attributes
+    (else vpype takes the width as 0 and the colour as unset) and give
+    point-sized geometry — a bare-moveto pen dot, a zero-radius circle — a
+    0.001-unit tail (else vpype discards it). Returns whether anything changed.
+
+    ``normalize_layer_structure`` already does both for every upload; this is
+    the entry every *other* vpype consumer (optimize, grid, pen mode, expert
+    mode, export) calls first, so a file uploaded before that landed — or one
+    reached by a path that skips it — still survives the round trip intact.
+    Atomic per pass, so a preview fetch racing the rewrite sees one whole file.
+    """
+    changed = resolve_inherit_presentation(svg_path)
+    changed = expand_degenerate_geometry(svg_path) or changed
+    return changed
+
+
 def force_round_caps(svg_path: Path) -> None:
     """Set ``stroke-linecap`` / ``stroke-linejoin`` to ``round`` on every
     top-level layer group, in place.

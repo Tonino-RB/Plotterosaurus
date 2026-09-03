@@ -78,6 +78,10 @@ def _vpype_cmd() -> list[str]:
 
 
 def _regroup_by_pen(src_svg: Path, out_svg: Path) -> None:
+    # A bare "read" still drops a pen dot and misreads inherit-ed strokes — the
+    # latter would also bucket every such stroke into one pen. Repair first, the
+    # same as the optimize path (see svg_utils.prepare_for_vpype).
+    svg_utils.prepare_for_vpype(src_svg)
     tmp = out_svg.with_name(f".{out_svg.stem}.partial{out_svg.suffix}")
     cmd = _vpype_cmd() + [
         "read", "--attr", "stroke", "--attr", "stroke-width", str(src_svg),

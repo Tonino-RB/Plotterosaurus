@@ -185,16 +185,27 @@ def _cairosvg(src: Path, dst: Path, fmt: str, transparent: bool) -> None:
 
 def _gwrite(src: Path, dst: Path, profile: str, *,
             single_layer: bool = False, config: Path | None = None) -> None:
+    from . import svg_utils
+
+    # vpype's "read" drops a pen dot and misreads inherit-ed strokes. Repair a
+    # scratch copy rather than ``src`` in place — this helper can't assume its
+    # caller's input is disposable (see svg_utils.prepare_for_vpype). The name
+    # matches ink_cache.sweep_orphaned_temps' glob so a hard crash can't leak it.
+    work = dst.parent / f".{uuid.uuid4().hex[:8]}.gwrite-src.partial.svg"
+    work.write_bytes(src.read_bytes())
     cmd = _vpype_cmd()
     if config is not None:
         cmd += ["--config", str(config)]
-    cmd += ["read", "--single-layer", str(src)] if single_layer else ["read", str(src)]
+    cmd += ["read", "--single-layer", str(work)] if single_layer else ["read", str(work)]
     cmd += ["gwrite", "--profile", profile, str(dst)]
     try:
+        svg_utils.prepare_for_vpype(work)
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=_TIMEOUT_S)
     except subprocess.TimeoutExpired as e:
         raise ExportError(f"timed out after {_TIMEOUT_S:.0f}s") from e
+    finally:
+        work.unlink(missing_ok=True)
     if proc.returncode != 0:
         msg = (proc.stderr.strip() or proc.stdout.strip()
                or f"vpype exited with code {proc.returncode}")

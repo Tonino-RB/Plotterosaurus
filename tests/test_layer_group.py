@@ -120,6 +120,33 @@ def test_pen_buckets_survive_optimize_and_reconcile(tmp_path):
     assert _labels(opt) == before          # vpype did not merge two pens into one
 
 
+PEN_DOTS = """<svg xmlns="http://www.w3.org/2000/svg"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  width="160mm" height="90mm" viewBox="0 0 160 90">
+  <g inkscape:groupmode="layer" inkscape:label="everything">
+    <path d="M10,10 L150,10" stroke="#1a1815" stroke-width="0.3" fill="none"/>
+    <path d="M20,30 L20,30" stroke="#1a1815" stroke-width="0.3" fill="none"/>
+    <circle cx="30" cy="40" r="0" stroke="#1a1815" stroke-width="0.3" fill="none"/>
+    <path d="M40,50" stroke="#c0392b" stroke-width="0.8" fill="none"/>
+  </g>
+</svg>"""
+
+_GEOM_TAGS = {"path", "line", "polyline", "polygon", "circle", "ellipse"}
+
+
+def test_pen_keeps_point_sized_geometry(tmp_path):
+    """vpype's read drops a zero-length subpath / zero-radius shape — a pen dot.
+    Pen mode must expand those first, the way the optimize/grid path does."""
+    src = tmp_path / "in.svg"
+    src.write_text(PEN_DOTS)
+    out = tmp_path / "out.svg"
+    layer_group.regroup(src, "pen", out)
+    root = etree.parse(str(out)).getroot()
+    drawn = [el for el in root.iter()
+             if isinstance(el.tag, str) and el.tag.rsplit("}", 1)[-1] in _GEOM_TAGS]
+    assert len(drawn) == 4          # long line + two dots + a bare-moveto dot
+
+
 def test_unknown_mode_is_rejected(tmp_path):
     src = tmp_path / "in.svg"
     src.write_text(TWO_LAYERS)
