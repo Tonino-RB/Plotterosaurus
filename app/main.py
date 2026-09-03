@@ -1156,6 +1156,7 @@ class JobCreate(_OptimizeCreateFields, _GridCreateFields):
     # (see _regroup_svg); switchable per job while it's being prepared.
     layer_mode: Literal["layer", "group", "pen"] = "layer"
     pause_between_layers: bool = True
+    skip_same_pen_pause: bool = False
     delete_on_complete: bool = False
     disable_motors_on_complete: bool = False
     paper_width_mm: float
@@ -1212,6 +1213,7 @@ class MachineProfile(BaseModel):
 class SettingsUpdate(BaseModel):
     plotter_model: int | None = Field(None, ge=1, le=8)
     pause_between_layers_default: bool | None = None
+    skip_same_pen_pause_default: bool | None = None
     layer_mode_default: Literal["layer", "group", "pen"] | None = None
     delete_on_complete_default: bool | None = None
     disable_motors_on_complete_default: bool | None = None
@@ -1308,7 +1310,7 @@ _NON_NULLABLE_JOB_FIELDS = frozenset({
     "margin_top_mm", "margin_right_mm", "margin_bottom_mm", "margin_left_mm",
     "transform_scale", "transform_rotation_deg",
     "transform_offset_x_mm", "transform_offset_y_mm",
-    "fit_content", "pause_between_layers", "layer_mode",
+    "fit_content", "pause_between_layers", "skip_same_pen_pause", "layer_mode",
     "delete_on_complete", "disable_motors_on_complete", "record_plot",
     "layer_selections",
     "optimize_svg", "optimize_svg_tolerance_mm", "optimize_svg_linemerge",
@@ -1362,6 +1364,7 @@ class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     paper_size_name: str | None = None
     paper_name: str | None = None
     pause_between_layers: bool | None = None
+    skip_same_pen_pause: bool | None = None
     delete_on_complete: bool | None = None
     disable_motors_on_complete: bool | None = None
     paper_width_mm: float | None = None
@@ -1715,6 +1718,7 @@ class ApiJobMetadata(_OptimizeOptionalFields, _GridOptionalFields):
     layers: list[ApiLayer] = Field(default_factory=list)
     layer_mode: Literal["layer", "group", "pen"] | None = None
     pause_between_layers: bool | None = None
+    skip_same_pen_pause: bool | None = None
     delete_on_complete: bool | None = None
     disable_motors_on_complete: bool | None = None
     speed_pendown: int | None = None
@@ -1860,6 +1864,7 @@ async def api_create_job(file: UploadFile = File(...),
         "paper_name": meta.paper.name if meta.paper else None,
         "layer_selections": layer_selections,
         "pause_between_layers": pick(meta.pause_between_layers, config.PAUSE_BETWEEN_LAYERS_DEFAULT),
+        "skip_same_pen_pause": pick(meta.skip_same_pen_pause, config.SKIP_SAME_PEN_PAUSE_DEFAULT),
         "delete_on_complete": pick(meta.delete_on_complete, config.DELETE_ON_COMPLETE_DEFAULT),
         "disable_motors_on_complete": pick(meta.disable_motors_on_complete,
                                            config.DISABLE_MOTORS_ON_COMPLETE_DEFAULT),

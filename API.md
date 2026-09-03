@@ -73,6 +73,7 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   // Job options — omit any field to inherit the corresponding server default.
   "layer_mode": "layer",             // "layer" | "group" | "pen". How the drawing is split into rows / plot stages: Inkscape layers, children of the root group, or one stage per stroke width + colour. "group"/"pen" re-partition the SVG into a standalone copy the job points at; layers[] overrides below are keyed against that copy's layers.
   "pause_between_layers": true,       // Pause for pen change between selected layers (multi-layer only).
+  "skip_same_pen_pause": false,       // With pause_between_layers on: don't pause between consecutive layers whose stroke colour and width match (same pen — nothing to swap).
   "delete_on_complete":   false,      // Auto-remove the job and its uploaded SVG once complete.
   "disable_motors_on_complete": false, // Cut motor torque once the plot finishes back at the origin, so the steppers don't sit warm.
 
@@ -219,6 +220,7 @@ Layer types are decorative — the icon is shown in the layer list:
   "paper_width_mm": 420.0,             // Always millimetres, regardless of input unit.
   "paper_height_mm": 297.0,
   "pause_between_layers": true,       // From server-side defaults (Settings).
+  "skip_same_pen_pause": false,       // From server-side defaults (Settings).
   "delete_on_complete": false,
   "disable_motors_on_complete": false,
   "speed_pendown": 25,
@@ -410,6 +412,7 @@ Editable fields:
 | `record_timelapse_interval_s` | number | 0.5–3600 |
 | `record_speed_multiplier` | number | 1.1–60 |
 | `pause_between_layers`, `delete_on_complete` | bool | `pause_between_layers` pauses only resume via `/queue/continue`, never the physical button — see the note under Queue control. |
+| `skip_same_pen_pause` | bool | With `pause_between_layers` on, suppresses the pause between consecutive layers whose stroke colour and width both match (same pen, so nothing to swap). Colour/width are read from the un-optimized source; a layer whose pen can't be resolved keeps its pause. |
 | `disable_motors_on_complete` | bool | After the plot finishes and returns to the origin, cut torque to the XY steppers so they don't sit warm. Only on natural completion — not on cancel or failure. |
 | `optimize_svg` | bool | Run the vpype optimization pipeline before planning. |
 | `optimize_svg_tolerance_mm` | number | 0.01–10.0 |
@@ -503,6 +506,7 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
 {
   "plotter_model": 2,                           // 1–8 (see install.sh / Settings UI for the table)
   "pause_between_layers_default": true,
+  "skip_same_pen_pause_default": false,         // new jobs' "don't pause between same-pen layers" checkbox
   "layer_mode_default": "layer",                // "layer" | "group" | "pen" — new jobs' layer grouping
   "delete_on_complete_default": false,
   "disable_motors_on_complete_default": false,  // Default for a new job's disable-motors-on-complete checkbox
@@ -581,6 +585,7 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `draw_stream_background` | `"black"` \| `"white"` |
 | `draw_stream_max_resolution_px` | int 480–4096 |
 | `pause_between_layers_default` | bool |
+| `skip_same_pen_pause_default` | bool |
 | `layer_mode_default` | `"layer"` \| `"group"` \| `"pen"` |
 | `delete_on_complete_default` | bool |
 | `disable_motors_on_complete_default` | bool |

@@ -158,6 +158,7 @@
   "job.planning": "planificando…",
   "job.waiting_plan": "esperando para planificar…",
   "job.pause_between_layers": "Pausar entre capas para cambios de pluma",
+  "job.skip_same_pen_pause": "No pausar entre capas consecutivas que usan el mismo color y grosor de pluma",
   "job.delete_on_complete": "Eliminar al completar (quitar el trabajo de la cola al terminar)",
   "job.disable_motors_on_complete": "Desactivar los motores al terminar (tras volver al origen, para que no se calienten)",
   "plotinfo.est_time": "Tiempo estimado",

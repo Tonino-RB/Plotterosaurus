@@ -158,6 +158,7 @@
   "job.planning": "planification…",
   "job.waiting_plan": "en attente de planification…",
   "job.pause_between_layers": "Pause entre les calques pour changer de stylo",
+  "job.skip_same_pen_pause": "Ne pas faire de pause entre calques consécutifs utilisant la même couleur et épaisseur de stylo",
   "job.delete_on_complete": "Supprimer une fois terminé (retirer la tâche de la file à la fin)",
   "job.disable_motors_on_complete": "Désactiver les moteurs à la fin (une fois revenu au point de départ, pour éviter qu'ils chauffent)",
   "plotinfo.est_time": "Temps estimé",

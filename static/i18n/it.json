@@ -158,6 +158,7 @@
   "job.planning": "pianificazione…",
   "job.waiting_plan": "in attesa di pianificare…",
   "job.pause_between_layers": "Pausa tra i layer per il cambio penna",
+  "job.skip_same_pen_pause": "Non fare pausa tra layer consecutivi che usano lo stesso colore e spessore di penna",
   "job.delete_on_complete": "Elimina al completamento (rimuovi il lavoro dalla coda al termine)",
   "job.disable_motors_on_complete": "Disattiva i motori al completamento (una volta tornato all'origine, così non si surriscaldano)",
   "plotinfo.est_time": "Tempo stimato",

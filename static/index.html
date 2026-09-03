@@ -426,6 +426,10 @@
             <input type="checkbox" id="settings-pause-between-layers" />
             <span data-i18n="job.pause_between_layers">Pause between layers for pen changes (resume manually from the app)</span>
           </label>
+          <label class="inline-check skip-same-pen-pause-row">
+            <input type="checkbox" id="settings-skip-same-pen-pause" />
+            <span data-i18n="job.skip_same_pen_pause">Don't pause between consecutive layers that use the same pen colour and width</span>
+          </label>
           <label class="inline-check">
             <input type="checkbox" id="settings-delete-on-complete" />
             <span data-i18n="job.delete_on_complete">Delete on complete (remove the job from the queue when finished)</span>
@@ -1291,6 +1295,10 @@
                     <span data-i18n="job.pause_between_layers">Pause between layers for pen changes (resume manually from the app)</span>
                   </label>
                   <p class="muted" data-i18n="job.pause_between_layers_note">While paused, use the calibration plot, pen up/down, and fine origin adjust (below the queue controls) to line up the next layer.</p>
+                  <label class="inline-check skip-same-pen-pause-row">
+                    <input type="checkbox" class="skip-same-pen-pause" />
+                    <span data-i18n="job.skip_same_pen_pause">Don't pause between consecutive layers that use the same pen colour and width</span>
+                  </label>
                 </div>
                 <label class="inline-check">
                   <input type="checkbox" class="delete-on-complete" />

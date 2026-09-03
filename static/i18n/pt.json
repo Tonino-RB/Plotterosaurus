@@ -158,6 +158,7 @@
   "job.planning": "a planear…",
   "job.waiting_plan": "a aguardar planeamento…",
   "job.pause_between_layers": "Pausar entre camadas para trocas de caneta",
+  "job.skip_same_pen_pause": "Não pausar entre camadas consecutivas que usam a mesma cor e espessura de caneta",
   "job.delete_on_complete": "Eliminar ao concluir (remover o trabalho da fila quando terminar)",
   "job.disable_motors_on_complete": "Desativar os motores ao concluir (depois de voltar à origem, para não aquecerem)",
   "plotinfo.est_time": "Tempo estimado",

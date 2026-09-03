@@ -158,6 +158,7 @@
   "job.planning": "plane…",
   "job.waiting_plan": "warte auf Planung…",
   "job.pause_between_layers": "Zwischen Ebenen für Stiftwechsel pausieren",
+  "job.skip_same_pen_pause": "Zwischen aufeinanderfolgenden Ebenen mit gleicher Stiftfarbe und -breite nicht pausieren",
   "job.delete_on_complete": "Nach Abschluss löschen (Job aus der Warteschlange entfernen, wenn fertig)",
   "job.disable_motors_on_complete": "Motoren nach Abschluss deaktivieren (nach Rückkehr zum Ursprung, damit sie nicht heiß werden)",
   "plotinfo.est_time": "Geschätzte Zeit",

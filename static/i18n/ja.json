@@ -158,6 +158,7 @@
   "job.planning": "プラン作成中…",
   "job.waiting_plan": "プラン作成待ち…",
   "job.pause_between_layers": "ペン交換のためレイヤー間で一時停止",
+  "job.skip_same_pen_pause": "同じペンの色と太さが続くレイヤー間では一時停止しない",
   "job.delete_on_complete": "完了時に削除（終了したらジョブをキューから削除）",
   "job.disable_motors_on_complete": "完了時にモーターを無効化（原点に戻った後、発熱を防ぐため）",
   "plotinfo.est_time": "推定時間",

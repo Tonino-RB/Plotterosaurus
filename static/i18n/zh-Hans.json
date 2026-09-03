@@ -158,6 +158,7 @@
   "job.planning": "规划中…",
   "job.waiting_plan": "等待规划…",
   "job.pause_between_layers": "在图层之间暂停以换笔",
+  "job.skip_same_pen_pause": "连续图层使用相同笔色和线宽时不暂停",
   "job.delete_on_complete": "完成后删除（任务结束后从队列中移除）",
   "job.disable_motors_on_complete": "完成后禁用电机（回到原点后，以防过热）",
   "plotinfo.est_time": "预计时间",

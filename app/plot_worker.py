@@ -2034,6 +2034,14 @@ def _resume_job(job_id: str) -> None:
     _run_staged_loop(job_id, svg_path, first_mode=first_mode)
 
 
+def _same_tool(prev_pen, next_pen) -> bool:
+    """Whether two stages are drawn with the same physical pen, for the
+    "don't pause between same-pen layers" option. Strict: both stages must
+    carry a resolved ``(colour, width)`` pair (see svg_utils.layer_pens) and
+    the pairs must be equal. An unresolved pen on either side keeps the pause."""
+    return prev_pen is not None and prev_pen == next_pen
+
+
 def _run_job(job_id: str) -> None:
     """Optimize (optional) + plan + plot one job, possibly across multiple
     stages with pen-change pauses between."""
@@ -2078,6 +2086,23 @@ def _run_job(job_id: str) -> None:
         }]
 
     svg_path = _uploads() / f"{job['svg_id']}.svg"
+
+    # "Don't pause between same-pen layers": tag each per-layer stage with the
+    # (colour, width) of the pen that draws it, read from the un-optimized
+    # source (vpype flattens colour/width away). The pause gate below skips the
+    # pen change wherever two consecutive stages carry the same pen. Only worth
+    # the read when the option is on and staging is actually per-layer.
+    if (job.get("skip_same_pen_pause")
+            and pause_between and len(stages) > 1):
+        try:
+            pens = svg_utils.layer_pens(svg_path)
+        except Exception:
+            log.warning("layer_pens failed for job %s; keeping every pause", job_id,
+                        exc_info=True)
+            pens = {}
+        for st in stages:
+            if len(st["layer_indices"]) == 1:
+                st["pen"] = pens.get(st["layer_indices"][0])
 
     # Pre-flight check: refuse to touch hardware if a leftover manual jog
     # (see manual_jog) pushes the artwork's ink off the *bed*. AxiDraw has no
@@ -2419,7 +2444,14 @@ def _run_staged_loop_impl(job_id: str, svg_path: Path, first_mode: str) -> None:
                         stage_index=i, stage_count=len(new_stages))
 
         if next_i < len(new_stages):
-            if job.get("pause_between_layers", True) and len(new_stages) > 1:
+            # "Don't pause between same-pen layers": if the finished stage and
+            # the next one are drawn with the same pen (same colour + width),
+            # there is nothing to swap — roll straight on.
+            skip_pause = (job.get("skip_same_pen_pause")
+                          and _same_tool(new_stages[i].get("pen"),
+                                         new_stages[next_i].get("pen")))
+            if (job.get("pause_between_layers", True) and len(new_stages) > 1
+                    and not skip_pause):
                 # Manual-only pause: no button polling here (see
                 # _BUTTON_ACTIVE_STATUSES) — only /queue/continue (UI/API)
                 # resumes it, giving the user a chance to calibrate, jog the

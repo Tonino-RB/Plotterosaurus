@@ -1042,6 +1042,11 @@ button.danger:active:not(:disabled) { background: var(--accent-dark); color: var
 .camera-job-options { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
 .record-plot-options { margin-top: 0.5rem; padding-left: 1.6rem; }
 
+/* Nested under "Pause between layers": indented, and greyed while the parent
+   checkbox is off (the .disabled class is toggled from app.js). */
+.skip-same-pen-pause-row { padding-left: 1.6rem; }
+.skip-same-pen-pause-row.disabled { opacity: 0.5; pointer-events: none; }
+
 .origin-nudge {
   display: flex;
   flex-wrap: wrap;

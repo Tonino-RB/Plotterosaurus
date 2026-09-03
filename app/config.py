@@ -58,6 +58,9 @@ _SETTINGS: list[_Setting] = [
     _Setting("plotter_model", int, int(os.environ.get("PLOTTER_MODEL", "2")),
              lambda v: 1 <= v <= 8),
     _Setting("pause_between_layers_default", bool, True),
+    # Default for a new job's "don't pause between consecutive layers that use
+    # the same pen colour and width" checkbox (nested under pause-between-layers).
+    _Setting("skip_same_pen_pause_default", bool, False),
     # How a newly created job derives its layer rows / plot stages from the SVG:
     # "layer" (Inkscape layers, the default), "group" (children of the root
     # group), or "pen" (one stage per stroke width + colour). Only seeds new

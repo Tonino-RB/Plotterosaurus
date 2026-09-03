@@ -158,6 +158,7 @@
   "job.planning": "plannen…",
   "job.waiting_plan": "wacht op plannen…",
   "job.pause_between_layers": "Pauzeren tussen lagen voor penwissels",
+  "job.skip_same_pen_pause": "Niet pauzeren tussen opeenvolgende lagen met dezelfde penkleur en -breedte",
   "job.delete_on_complete": "Verwijderen bij voltooiing (haal de taak uit de wachtrij als hij klaar is)",
   "job.disable_motors_on_complete": "Motoren uitschakelen bij voltooiing (na terugkeer naar de oorsprong, zodat ze niet heet worden)",
   "plotinfo.est_time": "Geschatte tijd",

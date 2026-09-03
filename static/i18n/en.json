@@ -162,6 +162,7 @@
   "job.planning": "planning…",
   "job.waiting_plan": "waiting to plan…",
   "job.pause_between_layers": "Pause between layers for pen changes",
+  "job.skip_same_pen_pause": "Don't pause between consecutive layers that use the same pen colour and width",
   "job.delete_on_complete": "Delete on complete (remove the job from the queue when finished)",
   "job.disable_motors_on_complete": "Disable motors on completion (once back at the origin, so they don't overheat)",
   "plotinfo.est_time": "Estimated time",

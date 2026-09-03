@@ -47,7 +47,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 
 - Drag-and-drop SVG upload; Inkscape layers parsed and selectable, each shown with an icon inferred from its type (pattern, text, svg, calibration, image, map, 3D model)
 - SVGs with content sitting outside any Inkscape layer are auto-repaired into one on upload (a vpype read/write round-trip) instead of showing up as "no layers"
-- Staged plotting: optional pause between layers for pen changes
+- Staged plotting: optional pause between layers for pen changes, with a sub-option to skip that pause between consecutive layers drawn in the same pen colour and width
 - Choose how a drawing is split into rows and pen-change stages: by Inkscape layer (default), by top-level group, or one stage per stroke width + colour ("pen" mode) — the last two re-partition the SVG into a standalone copy the job points at
 - No queue to manage: a job is `ready` from the moment it is created, Plot runs the topmost ready one, and the run ends with that job — so the paper can be changed with the machine genuinely idle
 - Paper presets (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation

@@ -1,5 +1,6 @@
 import itertools
 import re
+from collections import Counter
 
 from lxml import etree
 from pathlib import Path
@@ -518,6 +519,119 @@ def _nearest_set_attr(el, attr: str) -> str | None:
             return val
         parent = parent.getparent()
     return None
+
+
+# --- per-layer pen (stroke colour + width) --------------------------------
+#
+# Used by the "don't pause between same-pen layers" job option (see
+# plot_worker._same_tool): two consecutive layers drawn with the same colour
+# and width are the same physical pen, so the pen-change pause between them is
+# skippable. This is a deliberately shallow read — an element's own
+# presentation attribute or inline `style:`, else the nearest ancestor's (the
+# Inkscape / DrawingBotV3 "pen declared once on the layer <g>" case). No
+# CSS-class or full-cascade resolution: a drawing that carries its pen only via
+# a stylesheet class resolves to None here and keeps its pause, which is the
+# safe direction. Mirrors static/svg-colors.js resolveLayerColor and
+# static/draw-stream.js resolveLayerWidthMm.
+
+_SHAPE_TAGS = tuple(
+    f"{{{SVG_NS}}}{name}" for name in
+    ("path", "line", "polyline", "polygon", "circle", "ellipse", "rect")
+)
+_PEN_SAMPLE_LIMIT = 400
+
+
+def _resolved_style_prop(el, name: str) -> str | None:
+    """``name`` (a presentation property) for ``el`` — its own attribute or
+    inline ``style:`` declaration, else the nearest ancestor that sets it,
+    treating ``inherit`` as "ask the ancestor". ``None`` if nothing sets it."""
+    node = el
+    while node is not None:
+        val = node.get(name)
+        if val is None:
+            for decl in (node.get("style") or "").split(";"):
+                key, sep, raw = decl.partition(":")
+                if sep and key.strip() == name:
+                    val = raw.strip()
+                    break
+        if val and val != "inherit":
+            return val
+        node = node.getparent()
+    return None
+
+
+def _normalise_hex(raw: str | None) -> str | None:
+    """A CSS colour string to ``#rrggbb`` (lowercase), or ``None`` when it is
+    unpaintable or not a plain colour (``none``, ``transparent``, named
+    colours, gradients). Port of ``colorToHex`` in static/svg-colors.js."""
+    if not raw:
+        return None
+    c = raw.strip().lower()
+    if c in ("none", "transparent", "currentcolor"):
+        return None
+    m = re.fullmatch(r"#([0-9a-f]{3})", c)
+    if m:
+        return "#" + "".join(ch * 2 for ch in m.group(1))
+    if re.fullmatch(r"#[0-9a-f]{6}", c):
+        return c
+    if re.fullmatch(r"#[0-9a-f]{8}", c):
+        return c[:7]                          # drop the alpha byte
+    m = re.match(r"rgba?\(([^)]+)\)", c)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        if len(parts) >= 3:
+            try:
+                vals = [max(0, min(255, round(float(p.rstrip("%"))))) for p in parts[:3]]
+            except ValueError:
+                return None
+            return "#" + "".join(f"{v:02x}" for v in vals)
+    return None
+
+
+def _stroke_width_mm(raw: str | None) -> float | None:
+    """A ``stroke-width`` string to millimetres (2 dp), or ``None`` when it has
+    no number or a unit we can't convert (``%``, ``em``). Unitless and ``px``
+    are read as CSS px like the rest of the pipeline (see ``PX_PER_MM``)."""
+    if not raw:
+        return None
+    m = re.match(r"\s*([-+]?(?:\d*\.\d+|\d+\.?))\s*([a-z%]*)", raw.strip().lower())
+    if not m:
+        return None
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return None
+    unit = m.group(2)
+    if unit in ("", "px"):
+        return round(num / PX_PER_MM, 2)
+    if unit == "mm":
+        return round(num, 2)
+    if unit == "cm":
+        return round(num * 10.0, 2)
+    if unit == "pt":
+        return round(num * 25.4 / 72.0, 2)
+    if unit == "in":
+        return round(num * 25.4, 2)
+    return None
+
+
+def layer_pens(svg_path: Path) -> dict[int, tuple[str, float] | None]:
+    """Representative ``(stroke '#rrggbb', stroke-width mm)`` for each top-level
+    layer, keyed by layer index. The most common pair among a bounded sample of
+    the layer's drawable descendants for which *both* halves resolve; ``None``
+    for a layer where no sampled element yields both (that layer then keeps its
+    pen-change pause — see plot_worker)."""
+    root = etree.parse(str(svg_path)).getroot()
+    result: dict[int, tuple[str, float] | None] = {}
+    for index, group in enumerate(_top_level_layers(root)):
+        pairs: Counter = Counter()
+        for el in itertools.islice(group.iter(*_SHAPE_TAGS), _PEN_SAMPLE_LIMIT):
+            hex_c = _normalise_hex(_resolved_style_prop(el, "stroke"))
+            width = _stroke_width_mm(_resolved_style_prop(el, "stroke-width"))
+            if hex_c is not None and width is not None:
+                pairs[(hex_c, width)] += 1
+        result[index] = pairs.most_common(1)[0][0] if pairs else None
+    return result
 
 
 # vpype's ``read`` silently discards any subpath with zero length — an ``M`` with

@@ -102,6 +102,7 @@ function statusLabel(key) {
 let appSettings = {
   plotter_model: 2,
   pause_between_layers_default: true,
+  skip_same_pen_pause_default: false,
   delete_on_complete_default: false,
   disable_motors_on_complete_default: false,
   speed_pendown_default: 25,
@@ -302,6 +303,7 @@ function buildJobPayload(svg, fallbackName) {
       layer_selections,
       layer_mode: appSettings.layer_mode_default || "layer",
       pause_between_layers: appSettings.pause_between_layers_default,
+      skip_same_pen_pause: appSettings.skip_same_pen_pause_default,
       delete_on_complete: appSettings.delete_on_complete_default,
       disable_motors_on_complete: appSettings.disable_motors_on_complete_default,
       paper_width_mm: w,
@@ -1231,6 +1233,8 @@ function createCardForJob(job) {
   card.querySelector(".pen-pos-up").value = job.pen_pos_up ?? appSettings.pen_pos_up_default;
   card.querySelector(".pen-pos-down").value = job.pen_pos_down ?? appSettings.pen_pos_down_default;
   card.querySelector(".pause-between-layers").checked = job.pause_between_layers;
+  card.querySelector(".skip-same-pen-pause").checked = !!job.skip_same_pen_pause;
+  applySkipSamePenPauseStyle(card);
   card.querySelector(".delete-on-complete").checked = !!job.delete_on_complete;
   card.querySelector(".disable-motors-on-complete").checked = !!job.disable_motors_on_complete;
   card.querySelector(".camera-job-options").hidden = !appSettings.camera_enabled;
@@ -1311,7 +1315,11 @@ function createCardForJob(job) {
     if (ctx) ctx.fitLocked = true;
     queueCardUpdate(card);
   });
-  card.querySelector(".pause-between-layers").addEventListener("change", () => queueCardUpdate(card));
+  card.querySelector(".pause-between-layers").addEventListener("change", () => {
+    applySkipSamePenPauseStyle(card);
+    queueCardUpdate(card);
+  });
+  card.querySelector(".skip-same-pen-pause").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".delete-on-complete").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".disable-motors-on-complete").addEventListener("change", () => queueCardUpdate(card));
   card.querySelector(".record-plot").addEventListener("change", () => {
@@ -2518,6 +2526,13 @@ function applyGridEnabledStyle(card) {
   card.querySelector(".grid-options").classList.toggle("disabled", !on);
 }
 
+// The "don't pause between same-pen layers" sub-checkbox only means anything
+// while "Pause between layers" is on — grey it out otherwise.
+function applySkipSamePenPauseStyle(card) {
+  const on = card.querySelector(".pause-between-layers").checked;
+  card.querySelector(".skip-same-pen-pause-row").classList.toggle("disabled", !on);
+}
+
 // The chain between the two spacing inputs: `is-linked` on the button both
 // styles it and is the single source of truth the input handlers read.
 function setGridSpacingLinked(card, linked) {
@@ -2998,6 +3013,7 @@ async function sendCardUpdate(card, pending) {
     updates.pen_pos_up = parseInt(card.querySelector(".pen-pos-up").value);
     updates.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
     updates.pause_between_layers = card.querySelector(".pause-between-layers").checked;
+    updates.skip_same_pen_pause = card.querySelector(".skip-same-pen-pause").checked;
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
     updates.disable_motors_on_complete = card.querySelector(".disable-motors-on-complete").checked;
     updates.record_plot = card.querySelector(".record-plot").checked;
@@ -3864,6 +3880,7 @@ const settingsModal = $("settings-modal");
 const settingsApiKey = $("settings-api-key");
 const settingsApiKeyCopy = $("settings-api-key-copy");
 const settingsPauseBetweenLayers = $("settings-pause-between-layers");
+const settingsSkipSamePenPause = $("settings-skip-same-pen-pause");
 const settingsDeleteOnComplete = $("settings-delete-on-complete");
 const settingsDisableMotorsOnComplete = $("settings-disable-motors-on-complete");
 const settingsSpeedPendown = $("settings-speed-pendown");
@@ -3952,6 +3969,7 @@ function applyAppSettings(data) {
   appSettings = {
     plotter_model: data.plotter_model ?? appSettings.plotter_model,
     pause_between_layers_default: data.pause_between_layers_default ?? appSettings.pause_between_layers_default,
+    skip_same_pen_pause_default: data.skip_same_pen_pause_default ?? appSettings.skip_same_pen_pause_default,
     delete_on_complete_default: data.delete_on_complete_default ?? appSettings.delete_on_complete_default,
     disable_motors_on_complete_default: data.disable_motors_on_complete_default ?? appSettings.disable_motors_on_complete_default,
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
@@ -4062,6 +4080,7 @@ async function openSettings() {
     applyAppSettings(data);
     settingsApiKey.value = data.api_key || "";
     settingsPauseBetweenLayers.checked = data.pause_between_layers_default ?? true;
+    settingsSkipSamePenPause.checked = data.skip_same_pen_pause_default ?? false;
     settingsDeleteOnComplete.checked = data.delete_on_complete_default ?? false;
     settingsDisableMotorsOnComplete.checked = data.disable_motors_on_complete_default ?? false;
     settingsSpeedPendown.value = String(data.speed_pendown_default ?? 25);
@@ -4102,6 +4121,7 @@ async function saveSettings() {
       machines: machineDraft,
       active_machine_id: machineDraftActiveId,
       pause_between_layers_default: settingsPauseBetweenLayers.checked,
+      skip_same_pen_pause_default: settingsSkipSamePenPause.checked,
       delete_on_complete_default: settingsDeleteOnComplete.checked,
       disable_motors_on_complete_default: settingsDisableMotorsOnComplete.checked,
       speed_pendown_default: parseInt(settingsSpeedPendown.value),
@@ -4155,6 +4175,7 @@ for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-
 
 function resetSettingsJobOptions() {
   settingsPauseBetweenLayers.checked = true;
+  settingsSkipSamePenPause.checked = false;
   settingsDeleteOnComplete.checked = false;
   settingsDisableMotorsOnComplete.checked = false;
 }

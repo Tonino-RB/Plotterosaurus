@@ -158,6 +158,7 @@
   "job.planning": "계획 중…",
   "job.waiting_plan": "계획 대기 중…",
   "job.pause_between_layers": "펜 교체를 위해 레이어 사이에 일시정지",
+  "job.skip_same_pen_pause": "같은 펜 색상과 굵기가 연속되는 레이어 사이에서는 일시정지 안 함",
   "job.delete_on_complete": "완료 시 삭제 (끝나면 대기열에서 작업 제거)",
   "job.disable_motors_on_complete": "완료 시 모터 비활성화 (원점으로 돌아온 후, 과열 방지)",
   "plotinfo.est_time": "예상 시간",
