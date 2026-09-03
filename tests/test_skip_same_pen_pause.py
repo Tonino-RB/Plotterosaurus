@@ -72,6 +72,55 @@ def test_layer_pens_reads_colour_and_width_per_layer(pen_runs):
     }
 
 
+def test_layer_pens_with_styles_folds_in_the_layer_panel_overrides(pen_runs):
+    pens = svg_utils.layer_pens(pen_runs)
+    # charlie (2) is pen A's colour but wider; delta (3) is pen A's width but
+    # red. Overriding each back to pen A makes both match alpha/bravo.
+    styles = [
+        {"index": 2, "stroke_width_mm": W2},
+        {"index": 3, "stroke": "#1a1a1a"},
+    ]
+    merged = svg_utils.layer_pens_with_styles(pens, styles)
+    assert merged[2] == ("#1a1a1a", W2)
+    assert merged[3] == ("#1a1a1a", W2)
+    assert merged[0] == pens[0]          # untouched layers pass through
+
+
+def test_layer_pens_with_styles_needs_both_halves_to_resolve(pen_runs):
+    pens = svg_utils.layer_pens(pen_runs)
+    # foxtrot (5) has no measured pen; a colour-only override can't complete the
+    # pair, so it stays None and the pause is kept.
+    assert svg_utils.layer_pens_with_styles(
+        pens, [{"index": 5, "stroke": "#1a1a1a"}])[5] is None
+    # width too -> now a full pair.
+    assert svg_utils.layer_pens_with_styles(
+        pens, [{"index": 5, "stroke": "#1a1a1a", "stroke_width_mm": W2}])[5] \
+        == ("#1a1a1a", W2)
+
+
+def test_layer_pens_with_styles_passthrough_and_bad_input(pen_runs):
+    pens = svg_utils.layer_pens(pen_runs)
+    assert svg_utils.layer_pens_with_styles(pens, None) == pens
+    assert svg_utils.layer_pens_with_styles(pens, []) == pens
+    # unknown index / malformed entry are ignored; a named colour can't resolve
+    # so it keeps the measured colour.
+    merged = svg_utils.layer_pens_with_styles(
+        pens, [{"index": 99, "stroke": "#000000"}, {"stroke": "#000000"},
+               {"index": 3, "stroke": "not-a-hex"}])
+    assert merged[3] == pens[3]
+
+
+def test_an_override_can_flip_a_boundary_either_way(pen_runs):
+    job = {"pause_between_layers": True, "skip_same_pen_pause": True}
+    pens = svg_utils.layer_pens_with_styles(
+        svg_utils.layer_pens(pen_runs),
+        # repaint alpha so alpha->bravo now differs (that boundary comes back);
+        # narrow charlie to pen A's width so bravo->charlie now matches (skip).
+        [{"index": 0, "stroke": "#00ff00"}, {"index": 2, "stroke_width_mm": W2}])
+    styled = [{"layer_indices": [i], "pen": pens.get(i)} for i in range(len(pens))]
+    assert _boundary_pauses(job, styled) == [True, False, True, True, True]
+
+
 def test_layer_pens_ignores_a_pen_carried_only_by_a_css_class(tmp_path):
     """No stylesheet cascade in the lxml read — a class-only pen is unresolvable,
     which keeps the pause (the safe direction)."""

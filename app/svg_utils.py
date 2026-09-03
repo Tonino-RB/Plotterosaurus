@@ -718,6 +718,42 @@ def layer_pens(svg_path: Path) -> dict[int, tuple[str, float] | None]:
     return result
 
 
+def layer_pens_with_styles(
+    pens: dict[int, tuple[str, float] | None],
+    styles: list[dict] | None,
+) -> dict[int, tuple[str, float] | None]:
+    """``pens`` (from ``layer_pens``) with a job's ``layer_styles`` overrides
+    folded in: an entry's ``stroke`` / ``stroke_width_mm`` replaces that half of
+    the layer's ``(colour, width)`` pair, the other half kept from the measured
+    pen. A pair still missing a half stays ``None`` — the pen-change pause is
+    kept (the safe direction). Passthrough when ``styles`` is empty.
+
+    Normalised to match ``layer_pens``' own output so ``_same_tool``'s ``==``
+    holds: colour through ``_normalise_hex`` (a named colour becomes ``None``,
+    which falls back to the measured colour), width ``round(_, 2)`` like
+    ``_stroke_width_mm``.
+    """
+    if not styles:
+        return pens
+    merged = dict(pens)
+    for spec in styles:
+        try:
+            idx = int(spec["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        base = merged.get(idx)
+        raw_c = spec.get("stroke")
+        colour = _normalise_hex(raw_c if isinstance(raw_c, str) else None) \
+            or (base[0] if base else None)
+        raw_w = spec.get("stroke_width_mm")
+        if isinstance(raw_w, (int, float)) and not isinstance(raw_w, bool):
+            width: float | None = round(float(raw_w), 2)
+        else:
+            width = base[1] if base else None
+        merged[idx] = (colour, width) if colour is not None and width is not None else None
+    return merged
+
+
 # vpype's ``read`` silently discards any subpath with zero length — an ``M`` with
 # no drawing command, ``M x y Z``, ``M x y L x y``, ``M x y l 0 0``. That is
 # exactly how a pen-plotter *dot* is authored (pen down, pen up), so a drawing

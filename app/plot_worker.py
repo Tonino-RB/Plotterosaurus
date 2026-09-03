@@ -2136,9 +2136,12 @@ def _run_job(job_id: str) -> None:
 
     # "Don't pause between same-pen layers": tag each per-layer stage with the
     # (colour, width) of the pen that draws it, read from the un-optimized
-    # source (vpype flattens colour/width away). The pause gate below skips the
-    # pen change wherever two consecutive stages carry the same pen. Only worth
-    # the read when the option is on and staging is actually per-layer.
+    # source (vpype flattens colour/width away) and then overlaid with the
+    # layer panel's per-layer colour/width overrides (job["layer_styles"]), so
+    # setting two layers to the same pen in the UI also skips the pause between
+    # them. The pause gate below skips the pen change wherever two consecutive
+    # stages carry the same pen. Only worth the read when the option is on and
+    # staging is actually per-layer.
     if (job.get("skip_same_pen_pause")
             and pause_between and len(stages) > 1):
         try:
@@ -2147,6 +2150,7 @@ def _run_job(job_id: str) -> None:
             log.warning("layer_pens failed for job %s; keeping every pause", job_id,
                         exc_info=True)
             pens = {}
+        pens = svg_utils.layer_pens_with_styles(pens, job.get("layer_styles"))
         for st in stages:
             if len(st["layer_indices"]) == 1:
                 st["pen"] = pens.get(st["layer_indices"][0])

@@ -393,7 +393,9 @@ def export_job(job_id: str, fmt: str, bg: str = "white"):
     only, positioned on the page by the job's settings, and for G-code / HPGL
     sheared by the *active machine's* axis skew (see app/export.py's
     build_placed_svg). This is the post-processing output for driving another
-    plotter directly.
+    plotter directly. Per-layer colour / stroke-width overrides
+    (job["layer_styles"]) are baked into SVG / PNG / PDF; G-code and HPGL are
+    motion only and carry neither.
 
     Synchronous on purpose — FastAPI runs it in a worker thread, so the
     blocking vpype/cairosvg call doesn't stall the event loop. That thread is
