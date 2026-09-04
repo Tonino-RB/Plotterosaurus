@@ -45,6 +45,16 @@ def main() -> int:
     ad.options.speed_pendown = options["speed_pendown"]
     ad.options.speed_penup = options["speed_penup"]
     ad.options.accel = options["acceleration"]
+    #  - cornering / accel_rate_pu: ad.params values _run_stage sets from the
+    #    job's corner-speed and pen-up-acceleration knobs; they change junction
+    #    and pen-up travel speed, so the estimate must use them too.
+    #  - pen_rate_* / pen_delay_*: shift how long each pen lift/lower takes.
+    ad.params.cornering = options["cornering"]
+    ad.params.accel_rate_pu = options["accel_rate_pu"]
+    ad.options.pen_rate_lower = options["pen_rate_lower"]
+    ad.options.pen_rate_raise = options["pen_rate_raise"]
+    ad.options.pen_delay_down = options["pen_delay_down"]
+    ad.options.pen_delay_up = options["pen_delay_up"]
     ad.plot_run()
 
     pen_lifts = 0

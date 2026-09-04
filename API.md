@@ -90,12 +90,21 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   // Out-of-range values are silently clamped to the bounds.
   "speed_pendown": 30,                // 1–110
   "speed_penup":   80,                // 1–110
-  "acceleration":  50,                // 1–100
+  "acceleration":  50,                // 1–100 — pen-down acceleration.
+  "acceleration_penup": 50,           // 1–100 — pen-up acceleration, independent of the above.
+  "cornering": 10,                    // 1–100 — higher keeps more speed through sharp
+                                      //   corners (less ink pooling); lower rounds them more.
 
   // Pen height (servo position) — omit any field to inherit the server
   // default. Out-of-range values are silently clamped to the bounds.
-  "pen_pos_up":   60,                 // 0–100
-  "pen_pos_down": 30,                 // 0–100
+  "pen_pos_up":   60,                 // pen_pos_min–pen_pos_max (server setting; default 29–85)
+  "pen_pos_down": 30,                 // pen_pos_min–pen_pos_max (server setting; default 29–85)
+  "pen_rate_lower": 50,               // 1–100 — servo lowering speed. Faster = less
+                                      //   time planted before the first stroke (smaller start dot).
+  "pen_rate_raise": 75,               // 1–100 — servo raising speed.
+  "pen_delay_down": 0,                // -500–500 ms — dwell after the pen lands, before moving.
+                                      //   Negative overlaps the move with the drop (trims the start dot).
+  "pen_delay_up": 0,                  // -500–500 ms — dwell after the pen lifts, before moving.
 
   // Plot recording via a Camera Module 3 (only meaningful when the server
   // was installed with ENABLE_CAMERA=1 — see "Camera / plot recording"
@@ -228,8 +237,14 @@ Layer types are decorative — the icon is shown in the layer list:
   "speed_pendown": 25,
   "speed_penup": 75,
   "acceleration": 75,
+  "acceleration_penup": 75,
+  "cornering": 10,
   "pen_pos_up": 60,
   "pen_pos_down": 30,
+  "pen_rate_lower": 50,
+  "pen_rate_raise": 75,
+  "pen_delay_down": 0,
+  "pen_delay_up": 0,
   "record_plot": false,
   "record_mode": "realtime"
   // ... margins, transforms, timing fields, etc.
@@ -270,8 +285,8 @@ All endpoints take no body, return `{"ok": true}` on success, and respond `409 C
 | `POST` | `/api/v1/queue/nudge-origin` | At a pen-change pause, shift the origin of the remaining (not-yet-plotted) stages by `{"dx_mm": 0.1, "dy_mm": 0.0}` (either field optional, default `0.0`) — for compensating small paper drift between layers. Session-only: not written back to the job's `transform_offset_*_mm`, and resets when the run ends. | Active job is not in `awaiting_pen_change`. |
 | `POST` | `/api/v1/queue/cancel` | Cancel the active job. The plotter homes if it can. | No active job. |
 | `POST` | `/api/v1/queue/calibrate-file` | At a pen-change pause, plot a standalone SVG from the server's `calibration/` library as a side plot, transformed onto the job's current paper/margins. Body: `{"filename": "grid.svg"}`. | Active job is not in `awaiting_pen_change`; unknown or invalid filename. |
-| `POST` | `/api/v1/queue/pen-height` | Live-adjust pen height at a pen-change pause and move the pen so the change is visible. Body: `{"pen_pos_up": 60, "pen_pos_down": 30, "test": "up" \| "down"}` (heights optional, 29–85; `test` required). Persisted onto the active job. | Active job is not in `awaiting_pen_change`. |
-| `POST` | `/api/v1/queue/live-settings` | Change speed / acceleration / pen height of the plot in progress, applied at the next segment checkpoint. Body: any of `{"speed_pendown", "speed_penup", "acceleration", "pen_pos_up", "pen_pos_down"}`. | No active job. |
+| `POST` | `/api/v1/queue/pen-height` | Live-adjust pen height at a pen-change pause and move the pen so the change is visible. Body: `{"pen_pos_up": 60, "pen_pos_down": 30, "test": "up" \| "down"}` (heights optional, clamped to `pen_pos_min`–`pen_pos_max`; `test` required). Persisted onto the active job. | Active job is not in `awaiting_pen_change`. |
+| `POST` | `/api/v1/queue/live-settings` | Change speed / acceleration / cornering / pen height / pen timing of the plot in progress, applied at the next segment checkpoint. Body: any of `{"speed_pendown", "speed_penup", "acceleration", "acceleration_penup", "cornering", "pen_pos_up", "pen_pos_down", "pen_rate_lower", "pen_rate_raise", "pen_delay_down", "pen_delay_up"}`. `cornering` and `acceleration_penup` are planned per stage, so a change to those only takes effect from the next layer/stage; the rest apply within the current one. | No active job. |
 
 Note: a pen-change pause (`awaiting_pen_change`) only resumes via `/api/v1/queue/continue` — the plotter's physical pause button does **not** auto-continue it (unlike a plain `paused` state, which the button does resume). This is intentional, so there's always a chance to calibrate / jog the pen / nudge the origin first.
 
@@ -407,8 +422,12 @@ Editable fields:
 | `transform_rotation_deg` | number | 0–360 |
 | `transform_offset_x_mm`, `transform_offset_y_mm` | number | |
 | `speed_pendown`, `speed_penup` | int | 1–110 |
-| `acceleration` | int | 1–100 |
-| `pen_pos_up`, `pen_pos_down` | int | 0–100 |
+| `acceleration` | int | 1–100 — pen-down acceleration. |
+| `acceleration_penup` | int | 1–100 — pen-up acceleration, set independently of `acceleration`. |
+| `cornering` | int | 1–100 — cornering speed factor. Higher keeps more speed through a sharp corner (less ink pooling there); lower rounds it more. |
+| `pen_pos_up`, `pen_pos_down` | int | clamped to the server's `pen_pos_min`–`pen_pos_max` (default 29–85) |
+| `pen_rate_lower`, `pen_rate_raise` | int | 1–100 — servo lower / raise speed. A faster `pen_rate_lower` spends less time with the nib planted before the first stroke (smaller starting dot). |
+| `pen_delay_down`, `pen_delay_up` | int | −500–500 ms — dwell after the pen finishes lowering / raising, before motion resumes. Negative overlaps the move with the servo travel; a negative `pen_delay_down` trims the starting dot. |
 | `record_plot` | bool | Record this job via the camera — see "Camera / plot recording" below. Only meaningful when the server has `camera_enabled`. |
 | `record_mode` | `"realtime"` \| `"timelapse"` \| `"sped_up"` | |
 | `record_timelapse_interval_s` | number | 0.5–3600 |
@@ -514,9 +533,17 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "disable_motors_on_complete_default": false,  // Default for a new job's disable-motors-on-complete checkbox
   "speed_pendown_default": 25,                  // 1–110
   "speed_penup_default": 75,                    // 1–110
-  "acceleration_default": 75,                   // 1–100
-  "pen_pos_up_default": 60,                     // 0–100
-  "pen_pos_down_default": 30,                   // 0–100
+  "acceleration_default": 75,                   // 1–100 — pen-down acceleration
+  "acceleration_penup_default": 75,             // 1–100 — pen-up acceleration
+  "cornering_default": 10,                      // 1–100 — cornering speed factor
+  "pen_pos_min": 29,                            // 0–100 — lower end of the pen-height envelope
+  "pen_pos_max": 85,                            // 0–100 — upper end; must be > pen_pos_min
+  "pen_pos_up_default": 60,                     // pen_pos_min–pen_pos_max
+  "pen_pos_down_default": 30,                   // pen_pos_min–pen_pos_max
+  "pen_rate_lower_default": 50,                 // 1–100 — servo lowering speed
+  "pen_rate_raise_default": 75,                 // 1–100 — servo raising speed
+  "pen_delay_down_default": 0,                  // -500–500 ms — dwell after pen down, before moving
+  "pen_delay_up_default": 0,                    // -500–500 ms — dwell after pen up, before moving
   "optimize_svg_default": true,                 // Run vpype before plotting on new jobs
   "optimize_svg_tolerance_default_mm": 0.10,    // 0.01–10.0
   "optimize_svg_linemerge_default": true,
@@ -525,6 +552,8 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
   "optimize_svg_reloop_default": true,
   "saved_pen_colors": [],                       // curated palette for the layer-colour popover; array of "#rrggbb", max 24
   "display_unit": null,                         // null | "mm" | "cm" | "in" — UI labels only
+  "units_mode": "axidraw",                      // "axidraw" | "universal" — how the web UI shows the six rate knobs (see below)
+  "unit_specs": { "...": {} },                  // per-knob {unit,min,max,step,kind,factor} for units_mode; informational
   "machine_custom_enabled": false,              // Custom bed-size profile layered on plotter_model (UI/bounds only)
   "machine_width_mm": 297.0,
   "machine_height_mm": 420.0,
@@ -555,6 +584,15 @@ Returns the current snapshot. The `api_key` is never echoed back — clients alr
 
 `display_unit` only affects how the web UI renders paper-size and SVG-dimension labels. Internal storage and inputs always stay in mm. When the field is `null` (no preference saved yet), the browser picks an initial value from `navigator.language` (en-US → in, otherwise mm); once the user saves a choice it overrides the locale fallback on every subsequent load.
 
+`units_mode` is likewise a web-UI presentation choice — `"axidraw"` shows the six rate knobs on the `pyaxidraw` scale, `"universal"` shows them in mm/s, mm/s² and ms. **Every rate value over this API stays in `pyaxidraw` units regardless of `units_mode`** (`speed_*` 1–110, `acceleration*` 1–100, `pen_rate_*` 1–100), so an existing client keeps working when the operator flips the toggle. `unit_specs` is included for a client that wants to mirror the "universal" view; to convert `pyaxidraw` → physical yourself (model-independent):
+
+| Knob | Physical unit | `pyaxidraw` → physical |
+|---|---|---|
+| `speed_pendown`, `speed_penup` | mm/s | `× 8.6979 × 25.4 / 110` (≈ `× 2.0084`) |
+| `acceleration` | mm/s² | `× 40 × 25.4 / 100` (`× 10.16`) |
+| `acceleration_penup` | mm/s² | `× 60 × 25.4 / 100` (`× 15.24`) |
+| `pen_rate_lower`, `pen_rate_raise` | ms for a full pen lift | `20000 / value` |
+
 `machine_width_mm`/`machine_height_mm`/`machine_auto_rotate` only take effect when `machine_custom_enabled` is `true`. They don't change `pyaxidraw`'s real travel bounds (still governed entirely by `plotter_model`) — they're a software bed-size profile the web UI uses for paper-fit bounds warnings and for auto-rotating a job's paper to match the bed's preferred orientation.
 
 #### `PATCH /api/v1/settings`
@@ -564,7 +602,10 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | Field | Range / Type |
 |---|---|
 | `plotter_model` | int 1–8 |
-| `pen_pos_up_default`, `pen_pos_down_default` | int 0–100 |
+| `pen_pos_min`, `pen_pos_max` | int 0–100 — the pen-height envelope every pen-height control is clamped to. A PATCH where `pen_pos_min >= pen_pos_max` is rejected; `pen_pos_up_default` / `pen_pos_down_default` are pulled inside the envelope on save. |
+| `pen_pos_up_default`, `pen_pos_down_default` | int, clamped to `pen_pos_min`–`pen_pos_max` (default 29–85) |
+| `pen_rate_lower_default`, `pen_rate_raise_default` | int 1–100 — servo lower / raise speed |
+| `pen_delay_down_default`, `pen_delay_up_default` | int −500–500 (ms) — dwell after the pen finishes lowering / raising, before motion resumes |
 | `machine_custom_enabled` | bool |
 | `machine_width_mm`, `machine_height_mm` | number > 0 |
 | `machine_auto_rotate` | `"off"` \| `"portrait"` \| `"landscape"` |
@@ -594,12 +635,15 @@ Body is sparse JSON — only the fields you send are applied. Returns the new sn
 | `disable_motors_on_complete_default` | bool |
 | `speed_pendown_default` | int 1–110 |
 | `speed_penup_default` | int 1–110 |
-| `acceleration_default` | int 1–100 |
+| `acceleration_default` | int 1–100 — pen-down acceleration |
+| `acceleration_penup_default` | int 1–100 — pen-up acceleration |
+| `cornering_default` | int 1–100 — cornering speed factor (higher = less pen slowdown / ink pooling at sharp corners) |
 | `optimize_svg_default` | bool |
 | `optimize_svg_tolerance_default_mm` | float 0.01–10.0 |
 | `optimize_svg_linemerge_default`, `optimize_svg_linesimplify_default`, `optimize_svg_linesort_default`, `optimize_svg_reloop_default` | bool |
 | `saved_pen_colors` | array of `"#rrggbb"` strings. Normalised on save: lower-cased, non-hex dropped, de-duplicated, capped at 24. |
 | `display_unit` | `"mm"` \| `"cm"` \| `"in"` — UI display only. PATCH cannot clear it back to `null`; that state only exists before any value has been saved. |
+| `units_mode` | `"axidraw"` \| `"universal"` — web-UI display of the rate knobs only; API values stay in `pyaxidraw` units either way (see `GET /api/v1/settings`). |
 
 Out-of-range values return `400`. The API key cannot be set through this endpoint — to rotate it, edit `config.json` on the Pi and restart the service.
 

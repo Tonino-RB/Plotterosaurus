@@ -108,6 +108,14 @@ let appSettings = {
   speed_pendown_default: 25,
   speed_penup_default: 75,
   acceleration_default: 75,
+  acceleration_penup_default: 75,
+  cornering_default: 10,
+  pen_pos_min: 29,
+  pen_pos_max: 85,
+  pen_rate_lower_default: 50,
+  pen_rate_raise_default: 75,
+  pen_delay_down_default: 0,
+  pen_delay_up_default: 0,
   optimize_svg_default: false,
   optimize_svg_tolerance_default_mm: 0.10,
   optimize_svg_linemerge_default: true,
@@ -120,6 +128,10 @@ let appSettings = {
   // User-curated palette for the layer-colour popover (array of "#rrggbb").
   saved_pen_colors: [],
   display_unit: null,
+  units_mode: "axidraw",
+  // Per-knob {unit, min, max, step, kind, factor} for the six rate sliders,
+  // sent by /settings already resolved for units_mode (see app/rate_units.py).
+  unit_specs: null,
 };
 
 // Length-unit conversion. Internal storage and inputs are always mm; this
@@ -167,6 +179,133 @@ function fmtLength(mm, unit) {
   unit = unit || effectiveDisplayUnit();
   if (mm == null || !isFinite(mm)) return "—";
   return `${formatLengthValue(mm, unit)} ${unit}`;
+}
+
+// ── Rate-knob units ("EBB / AxiDraw" vs "Universal") ─────────────────────
+// The six speed / acceleration / pen-rate knobs are stored as pyaxidraw
+// factors (1–110 % speed, 1–100 % accel / servo-sweep). "Universal" units
+// mode (appSettings.units_mode) re-labels them as mm/s, mm/s² and ms for
+// display and entry only — nothing downstream of a PATCH sees the physical
+// value. The server hands us appSettings.unit_specs already resolved for the
+// mode; in "axidraw" mode every entry is the identity transform, so the call
+// sites below never branch on the mode. See app/rate_units.py.
+const RATE_KEYS = ["speed_pendown", "speed_penup", "acceleration",
+                   "acceleration_penup", "pen_rate_lower", "pen_rate_raise"];
+const IDENTITY_RATE_SPEC = { unit: "%", min: null, max: null, step: 1,
+                             kind: "linear", factor: 1 };
+// Job-card selector → unit_specs key; Settings input id → key. The paired
+// slider is always the same selector + "-slider".
+const CARD_RATE_SEL = {
+  ".speed-pendown": "speed_pendown", ".speed-penup": "speed_penup",
+  ".accel": "acceleration", ".accel-penup": "acceleration_penup",
+  ".pen-rate-lower": "pen_rate_lower", ".pen-rate-raise": "pen_rate_raise",
+};
+const SETTINGS_RATE_SEL = {
+  "#settings-speed-pendown": "speed_pendown", "#settings-speed-penup": "speed_penup",
+  "#settings-accel": "acceleration", "#settings-accel-penup": "acceleration_penup",
+  "#settings-pen-rate-lower": "pen_rate_lower", "#settings-pen-rate-raise": "pen_rate_raise",
+};
+
+function rateSpec(key) {
+  return (appSettings.unit_specs && appSettings.unit_specs[key]) || IDENTITY_RATE_SPEC;
+}
+// stored AxiDraw factor → the number shown in the field
+function rateFromStored(key, stored) {
+  const s = rateSpec(key), n = Number(stored);
+  if (!isFinite(n) || n === 0) return stored;
+  return Math.round(s.kind === "reciprocal" ? s.factor / n : n * s.factor);
+}
+// the number typed in the field → stored AxiDraw factor
+function rateToStored(key, shown) {
+  const s = rateSpec(key), n = Number(shown);
+  if (!isFinite(n) || n === 0) return NaN;
+  return Math.round(s.kind === "reciprocal" ? s.factor / n : n / s.factor);
+}
+
+// Push each rate field's min/max/step from the active spec. selMap is one of
+// the two maps above; scope is a job card or the settings modal.
+function applyRateFieldSpecs(scope, selMap) {
+  if (!scope) return;
+  for (const [sel, key] of Object.entries(selMap)) {
+    const spec = rateSpec(key);
+    if (spec.min == null) continue;
+    for (const el of [scope.querySelector(sel), scope.querySelector(sel + "-slider")]) {
+      if (el) { el.min = spec.min; el.max = spec.max; el.step = spec.step; }
+    }
+  }
+}
+
+// Append the universal-mode unit to each rate field's label — " (mm/s)".
+// data-i18n resets the label on a language swap, so this also runs from the
+// I18N.onLanguageChange hook, not just on a mode change.
+function decorateRateLabels(scope) {
+  (scope || document).querySelectorAll(".field-label[data-rate]").forEach((el) => {
+    const base = t(el.getAttribute("data-i18n"));
+    const u = rateSpec(el.dataset.rate).unit;
+    el.textContent = u && u !== "%" ? `${base} (${u})` : base;
+  });
+}
+
+// Swap the three affected Settings legends to their universal-mode wording.
+function applyRateLegendMode(scope) {
+  const universal = appSettings.units_mode === "universal";
+  (scope || document).querySelectorAll("[data-i18n-universal]").forEach((el) => {
+    el.textContent = t(universal ? el.dataset.i18nUniversal : el.getAttribute("data-i18n"));
+  });
+}
+
+// job's stored value for one rate knob, falling back to the settings default.
+function cardRateStored(job, key) {
+  switch (key) {
+    case "speed_pendown": return job.speed_pendown;
+    case "speed_penup": return job.speed_penup;
+    case "acceleration": return job.acceleration;
+    case "acceleration_penup": return job.acceleration_penup ?? appSettings.acceleration_penup_default;
+    case "pen_rate_lower": return job.pen_rate_lower ?? appSettings.pen_rate_lower_default;
+    case "pen_rate_raise": return job.pen_rate_raise ?? appSettings.pen_rate_raise_default;
+  }
+}
+
+// (Re)fill a card's six rate inputs + paired sliders in the active unit.
+function repopulateCardRates(card, job) {
+  applyRateFieldSpecs(card, CARD_RATE_SEL);
+  for (const [sel, key] of Object.entries(CARD_RATE_SEL)) {
+    const v = String(rateFromStored(key, cardRateStored(job, key)));
+    const n = card.querySelector(sel), s = card.querySelector(sel + "-slider");
+    if (n) n.value = v;
+    if (s) { s.value = v; updateSliderProgress(s); }
+  }
+  decorateRateLabels(card);
+}
+
+// Same for the six Settings inputs, from a /settings payload's *_default keys.
+function repopulateSettingsRates(data) {
+  const src = {
+    "#settings-speed-pendown": ["speed_pendown", data.speed_pendown_default ?? 25],
+    "#settings-speed-penup": ["speed_penup", data.speed_penup_default ?? 75],
+    "#settings-accel": ["acceleration", data.acceleration_default ?? 75],
+    "#settings-accel-penup": ["acceleration_penup", data.acceleration_penup_default ?? 75],
+    "#settings-pen-rate-lower": ["pen_rate_lower", data.pen_rate_lower_default ?? 50],
+    "#settings-pen-rate-raise": ["pen_rate_raise", data.pen_rate_raise_default ?? 75],
+  };
+  applyRateFieldSpecs(settingsModal, SETTINGS_RATE_SEL);
+  for (const [sel, [key, stored]] of Object.entries(src)) {
+    const v = String(rateFromStored(key, stored));
+    const n = document.querySelector(sel), s = document.querySelector(sel + "-slider");
+    if (n) n.value = v;
+    if (s) { s.value = v; updateSliderProgress(s); }
+  }
+}
+
+// Everything that shows a rate value, re-rendered after units_mode flips.
+function refreshRateUnits() {
+  decorateRateLabels();
+  applyRateLegendMode();
+  applyRateFieldSpecs(settingsModal, SETTINGS_RATE_SEL);
+  cardEls.forEach((card, id) => {
+    const job = serverState.queue.find((j) => j.job_id === id);
+    if (job) repopulateCardRates(card, job);
+  });
 }
 
 // Paper size database (portrait dims). Landscape swaps them.
@@ -322,8 +461,14 @@ function buildJobPayload(svg, fallbackName) {
       speed_pendown: appSettings.speed_pendown_default,
       speed_penup: appSettings.speed_penup_default,
       acceleration: appSettings.acceleration_default,
+      acceleration_penup: appSettings.acceleration_penup_default,
+      cornering: appSettings.cornering_default,
       pen_pos_up: appSettings.pen_pos_up_default,
       pen_pos_down: appSettings.pen_pos_down_default,
+      pen_rate_lower: appSettings.pen_rate_lower_default,
+      pen_rate_raise: appSettings.pen_rate_raise_default,
+      pen_delay_down: appSettings.pen_delay_down_default,
+      pen_delay_up: appSettings.pen_delay_up_default,
       record_plot: appSettings.record_plot_default,
       record_mode: appSettings.camera_recording_mode_default,
       record_timelapse_interval_s: appSettings.camera_timelapse_interval_s_default,
@@ -1229,11 +1374,15 @@ function createCardForJob(job) {
   card.querySelector(".transform-offset-x").value = job.transform_offset_x_mm ?? 0;
   card.querySelector(".transform-offset-y").value = job.transform_offset_y_mm ?? 0;
   applyOffsetBoundsToCard(card, job.paper_width_mm, job.paper_height_mm);
-  card.querySelector(".speed-pendown").value = job.speed_pendown;
-  card.querySelector(".speed-penup").value = job.speed_penup;
-  card.querySelector(".accel").value = job.acceleration;
+  card.querySelector(".cornering").value = job.cornering ?? appSettings.cornering_default;
+  applyPenPosBounds(card);
   card.querySelector(".pen-pos-up").value = job.pen_pos_up ?? appSettings.pen_pos_up_default;
   card.querySelector(".pen-pos-down").value = job.pen_pos_down ?? appSettings.pen_pos_down_default;
+  card.querySelector(".pen-delay-down").value = job.pen_delay_down ?? appSettings.pen_delay_down_default;
+  card.querySelector(".pen-delay-up").value = job.pen_delay_up ?? appSettings.pen_delay_up_default;
+  // The six rate knobs (speed / accel / pen-rate) — filled in the active
+  // units_mode; every other knob above stays a raw pyaxidraw value.
+  repopulateCardRates(card, job);
   card.querySelector(".pause-between-layers").checked = job.pause_between_layers;
   card.querySelector(".skip-same-pen-pause").checked = !!job.skip_same_pen_pause;
   applySkipSamePenPauseStyle(card);
@@ -1418,6 +1567,17 @@ function createCardForJob(job) {
       queueCardUpdate(card, explicit);
     });
   });
+  // Parameters / Advanced tabs — a view toggle only, no server state.
+  const paramsTabs = card.querySelector(".params-tabs");
+  paramsTabs.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("active")) return;
+      setSegmentedValue(paramsTabs, btn.dataset.val);
+      card.querySelectorAll(".params-panel").forEach((p) => {
+        p.hidden = p.dataset.panel !== btn.dataset.val;
+      });
+    });
+  });
   for (const n of [1, 2, 3]) {
     const enabledEl = card.querySelector(`.optimize-expert-${n}-enabled`);
     const cmdEl = card.querySelector(`.optimize-expert-${n}-cmd`);
@@ -1435,8 +1595,14 @@ function createCardForJob(job) {
   [card.querySelector(".speed-pendown"),
    card.querySelector(".speed-penup"),
    card.querySelector(".accel"),
+   card.querySelector(".accel-penup"),
+   card.querySelector(".cornering"),
    card.querySelector(".pen-pos-up"),
-   card.querySelector(".pen-pos-down")]
+   card.querySelector(".pen-pos-down"),
+   card.querySelector(".pen-rate-lower"),
+   card.querySelector(".pen-rate-raise"),
+   card.querySelector(".pen-delay-down"),
+   card.querySelector(".pen-delay-up")]
     .forEach((el) => el.addEventListener("change", () => {
       // While the job is actively plotting (speed/accel/pen height) or
       // paused at a pen-change (pen height), the "input" listeners below
@@ -1462,8 +1628,14 @@ function createCardForJob(job) {
   card.querySelector(".speed-pendown").addEventListener("input", () => applyLiveSetting(card, "speed_pendown", ".speed-pendown"));
   card.querySelector(".speed-penup").addEventListener("input", () => applyLiveSetting(card, "speed_penup", ".speed-penup"));
   card.querySelector(".accel").addEventListener("input", () => applyLiveSetting(card, "acceleration", ".accel"));
+  card.querySelector(".accel-penup").addEventListener("input", () => applyLiveSetting(card, "acceleration_penup", ".accel-penup"));
+  card.querySelector(".cornering").addEventListener("input", () => applyLiveSetting(card, "cornering", ".cornering"));
   card.querySelector(".pen-pos-up").addEventListener("input", () => applyLiveSetting(card, "pen_pos_up", ".pen-pos-up"));
   card.querySelector(".pen-pos-down").addEventListener("input", () => applyLiveSetting(card, "pen_pos_down", ".pen-pos-down"));
+  card.querySelector(".pen-rate-lower").addEventListener("input", () => applyLiveSetting(card, "pen_rate_lower", ".pen-rate-lower"));
+  card.querySelector(".pen-rate-raise").addEventListener("input", () => applyLiveSetting(card, "pen_rate_raise", ".pen-rate-raise"));
+  card.querySelector(".pen-delay-down").addEventListener("input", () => applyLiveSetting(card, "pen_delay_down", ".pen-delay-down"));
+  card.querySelector(".pen-delay-up").addEventListener("input", () => applyLiveSetting(card, "pen_delay_up", ".pen-delay-up"));
 
   const transformInputs = [
     card.querySelector(".transform-scale"),
@@ -1487,8 +1659,14 @@ function createCardForJob(job) {
   pairSlider(card, ".speed-pendown", ".speed-pendown-slider");
   pairSlider(card, ".speed-penup", ".speed-penup-slider");
   pairSlider(card, ".accel", ".accel-slider");
+  pairSlider(card, ".accel-penup", ".accel-penup-slider");
+  pairSlider(card, ".cornering", ".cornering-slider");
   pairSlider(card, ".pen-pos-up", ".pen-pos-up-slider");
   pairSlider(card, ".pen-pos-down", ".pen-pos-down-slider");
+  pairSlider(card, ".pen-rate-lower", ".pen-rate-lower-slider");
+  pairSlider(card, ".pen-rate-raise", ".pen-rate-raise-slider");
+  pairSlider(card, ".pen-delay-down", ".pen-delay-down-slider");
+  pairSlider(card, ".pen-delay-up", ".pen-delay-up-slider");
 
   // Collapsible section headers
   card.querySelectorAll(".card-section-head").forEach((head) => {
@@ -1781,6 +1959,7 @@ function updateCard(card, job) {
   renderDeltaOverlay(card, job, geomFootprint);
   updateGridArrangement(card, job);
   syncOptimizeExpertUndoBtn(card, job);
+  applyPenPosBounds(card);
   if (job.estimated_total_seconds) subParts.push(formatDuration(Math.round(job.estimated_total_seconds)));
   // Surface the SVG-level pre-optimize state on queued cards so the user knows
   // a future "Plot" click won't be instant if their SVG is still in the
@@ -2447,13 +2626,21 @@ function resetGrid(card) {
 }
 
 function resetParameters(card) {
+  // Rate defaults are stored AxiDraw factors — show them in the active unit.
   const pairs = [
-    [".speed-pendown", appSettings.speed_pendown_default],
-    [".speed-penup", appSettings.speed_penup_default],
-    [".accel", appSettings.acceleration_default],
+    [".speed-pendown", rateFromStored("speed_pendown", appSettings.speed_pendown_default)],
+    [".speed-penup", rateFromStored("speed_penup", appSettings.speed_penup_default)],
+    [".accel", rateFromStored("acceleration", appSettings.acceleration_default)],
+    [".accel-penup", rateFromStored("acceleration_penup", appSettings.acceleration_penup_default)],
+    [".cornering", appSettings.cornering_default],
     [".pen-pos-up", appSettings.pen_pos_up_default],
     [".pen-pos-down", appSettings.pen_pos_down_default],
+    [".pen-rate-lower", rateFromStored("pen_rate_lower", appSettings.pen_rate_lower_default)],
+    [".pen-rate-raise", rateFromStored("pen_rate_raise", appSettings.pen_rate_raise_default)],
+    [".pen-delay-down", appSettings.pen_delay_down_default],
+    [".pen-delay-up", appSettings.pen_delay_up_default],
   ];
+  applyPenPosBounds(card);
   for (const [sel, val] of pairs) {
     const el = card.querySelector(sel);
     if (el) { el.value = val; dispatchValueChange(el); }
@@ -2529,6 +2716,27 @@ function applyOffsetBoundsToCard(card, paperW, paperH) {
   if (cy < -h || cy > h) oy.value = Math.max(-h, Math.min(h, cy));
   if (oxS) { oxS.value = ox.value; updateSliderProgress(oxS); }
   if (oyS) { oyS.value = oy.value; updateSliderProgress(oyS); }
+}
+
+// The Raised/Lowered height inputs on a card only ever reach the envelope the
+// user set in Settings (config.PEN_POS_MIN/MAX, mirrored in appSettings). The
+// min/max themselves are edited only in Settings, never on a card. Kept in sync
+// from createCardForJob and updateCard so a settings change lands on open cards.
+function applyPenPosBounds(card) {
+  const lo = appSettings.pen_pos_min ?? 29;
+  const hi = appSettings.pen_pos_max ?? 85;
+  for (const sel of [".pen-pos-up", ".pen-pos-down"]) {
+    for (const el of [card.querySelector(sel), card.querySelector(sel + "-slider")]) {
+      if (!el) continue;
+      el.min = lo;
+      el.max = hi;
+      const v = parseInt(el.value);
+      if (v < lo) el.value = lo;
+      else if (v > hi) el.value = hi;
+    }
+    const s = card.querySelector(sel + "-slider");
+    if (s) updateSliderProgress(s);
+  }
 }
 
 function pairSlider(card, numberSel, sliderSel) {
@@ -3344,11 +3552,17 @@ async function sendCardUpdate(card, pending) {
     updates.margin_left_mm = parseFloat(card.querySelector(".margin-left").value) || 0;
     updates.fit_content = card.querySelector(".fit-content").checked;
     Object.assign(updates, readTransformFromCard(card));
-    updates.speed_pendown = parseInt(card.querySelector(".speed-pendown").value);
-    updates.speed_penup = parseInt(card.querySelector(".speed-penup").value);
-    updates.acceleration = parseInt(card.querySelector(".accel").value);
+    updates.speed_pendown = rateToStored("speed_pendown", parseFloat(card.querySelector(".speed-pendown").value));
+    updates.speed_penup = rateToStored("speed_penup", parseFloat(card.querySelector(".speed-penup").value));
+    updates.acceleration = rateToStored("acceleration", parseFloat(card.querySelector(".accel").value));
+    updates.acceleration_penup = rateToStored("acceleration_penup", parseFloat(card.querySelector(".accel-penup").value));
+    updates.cornering = parseInt(card.querySelector(".cornering").value);
     updates.pen_pos_up = parseInt(card.querySelector(".pen-pos-up").value);
     updates.pen_pos_down = parseInt(card.querySelector(".pen-pos-down").value);
+    updates.pen_rate_lower = rateToStored("pen_rate_lower", parseFloat(card.querySelector(".pen-rate-lower").value));
+    updates.pen_rate_raise = rateToStored("pen_rate_raise", parseFloat(card.querySelector(".pen-rate-raise").value));
+    updates.pen_delay_down = parseInt(card.querySelector(".pen-delay-down").value);
+    updates.pen_delay_up = parseInt(card.querySelector(".pen-delay-up").value);
     updates.pause_between_layers = card.querySelector(".pause-between-layers").checked;
     updates.skip_same_pen_pause = card.querySelector(".skip-same-pen-pause").checked;
     updates.delete_on_complete = card.querySelector(".delete-on-complete").checked;
@@ -3879,7 +4093,16 @@ function applyLiveSetting(card, field, selector) {
   clearTimeout(liveSettingsDebounceTimers[field]);
   liveSettingsDebounceTimers[field] = setTimeout(async () => {
     try {
-      const val = parseInt(card.querySelector(selector).value, 10);
+      // Rate knobs come off the input in the active unit; every other live
+      // field (cornering, pen height, pen delay) is already a raw value.
+      let val;
+      if (RATE_KEYS.includes(field)) {
+        const shown = parseFloat(card.querySelector(selector).value);
+        if (!Number.isFinite(shown)) return;
+        val = rateToStored(field, shown);
+      } else {
+        val = parseInt(card.querySelector(selector).value, 10);
+      }
       if (!Number.isFinite(val)) return;
       const res = await fetch("/queue/live-settings", {
         method: "POST",
@@ -4230,8 +4453,16 @@ const settingsDisableMotorsOnComplete = $("settings-disable-motors-on-complete")
 const settingsSpeedPendown = $("settings-speed-pendown");
 const settingsSpeedPenup = $("settings-speed-penup");
 const settingsAccel = $("settings-accel");
+const settingsAccelPenup = $("settings-accel-penup");
+const settingsCornering = $("settings-cornering");
 const settingsPenPosUp = $("settings-pen-pos-up");
 const settingsPenPosDown = $("settings-pen-pos-down");
+const settingsPenPosMin = $("settings-pen-pos-min");
+const settingsPenPosMax = $("settings-pen-pos-max");
+const settingsPenRateLower = $("settings-pen-rate-lower");
+const settingsPenRateRaise = $("settings-pen-rate-raise");
+const settingsPenDelayDown = $("settings-pen-delay-down");
+const settingsPenDelayUp = $("settings-pen-delay-up");
 const settingsMachineSelect = $("settings-machine-select");
 const settingsMachineAdd = $("settings-machine-add");
 const settingsMachineDelete = $("settings-machine-delete");
@@ -4274,6 +4505,7 @@ const settingsOptimizeLinesort = $("settings-optimize-linesort");
 const settingsOptimizeReloop = $("settings-optimize-reloop");
 const settingsOptimizeTolerance = $("settings-optimize-tolerance");
 const settingsDisplayUnit = $("settings-display-unit");
+const settingsUnitsMode = $("settings-units-mode");
 const settingsLanguage = $("settings-language");
 settingsBtn.addEventListener("click", openSettings);
 // Closing without saving reverts a live language preview to the saved language.
@@ -4285,6 +4517,25 @@ $("settings-cancel").addEventListener("click", () => closeSettings(true));
 settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) closeSettings(true); });
 // Live-preview the language the moment it's picked; Save keeps it, Cancel reverts.
 settingsLanguage?.addEventListener("change", () => I18N.previewLanguage(settingsLanguage.value));
+// Units mode is a lens, not a value — apply (and persist) it the moment it's
+// picked so every slider on the page re-scales at once. The six rate defaults
+// still only save on Save; this PATCH carries just the mode.
+settingsUnitsMode?.addEventListener("change", async () => {
+  try {
+    const res = await fetch("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ units_mode: settingsUnitsMode.value }),
+    });
+    if (!res.ok) throw new Error(await readErr(res));
+    const data = await res.json();
+    applyAppSettings(data);          // refreshes unit_specs → refreshRateUnits()
+    repopulateSettingsRates(data);   // the six Settings inputs, in the new unit
+  } catch (e) {
+    $("settings-message").textContent = t("settings.save_failed", { message: e.message });
+    $("settings-message").className = "error";
+  }
+});
 {
   const clampOnLeaveSettings = (e) => {
     const el = e.target;
@@ -4310,6 +4561,7 @@ settingsApiKeyCopy.addEventListener("click", async () => {
 
 function applyAppSettings(data) {
   const prevUnit = effectiveDisplayUnit();
+  const prevUnitSpecs = JSON.stringify(appSettings.unit_specs);
   appSettings = {
     plotter_model: data.plotter_model ?? appSettings.plotter_model,
     pause_between_layers_default: data.pause_between_layers_default ?? appSettings.pause_between_layers_default,
@@ -4319,8 +4571,16 @@ function applyAppSettings(data) {
     speed_pendown_default: data.speed_pendown_default ?? appSettings.speed_pendown_default,
     speed_penup_default: data.speed_penup_default ?? appSettings.speed_penup_default,
     acceleration_default: data.acceleration_default ?? appSettings.acceleration_default,
+    acceleration_penup_default: data.acceleration_penup_default ?? appSettings.acceleration_penup_default,
+    cornering_default: data.cornering_default ?? appSettings.cornering_default,
+    pen_pos_min: data.pen_pos_min ?? appSettings.pen_pos_min,
+    pen_pos_max: data.pen_pos_max ?? appSettings.pen_pos_max,
     pen_pos_up_default: data.pen_pos_up_default ?? appSettings.pen_pos_up_default,
     pen_pos_down_default: data.pen_pos_down_default ?? appSettings.pen_pos_down_default,
+    pen_rate_lower_default: data.pen_rate_lower_default ?? appSettings.pen_rate_lower_default,
+    pen_rate_raise_default: data.pen_rate_raise_default ?? appSettings.pen_rate_raise_default,
+    pen_delay_down_default: data.pen_delay_down_default ?? appSettings.pen_delay_down_default,
+    pen_delay_up_default: data.pen_delay_up_default ?? appSettings.pen_delay_up_default,
     optimize_svg_default: data.optimize_svg_default ?? appSettings.optimize_svg_default,
     optimize_svg_tolerance_default_mm: data.optimize_svg_tolerance_default_mm ?? appSettings.optimize_svg_tolerance_default_mm,
     optimize_svg_linemerge_default: data.optimize_svg_linemerge_default ?? appSettings.optimize_svg_linemerge_default,
@@ -4332,6 +4592,8 @@ function applyAppSettings(data) {
     optimize_expert_3_cmd_default: data.optimize_expert_3_cmd_default ?? appSettings.optimize_expert_3_cmd_default,
     saved_pen_colors: Array.isArray(data.saved_pen_colors) ? data.saved_pen_colors : appSettings.saved_pen_colors,
     display_unit: data.display_unit ?? appSettings.display_unit,
+    units_mode: data.units_mode ?? appSettings.units_mode,
+    unit_specs: data.unit_specs ?? appSettings.unit_specs,
     machine_custom_enabled: data.machine_custom_enabled ?? appSettings.machine_custom_enabled,
     machine_width_mm: data.machine_width_mm ?? appSettings.machine_width_mm,
     machine_height_mm: data.machine_height_mm ?? appSettings.machine_height_mm,
@@ -4378,6 +4640,7 @@ function applyAppSettings(data) {
     draw_stream_max_resolution_px: data.draw_stream_max_resolution_px ?? appSettings.draw_stream_max_resolution_px,
   };
   if (effectiveDisplayUnit() !== prevUnit) refreshUnitDependentDisplays();
+  if (JSON.stringify(appSettings.unit_specs) !== prevUnitSpecs) refreshRateUnits();
   // applyMachineAutoRotateToCard only locks the orientation *button* visually;
   // without also re-running onPaperChange, a job's stored paper_width_mm/
   // paper_height_mm keeps whatever it was before this settings change, so the
@@ -4423,16 +4686,29 @@ async function openSettings() {
     const res = await fetch("/settings");
     const data = await res.json();
     applyAppSettings(data);
+    settingsUnitsMode.value = data.units_mode || "axidraw";
+    // Push the rate sliders' min/max/step before writing their values below,
+    // so a universal-mode value isn't clamped to the stale percent range.
+    applyRateFieldSpecs(settingsModal, SETTINGS_RATE_SEL);
     settingsApiKey.value = data.api_key || "";
     settingsPauseBetweenLayers.checked = data.pause_between_layers_default ?? true;
     settingsSkipSamePenPause.checked = data.skip_same_pen_pause_default ?? false;
     settingsDeleteOnComplete.checked = data.delete_on_complete_default ?? false;
     settingsDisableMotorsOnComplete.checked = data.disable_motors_on_complete_default ?? false;
-    settingsSpeedPendown.value = String(data.speed_pendown_default ?? 25);
-    settingsSpeedPenup.value = String(data.speed_penup_default ?? 75);
-    settingsAccel.value = String(data.acceleration_default ?? 75);
+    settingsSpeedPendown.value = String(rateFromStored("speed_pendown", data.speed_pendown_default ?? 25));
+    settingsSpeedPenup.value = String(rateFromStored("speed_penup", data.speed_penup_default ?? 75));
+    settingsAccel.value = String(rateFromStored("acceleration", data.acceleration_default ?? 75));
+    settingsAccelPenup.value = String(rateFromStored("acceleration_penup", data.acceleration_penup_default ?? 75));
+    settingsCornering.value = String(data.cornering_default ?? 10);
+    settingsPenPosMin.value = String(data.pen_pos_min ?? 29);
+    settingsPenPosMax.value = String(data.pen_pos_max ?? 85);
     settingsPenPosUp.value = String(data.pen_pos_up_default ?? 60);
     settingsPenPosDown.value = String(data.pen_pos_down_default ?? 30);
+    applySettingsPenPosBounds();
+    settingsPenRateLower.value = String(rateFromStored("pen_rate_lower", data.pen_rate_lower_default ?? 50));
+    settingsPenRateRaise.value = String(rateFromStored("pen_rate_raise", data.pen_rate_raise_default ?? 75));
+    settingsPenDelayDown.value = String(data.pen_delay_down_default ?? 0);
+    settingsPenDelayUp.value = String(data.pen_delay_up_default ?? 0);
     settingsOptimize.checked = !!(data.optimize_svg_default ?? false);
     settingsOptimizeLinemerge.checked = data.optimize_svg_linemerge_default !== false;
     settingsOptimizeLinesimplify.checked = data.optimize_svg_linesimplify_default !== false;
@@ -4448,12 +4724,18 @@ async function openSettings() {
     settingsWebhookOnJobComplete.checked = !!data.webhook_on_job_complete;
     settingsWebhookMessage.textContent = "";
     for (const sel of ["#settings-speed-pendown-slider", "#settings-speed-penup-slider",
-                        "#settings-accel-slider", "#settings-pen-pos-up-slider",
-                        "#settings-pen-pos-down-slider"]) {
+                        "#settings-accel-slider", "#settings-accel-penup-slider",
+                        "#settings-cornering-slider", "#settings-pen-pos-min-slider",
+                        "#settings-pen-pos-max-slider", "#settings-pen-pos-up-slider",
+                        "#settings-pen-pos-down-slider", "#settings-pen-rate-lower-slider",
+                        "#settings-pen-rate-raise-slider", "#settings-pen-delay-down-slider",
+                        "#settings-pen-delay-up-slider"]) {
       const s = document.querySelector(sel);
       const n = document.querySelector(sel.replace("-slider", ""));
       if (s && n) { s.value = n.value; updateSliderProgress(s); }
     }
+    decorateRateLabels(settingsModal);
+    applyRateLegendMode(settingsModal);
   } catch (e) {}
   settingsModal.hidden = false;
 }
@@ -4469,11 +4751,19 @@ async function saveSettings() {
       skip_same_pen_pause_default: settingsSkipSamePenPause.checked,
       delete_on_complete_default: settingsDeleteOnComplete.checked,
       disable_motors_on_complete_default: settingsDisableMotorsOnComplete.checked,
-      speed_pendown_default: parseInt(settingsSpeedPendown.value),
-      speed_penup_default: parseInt(settingsSpeedPenup.value),
-      acceleration_default: parseInt(settingsAccel.value),
+      speed_pendown_default: rateToStored("speed_pendown", parseFloat(settingsSpeedPendown.value)),
+      speed_penup_default: rateToStored("speed_penup", parseFloat(settingsSpeedPenup.value)),
+      acceleration_default: rateToStored("acceleration", parseFloat(settingsAccel.value)),
+      acceleration_penup_default: rateToStored("acceleration_penup", parseFloat(settingsAccelPenup.value)),
+      cornering_default: parseInt(settingsCornering.value),
+      pen_pos_min: parseInt(settingsPenPosMin.value),
+      pen_pos_max: parseInt(settingsPenPosMax.value),
       pen_pos_up_default: parseInt(settingsPenPosUp.value),
       pen_pos_down_default: parseInt(settingsPenPosDown.value),
+      pen_rate_lower_default: rateToStored("pen_rate_lower", parseFloat(settingsPenRateLower.value)),
+      pen_rate_raise_default: rateToStored("pen_rate_raise", parseFloat(settingsPenRateRaise.value)),
+      pen_delay_down_default: parseInt(settingsPenDelayDown.value),
+      pen_delay_up_default: parseInt(settingsPenDelayUp.value),
       optimize_svg_default: settingsOptimize.checked,
       optimize_svg_tolerance_default_mm: isFinite(tol) && tol > 0 ? tol : 0.10,
       optimize_svg_linemerge_default: settingsOptimizeLinemerge.checked,
@@ -4481,6 +4771,7 @@ async function saveSettings() {
       optimize_svg_linesort_default: settingsOptimizeLinesort.checked,
       optimize_svg_reloop_default: settingsOptimizeReloop.checked,
       display_unit: settingsDisplayUnit.value,
+      units_mode: settingsUnitsMode.value,
       webhook_url: settingsWebhookUrl.value.trim(),
       webhook_on_layer_complete: settingsWebhookOnLayerComplete.checked,
       webhook_on_job_complete: settingsWebhookOnJobComplete.checked,
@@ -4490,7 +4781,7 @@ async function saveSettings() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw new Error(await readErr(res));
     applyAppSettings(await res.json());
     settingsModal.hidden = true;
     // Language was live-previewed on selection; persist the current choice.
@@ -4501,19 +4792,46 @@ async function saveSettings() {
   }
 }
 
+// Clamp the Raised/Lowered height sliders' allowed range to the Minimum/Maximum
+// height envelope, live as it's edited in the same panel. The server is the
+// source of truth (config.PEN_POS_MIN/MAX); this just keeps the modal honest.
+function applySettingsPenPosBounds() {
+  const lo = parseInt(settingsPenPosMin.value);
+  const hi = parseInt(settingsPenPosMax.value);
+  if (!isFinite(lo) || !isFinite(hi)) return;
+  for (const id of ["settings-pen-pos-up", "settings-pen-pos-down"]) {
+    for (const el of [$(id), $(id + "-slider")]) {
+      if (!el) continue;
+      el.min = lo;
+      el.max = hi;
+      if (parseInt(el.value) < lo) el.value = lo;
+      if (parseInt(el.value) > hi) el.value = hi;
+    }
+    const s = $(id + "-slider");
+    if (s) updateSliderProgress(s);
+  }
+}
+
 // Wire the settings-modal sliders (they're not inside a card, so createCardForJob doesn't touch them)
 for (const base of ["settings-speed-pendown", "settings-speed-penup", "settings-accel",
-                     "settings-pen-pos-up", "settings-pen-pos-down"]) {
+                     "settings-accel-penup", "settings-cornering",
+                     "settings-pen-pos-min", "settings-pen-pos-max",
+                     "settings-pen-pos-up", "settings-pen-pos-down",
+                     "settings-pen-rate-lower", "settings-pen-rate-raise",
+                     "settings-pen-delay-down", "settings-pen-delay-up"]) {
   const number = $(base);
   const slider = $(base + "-slider");
   if (!number || !slider) continue;
+  const isBound = base === "settings-pen-pos-min" || base === "settings-pen-pos-max";
   slider.addEventListener("input", () => {
     if (number.value !== slider.value) number.value = slider.value;
     updateSliderProgress(slider);
+    if (isBound) applySettingsPenPosBounds();
   });
   number.addEventListener("input", () => {
     if (slider.value !== number.value) slider.value = number.value;
     updateSliderProgress(slider);
+    if (isBound) applySettingsPenPosBounds();
   });
   updateSliderProgress(slider);
 }
@@ -4526,11 +4844,16 @@ function resetSettingsJobOptions() {
 }
 
 function resetSettingsPenHeight() {
-  const pairs = [["settings-pen-pos-up", 60], ["settings-pen-pos-down", 30]];
+  const pairs = [["settings-pen-pos-min", 29], ["settings-pen-pos-max", 85],
+                 ["settings-pen-pos-up", 60], ["settings-pen-pos-down", 30],
+                 ["settings-pen-rate-lower", rateFromStored("pen_rate_lower", 50)],
+                 ["settings-pen-rate-raise", rateFromStored("pen_rate_raise", 75)],
+                 ["settings-pen-delay-down", 0], ["settings-pen-delay-up", 0]];
   for (const [id, val] of pairs) {
     const el = $(id);
     if (el) { el.value = val; el.dispatchEvent(new Event("input", { bubbles: true })); }
   }
+  applySettingsPenPosBounds();
 }
 
 settingsMachineAutoRotate.querySelectorAll("button").forEach((btn) => {
@@ -5361,6 +5684,10 @@ settingsDrawStreamBgRemove.addEventListener("click", async () => {
 
 function resetSettingsDisplay() {
   settingsDisplayUnit.value = localeDefaultUnit();
+  if (settingsUnitsMode.value !== "axidraw") {
+    settingsUnitsMode.value = "axidraw";
+    settingsUnitsMode.dispatchEvent(new Event("change"));
+  }
 }
 
 function applySettingsOptimizeEnabledStyle() {
@@ -5410,9 +5737,11 @@ settingsOptimize?.addEventListener("change", () => {
 // Wire collapsible sections + reset button inside the Settings modal
 function resetSettingsSpeed() {
   const pairs = [
-    ["settings-speed-pendown", "settings-speed-pendown-slider", 25],
-    ["settings-speed-penup", "settings-speed-penup-slider", 75],
-    ["settings-accel", "settings-accel-slider", 75],
+    ["settings-speed-pendown", "settings-speed-pendown-slider", rateFromStored("speed_pendown", 25)],
+    ["settings-speed-penup", "settings-speed-penup-slider", rateFromStored("speed_penup", 75)],
+    ["settings-accel", "settings-accel-slider", rateFromStored("acceleration", 75)],
+    ["settings-accel-penup", "settings-accel-penup-slider", rateFromStored("acceleration_penup", 75)],
+    ["settings-cornering", "settings-cornering-slider", 10],
   ];
   for (const [numId, sliderId, val] of pairs) {
     const n = $(numId);
@@ -5583,6 +5912,9 @@ I18N.onLanguageChange(() => {
   });
   if (updateStatus) renderUpdateStatus(updateStatus);
   renderSkewClearance();
+  // applyStatic() just reset the rate-field labels and the mode-aware legends.
+  decorateRateLabels();
+  applyRateLegendMode();
 });
 
 function renderUpdateStatus(status) {

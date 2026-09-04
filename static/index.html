@@ -216,6 +216,14 @@
               <option value="in" data-i18n="settings.display.unit_in">Inches (in)</option>
             </select>
           </label>
+          <label class="field">
+            <span class="field-label" data-i18n="settings.units.mode_label">Speed &amp; pen units</span>
+            <select id="settings-units-mode">
+              <option value="axidraw" data-i18n="settings.units.mode_axidraw">EBB / AxiDraw (%)</option>
+              <option value="universal" data-i18n="settings.units.mode_universal">Universal (mm/s)</option>
+            </select>
+          </label>
+          <p class="muted param-legend" data-i18n="settings.units.mode_note">EBB / AxiDraw keeps the driver's own scale — 1–110&nbsp;% speed, 1–100&nbsp;% acceleration. Universal shows drawing and travel speed in mm/s, acceleration in mm/s², and the pen lower/raise time in ms: the same plot in objective units any EBB machine shares.</p>
         </div>
       </section>
 
@@ -325,27 +333,48 @@
         <div class="card-section-body">
           <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
           <div class="slider-stack">
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="speed.pendown_label" data-rate="speed_pendown">Drawing speed</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-speed-pendown-slider" min="1" max="110" step="1" value="25" />
+                  <input type="number" id="settings-speed-pendown" min="1" max="110" step="1" value="25" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="speed.penup_label" data-rate="speed_penup">Travel speed</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-speed-penup-slider" min="1" max="110" step="1" value="75" />
+                  <input type="number" id="settings-speed-penup" min="1" max="110" step="1" value="75" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="speed.legend_speeds" data-i18n-universal="speed.legend_speeds_universal">How fast the carriage moves while drawing versus repositioning between strokes. Lower the drawing speed if lines wobble or the pen skips on textured paper; travel speed only trims dead time. Recommended: 25 / 75.</p>
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="speed.accel_label" data-rate="acceleration">Drawing acceleration</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-accel-slider" min="1" max="100" step="1" value="75" />
+                  <input type="number" id="settings-accel" min="1" max="100" step="1" value="75" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="speed.accel_penup_label" data-rate="acceleration_penup">Travel acceleration</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-accel-penup-slider" min="1" max="100" step="1" value="75" />
+                  <input type="number" id="settings-accel-penup" min="1" max="100" step="1" value="75" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="speed.legend_accel" data-i18n-universal="speed.legend_accel_universal">How hard the motors ramp up to speed while drawing versus travelling. High values shorten a plot but can overshoot corners and shake a flexing bed. Recommended: 75 / 75.</p>
             <label class="field slider">
-              <span class="field-label" data-i18n="speed.pendown_label">Pen-down speed (1–110)</span>
+              <span class="field-label" data-i18n="speed.cornering_label">Corner speed</span>
               <div class="slider-row">
-                <input type="range" id="settings-speed-pendown-slider" min="1" max="110" step="1" value="25" />
-                <input type="number" id="settings-speed-pendown" min="1" max="110" step="1" value="25" />
+                <input type="range" id="settings-cornering-slider" min="1" max="100" step="1" value="10" />
+                <input type="number" id="settings-cornering" min="1" max="100" step="1" value="10" />
               </div>
             </label>
-            <label class="field slider">
-              <span class="field-label" data-i18n="speed.penup_label">Pen-up speed (1–110)</span>
-              <div class="slider-row">
-                <input type="range" id="settings-speed-penup-slider" min="1" max="110" step="1" value="75" />
-                <input type="number" id="settings-speed-penup" min="1" max="110" step="1" value="75" />
-              </div>
-            </label>
-            <label class="field slider">
-              <span class="field-label" data-i18n="speed.accel_label">Acceleration (1–100)</span>
-              <div class="slider-row">
-                <input type="range" id="settings-accel-slider" min="1" max="100" step="1" value="75" />
-                <input type="number" id="settings-accel" min="1" max="100" step="1" value="75" />
-              </div>
-            </label>
+            <p class="muted param-legend" data-i18n="speed.legend_cornering">How much the pen slows entering a sharp corner. Raise it when ink pools into blobs at corners; lower it when corners overshoot and round off. Recommended: 10.</p>
           </div>
         </div>
       </section>
@@ -359,20 +388,74 @@
         <div class="card-section-body">
           <p class="muted" data-i18n="settings.defaults_note">Defaults for new jobs. Per-job settings will override these defaults.</p>
           <div class="slider-stack">
-            <label class="field slider">
-              <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (29–85)</span>
-              <div class="slider-row">
-                <input type="range" id="settings-pen-pos-up-slider" min="29" max="85" step="1" value="60" />
-                <input type="number" id="settings-pen-pos-up" min="29" max="85" step="1" value="60" />
-              </div>
-            </label>
-            <label class="field slider">
-              <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (29–85)</span>
-              <div class="slider-row">
-                <input type="range" id="settings-pen-pos-down-slider" min="29" max="85" step="1" value="30" />
-                <input type="number" id="settings-pen-pos-down" min="29" max="85" step="1" value="30" />
-              </div>
-            </label>
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.up_label">Raised height</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-pos-up-slider" min="29" max="85" step="1" value="60" />
+                  <input type="number" id="settings-pen-pos-up" min="29" max="85" step="1" value="60" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.down_label">Lowered height</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-pos-down-slider" min="29" max="85" step="1" value="30" />
+                  <input type="number" id="settings-pen-pos-down" min="29" max="85" step="1" value="30" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="pen_height.legend_positions">Servo position with the pen raised (clearance above the paper) and lowered (nib pressed onto it). Lower the lowered-height value for heavier, darker lines; raise the raised-height value if the pen scuffs the sheet while travelling. Recommended: 60 / 30.</p>
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.min_label">Minimum height</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-pos-min-slider" min="0" max="100" step="1" value="29" />
+                  <input type="number" id="settings-pen-pos-min" min="0" max="100" step="1" value="29" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.max_label">Maximum height</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-pos-max-slider" min="0" max="100" step="1" value="85" />
+                  <input type="number" id="settings-pen-pos-max" min="0" max="100" step="1" value="85" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="pen_height.legend_bounds">The span every pen-height control may reach — here and on each job. Widen it for a tall pen holder or a feather-light touch; keep it snug so the nib can't be driven into the bed. Recommended: 29–85.</p>
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.rate_lower_label" data-rate="pen_rate_lower">Lowering speed</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-rate-lower-slider" min="1" max="100" step="1" value="50" />
+                  <input type="number" id="settings-pen-rate-lower" min="1" max="100" step="1" value="50" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.rate_raise_label" data-rate="pen_rate_raise">Raising speed</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-rate-raise-slider" min="1" max="100" step="1" value="75" />
+                  <input type="number" id="settings-pen-rate-raise" min="1" max="100" step="1" value="75" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="pen_height.legend_rates" data-i18n-universal="pen_height.legend_rates_universal">How fast the servo drops and lifts the pen. A gentle drop plants the nib without splatter; a quick drop cuts the dwell that leaves a starting dot. Recommended: 50 / 75.</p>
+            <div class="slider-pair">
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.delay_down_label">Pause after landing</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-delay-down-slider" min="-500" max="500" step="10" value="0" />
+                  <input type="number" id="settings-pen-delay-down" min="-500" max="500" step="10" value="0" />
+                </div>
+              </label>
+              <label class="field slider">
+                <span class="field-label" data-i18n="pen_height.delay_up_label">Pause after lifting</span>
+                <div class="slider-row">
+                  <input type="range" id="settings-pen-delay-up-slider" min="-500" max="500" step="10" value="0" />
+                  <input type="number" id="settings-pen-delay-up" min="-500" max="500" step="10" value="0" />
+                </div>
+              </label>
+            </div>
+            <p class="muted param-legend" data-i18n="pen_height.legend_delays">Extra pause (ms) after the pen finishes moving before the carriage travels. Add time if the pen smears or ghosts because it moved before settling; go negative to overlap the move and trim the starting dot. Recommended: 0 / 0.</p>
           </div>
         </div>
       </section>
@@ -987,42 +1070,101 @@
                 <span class="card-section-caret" aria-hidden="true">▼</span>
               </header>
               <div class="card-section-body">
-                <div class="slider-stack">
+                <div class="segmented params-tabs">
+                  <button type="button" data-val="basic" class="active" data-i18n="card.tab_basic">Parameters</button>
+                  <button type="button" data-val="advanced" data-i18n="card.tab_advanced">Advanced</button>
+                </div>
+                <p class="muted params-live-note" data-i18n="card.params_live_note">While a plot is running, a change here takes effect from the next segment.</p>
+                <div class="slider-stack params-panel" data-panel="basic">
+                  <div class="slider-pair">
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="speed.pendown_label" data-rate="speed_pendown">Drawing speed</span>
+                      <div class="slider-row">
+                        <input type="range" class="speed-pendown-slider" min="1" max="110" step="1" value="25" />
+                        <input type="number" class="speed-pendown" value="25" min="1" max="110" step="1" />
+                      </div>
+                    </label>
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="speed.penup_label" data-rate="speed_penup">Travel speed</span>
+                      <div class="slider-row">
+                        <input type="range" class="speed-penup-slider" min="1" max="110" step="1" value="75" />
+                        <input type="number" class="speed-penup" value="75" min="1" max="110" step="1" />
+                      </div>
+                    </label>
+                  </div>
+                  <div class="slider-pair">
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="speed.accel_label" data-rate="acceleration">Drawing acceleration</span>
+                      <div class="slider-row">
+                        <input type="range" class="accel-slider" min="1" max="100" step="1" value="75" />
+                        <input type="number" class="accel" value="75" min="1" max="100" step="1" />
+                      </div>
+                    </label>
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="speed.accel_penup_label" data-rate="acceleration_penup">Travel acceleration</span>
+                      <div class="slider-row">
+                        <input type="range" class="accel-penup-slider" min="1" max="100" step="1" value="75" />
+                        <input type="number" class="accel-penup" value="75" min="1" max="100" step="1" />
+                      </div>
+                    </label>
+                  </div>
+                  <div class="slider-pair">
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.up_label">Raised height</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-pos-up-slider" min="29" max="85" step="1" value="60" />
+                        <input type="number" class="pen-pos-up" value="60" min="29" max="85" step="1" />
+                      </div>
+                    </label>
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.down_label">Lowered height</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-pos-down-slider" min="29" max="85" step="1" value="30" />
+                        <input type="number" class="pen-pos-down" value="30" min="29" max="85" step="1" />
+                      </div>
+                    </label>
+                  </div>
+                </div>
+                <div class="slider-stack params-panel" data-panel="advanced" hidden>
                   <label class="field slider">
-                    <span class="field-label" data-i18n="speed.pendown_label">Pen-down speed (1–110)</span>
+                    <span class="field-label" data-i18n="speed.cornering_label">Corner speed</span>
                     <div class="slider-row">
-                      <input type="range" class="speed-pendown-slider" min="1" max="110" step="1" value="25" />
-                      <input type="number" class="speed-pendown" value="25" min="1" max="110" step="1" />
+                      <input type="range" class="cornering-slider" min="1" max="100" step="1" value="10" />
+                      <input type="number" class="cornering" value="10" min="1" max="100" step="1" />
                     </div>
                   </label>
-                  <label class="field slider">
-                    <span class="field-label" data-i18n="speed.penup_label">Pen-up speed (1–110)</span>
-                    <div class="slider-row">
-                      <input type="range" class="speed-penup-slider" min="1" max="110" step="1" value="75" />
-                      <input type="number" class="speed-penup" value="75" min="1" max="110" step="1" />
-                    </div>
-                  </label>
-                  <label class="field slider">
-                    <span class="field-label" data-i18n="speed.accel_label">Acceleration (1–100)</span>
-                    <div class="slider-row">
-                      <input type="range" class="accel-slider" min="1" max="100" step="1" value="75" />
-                      <input type="number" class="accel" value="75" min="1" max="100" step="1" />
-                    </div>
-                  </label>
-                  <label class="field slider">
-                    <span class="field-label" data-i18n="pen_height.up_label">Pen-up height (29–85)</span>
-                    <div class="slider-row">
-                      <input type="range" class="pen-pos-up-slider" min="29" max="85" step="1" value="60" />
-                      <input type="number" class="pen-pos-up" value="60" min="29" max="85" step="1" />
-                    </div>
-                  </label>
-                  <label class="field slider">
-                    <span class="field-label" data-i18n="pen_height.down_label">Pen-down height (29–85)</span>
-                    <div class="slider-row">
-                      <input type="range" class="pen-pos-down-slider" min="29" max="85" step="1" value="30" />
-                      <input type="number" class="pen-pos-down" value="30" min="29" max="85" step="1" />
-                    </div>
-                  </label>
+                  <div class="slider-pair">
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.rate_lower_label" data-rate="pen_rate_lower">Lowering speed</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-rate-lower-slider" min="1" max="100" step="1" value="50" />
+                        <input type="number" class="pen-rate-lower" value="50" min="1" max="100" step="1" />
+                      </div>
+                    </label>
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.rate_raise_label" data-rate="pen_rate_raise">Raising speed</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-rate-raise-slider" min="1" max="100" step="1" value="75" />
+                        <input type="number" class="pen-rate-raise" value="75" min="1" max="100" step="1" />
+                      </div>
+                    </label>
+                  </div>
+                  <div class="slider-pair">
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.delay_down_label">Pause after landing</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-delay-down-slider" min="-500" max="500" step="10" value="0" />
+                        <input type="number" class="pen-delay-down" value="0" min="-500" max="500" step="10" />
+                      </div>
+                    </label>
+                    <label class="field slider">
+                      <span class="field-label" data-i18n="pen_height.delay_up_label">Pause after lifting</span>
+                      <div class="slider-row">
+                        <input type="range" class="pen-delay-up-slider" min="-500" max="500" step="10" value="0" />
+                        <input type="number" class="pen-delay-up" value="0" min="-500" max="500" step="10" />
+                      </div>
+                    </label>
+                  </div>
                 </div>
               </div>
             </section>

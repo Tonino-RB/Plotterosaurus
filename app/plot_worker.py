@@ -505,6 +505,21 @@ def _apply_plot_bounds(ad: axidraw.AxiDraw) -> None:
     setattr(ad.params, y_attr, max(0.0, bed_y_in - max(0.0, motor_y) / 25.4))
 
 
+# pyaxidraw's single `accel` option scales the pen-down (params.accel_rate) and
+# pen-up (params.accel_rate_pu) acceleration rates together, so a separate
+# pen-up acceleration has to drive accel_rate_pu directly. Writing
+# _ACCEL_RATE_PU_BASE * accel_penup / accel makes the effective pen-up
+# acceleration (accel_rate_pu * accel / 100, per axidrawinternal/motion.py)
+# come out at _ACCEL_RATE_PU_BASE * accel_penup / 100 — independent of the
+# pen-down value, and identical to stock when accel_penup == accel. The base is
+# pyaxidraw's own default (axidraw_conf.py: accel_rate_pu = 60.0).
+_ACCEL_RATE_PU_BASE = 60.0
+
+
+def _accel_rate_pu(accel: int, accel_penup: int) -> float:
+    return _ACCEL_RATE_PU_BASE * accel_penup / max(1, accel)
+
+
 class _LiveAdjustAxiDraw(axidraw.AxiDraw):
     """AxiDraw subclass that applies pending live speed/pen-height changes at
     the same per-segment checkpoint the driver already uses for pause
@@ -543,11 +558,33 @@ def _apply_pending_live_settings(ad: axidraw.AxiDraw) -> None:
     if "pen_pos_down" in pending:
         ad.options.pen_pos_down = pending["pen_pos_down"]
         pen_changed = True
+    if "pen_rate_lower" in pending:
+        ad.options.pen_rate_lower = pending["pen_rate_lower"]
+        pen_changed = True
+    if "pen_rate_raise" in pending:
+        ad.options.pen_rate_raise = pending["pen_rate_raise"]
+        pen_changed = True
     if pen_changed:
         try:
             ad.pen.servo_init(ad)
         except Exception:
             log.exception("live settings: servo_init failed")
+    if "pen_delay_down" in pending:
+        ad.options.pen_delay_down = pending["pen_delay_down"]
+    if "pen_delay_up" in pending:
+        ad.options.pen_delay_up = pending["pen_delay_up"]
+    # cornering and accel_rate_pu are ad.params, consumed when plot_run() plans
+    # the stage's trajectory up front — a mid-stage change lands but only bites
+    # from the next stage (same cross-stage limitation set_live_pen_heights
+    # documents). pen_delay_*/pen_rate_* above are read per pen event and apply
+    # within the stage.
+    if "cornering" in pending:
+        ad.params.cornering = pending["cornering"]
+    if "acceleration_penup" in pending or "acceleration" in pending:
+        if "acceleration_penup" in pending:
+            ad.plotoro_accel_penup = pending["acceleration_penup"]
+        ad.params.accel_rate_pu = _accel_rate_pu(
+            ad.options.accel, getattr(ad, "plotoro_accel_penup", ad.options.accel))
 
 
 def _run_stage(current_svg: Path, mode: str, job: dict,
@@ -576,9 +613,24 @@ def _run_stage(current_svg: Path, mode: str, job: dict,
         speeds = stage if stage is not None else {}
         ad.options.speed_pendown = speeds.get("speed_pendown", job["speed_pendown"])
         ad.options.speed_penup = speeds.get("speed_penup", job["speed_penup"])
-        ad.options.accel = speeds.get("acceleration", job["acceleration"])
+        accel = speeds.get("acceleration", job["acceleration"])
+        ad.options.accel = accel
         ad.options.pen_pos_up = job.get("pen_pos_up", config.PEN_POS_UP_DEFAULT)
         ad.options.pen_pos_down = job.get("pen_pos_down", config.PEN_POS_DOWN_DEFAULT)
+        # Corner / pen-timing knobs (see config.py). cornering and accel_rate_pu
+        # are ad.params like the travel bounds above; pen_rate_* / pen_delay_*
+        # are ad.options. A job record from before these fields existed falls
+        # back to the current global default — a stock plot is unchanged.
+        # acceleration_penup falls back to the job's own acceleration so an old
+        # job's pen-up ramps stay exactly as they were.
+        accel_penup = job.get("acceleration_penup", accel)
+        ad.plotoro_accel_penup = accel_penup
+        ad.params.accel_rate_pu = _accel_rate_pu(accel, accel_penup)
+        ad.params.cornering = job.get("cornering", config.CORNERING_DEFAULT)
+        ad.options.pen_rate_lower = job.get("pen_rate_lower", config.PEN_RATE_LOWER_DEFAULT)
+        ad.options.pen_rate_raise = job.get("pen_rate_raise", config.PEN_RATE_RAISE_DEFAULT)
+        ad.options.pen_delay_down = job.get("pen_delay_down", config.PEN_DELAY_DOWN_DEFAULT)
+        ad.options.pen_delay_up = job.get("pen_delay_up", config.PEN_DELAY_UP_DEFAULT)
         _current_ad = ad
         _start_position_poll()
         output_svg = ad.plot_run(output=True)
@@ -625,6 +677,16 @@ def _run_preview(preview_svg_path: Path, job: dict,
         "speed_pendown": job["speed_pendown"],
         "speed_penup": job["speed_penup"],
         "acceleration": job["acceleration"],
+        # pen-timing knobs shift pen-lift time; accel_rate_pu shifts pen-up
+        # travel time. cornering barely moves the estimate but is passed for
+        # exactness. Old job records fall back the same way _run_stage does.
+        "accel_rate_pu": _accel_rate_pu(job["acceleration"],
+                                        job.get("acceleration_penup", job["acceleration"])),
+        "cornering": job.get("cornering", config.CORNERING_DEFAULT),
+        "pen_rate_lower": job.get("pen_rate_lower", config.PEN_RATE_LOWER_DEFAULT),
+        "pen_rate_raise": job.get("pen_rate_raise", config.PEN_RATE_RAISE_DEFAULT),
+        "pen_delay_down": job.get("pen_delay_down", config.PEN_DELAY_DOWN_DEFAULT),
+        "pen_delay_up": job.get("pen_delay_up", config.PEN_DELAY_UP_DEFAULT),
         "travel_params": [x_attr, y_attr],
         "travel_in": [bed_x_in, bed_y_in],
     }
@@ -1449,22 +1511,32 @@ def set_live_pen_heights(pen_pos_up: int | None, pen_pos_down: int | None,
 
 
 def set_live_plot_settings(speed_pendown: int | None = None, speed_penup: int | None = None,
-                           acceleration: int | None = None, pen_pos_up: int | None = None,
-                           pen_pos_down: int | None = None) -> None:
+                           acceleration: int | None = None, acceleration_penup: int | None = None,
+                           cornering: int | None = None, pen_pos_up: int | None = None,
+                           pen_pos_down: int | None = None, pen_rate_lower: int | None = None,
+                           pen_rate_raise: int | None = None, pen_delay_down: int | None = None,
+                           pen_delay_up: int | None = None) -> None:
     """Live-adjust speed/pen-height while a stage is actively plotting. Applied
     at the next pause_check() checkpoint (i.e. the next motion/pen command) —
     see _LiveAdjustAxiDraw. Persists onto the job so the UI reflects it and
     later stages default to it (a per-stage speed override, used for
     layer-encoded speeds in multi-stage jobs, can still take precedence at the
     next stage boundary — same limitation set_live_pen_heights already has for
-    pen height across stages)."""
+    pen height across stages).
+
+    cornering and acceleration_penup drive ad.params values that plot_run()
+    consumes when it plans a stage's trajectory, so a change to those only
+    takes effect from the next stage; the rest apply within the current one."""
     job = state.active_job()
     if job is None or job["status"] != "plotting" or _current_ad is None:
         raise RuntimeError("Plotter is not actively plotting")
     updates = {}
     for key, val in (("speed_pendown", speed_pendown), ("speed_penup", speed_penup),
-                     ("acceleration", acceleration), ("pen_pos_up", pen_pos_up),
-                     ("pen_pos_down", pen_pos_down)):
+                     ("acceleration", acceleration), ("acceleration_penup", acceleration_penup),
+                     ("cornering", cornering), ("pen_pos_up", pen_pos_up),
+                     ("pen_pos_down", pen_pos_down), ("pen_rate_lower", pen_rate_lower),
+                     ("pen_rate_raise", pen_rate_raise), ("pen_delay_down", pen_delay_down),
+                     ("pen_delay_up", pen_delay_up)):
         if val is not None:
             updates[key] = val
     if not updates:
@@ -1474,7 +1546,9 @@ def set_live_plot_settings(speed_pendown: int | None = None, speed_penup: int | 
         _pending_live_settings = {**(_pending_live_settings or {}), **updates}
     state.update_job(job["job_id"], **updates)
 
-    if any(k in updates for k in ("speed_pendown", "speed_penup", "acceleration")):
+    if any(k in updates for k in ("speed_pendown", "speed_penup", "acceleration",
+                                  "acceleration_penup", "cornering", "pen_rate_lower",
+                                  "pen_rate_raise", "pen_delay_down", "pen_delay_up")):
         _schedule_live_estimate_recompute(job["job_id"])
 
 

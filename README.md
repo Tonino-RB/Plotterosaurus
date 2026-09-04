@@ -54,7 +54,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Paper presets (A0–A6, B0–B5, Letter, Legal, Ledger, ANSI C–E, Custom) + orientation
 - The preview canvas is the machine bed (grey, from the active profile), with the job's paper (white) drawn on it at the machine's configured "paper origin" — where the sheet's top-left corner usually sits — and the artwork on the paper
 - 4-sided margins, fit-content-to-page, and a per-job scale / rotation / X-Y offset transform
-- Configurable pen-down / pen-up speed, acceleration and pen height, with optional per-layer overrides
+- Configurable pen-down / pen-up speed, separate pen-down / pen-up acceleration, cornering speed (to curb ink pooling at sharp corners), pen height, servo raise/lower speed and pen-down / pen-up dwell; pen-down / pen-up speed and acceleration also take optional per-layer overrides
 - Optional [vpype](https://vpype.readthedocs.io/) optimization (linemerge / linesimplify / linesort / reloop, plus a minimum-segment-length filter) before plotting; cached per job and reused across re-plots
 - Background pre-optimization and pre-planning queues: uploads are vpype-optimized and time/distance-estimated ahead of time (on upload and on job create/edit), so clicking Plot is usually an instant cache hit rather than a 20–30s wait
 - "Grid" n-up layout: tile one drawing to fill the sheet — pick a copy count (2–64) and the column × row arrangement is derived from the sheet's aspect ratio, each copy scaled to its cell (its whole page, or just the drawn ink), with optional per-side spacing and interior cutting marks as their own reorderable layer. Reversible like Optimize SVG — a cached derivative, tiling the optimized geometry when that is on — and beginner mode only
@@ -68,7 +68,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - UI Pause / Resume / Cancel — cancel returns to origin via `res_home`
 - "Pause at Pen Lift" — a deferred pause that waits for the next pen-up so pump-action pens don't leave a dot mid-stroke
 - "Redraw last (mm)" from a paused plot: rewind the resume point by a chosen distance of pen-down travel and carry on, so a stretch a dry or skipping pen missed is traced again without restarting the job (clamped to the start of the layer currently plotting)
-- Live speed / acceleration / pen-height adjustment while a stage is actively plotting, applied at the next motion checkpoint; a speed/acceleration change also recalibrates the remaining-time estimate in the background so the progress bar stays accurate
+- Live speed / acceleration / cornering / pen-height / pen-timing adjustment while a stage is actively plotting, applied at the next motion checkpoint; most changes also recalibrate the remaining-time estimate in the background so the progress bar stays accurate. Cornering and pen-up acceleration are planned per stage, so a mid-plot change to those takes effect from the next layer
 - Physical pause button toggles: press to pause, press again to resume
 
 **Calibration & alignment**
@@ -101,6 +101,7 @@ I also had a look at [saxi](https://github.com/nornagon/saxi), but it didn't sup
 - Outgoing webhook notifications on layer/job completion — point it at ntfy, Home Assistant, or a Slack/Discord incoming webhook for a push/text/email
 - Multi-language UI (English, German, Spanish, French, Italian, Japanese, Korean, Dutch, Portuguese, Simplified Chinese), auto-detected from the browser, switchable in Settings
 - Configurable display unit (mm / cm / in) for the whole UI
+- Speed & pen units switch (Settings → Language & Display): *EBB / AxiDraw* keeps the driver's 1–110 % / 1–100 % scales; *Universal* shows drawing/travel speed in mm/s, acceleration in mm/s² and pen lower/raise time in ms. Display only — the stored values and the plot are identical either way, and both drive any EBB machine
 - Named machine profiles, each with its own bed size, paper origin, optional paper auto-rotate and axis-skew correction, layered on top of the selected AxiDraw model — clips real travel to the profile's size, never beyond the hardware's own limits
 - Plot worker runs in a thread; preview and vpype optimization run in cancel-killable subprocesses, each behind their own single-worker queue so they never fight each other for CPU on the Pi
 - In-memory preview cache — same SVG + same params skips the ~20–30s planning pass

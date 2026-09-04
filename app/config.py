@@ -94,8 +94,36 @@ _SETTINGS: list[_Setting] = [
     _Setting("speed_pendown_default", int, 25, lambda v: 1 <= v <= 110),
     _Setting("speed_penup_default", int, 75, lambda v: 1 <= v <= 110),
     _Setting("acceleration_default", int, 75, lambda v: 1 <= v <= 100),
-    _Setting("pen_pos_up_default", int, 60, lambda v: 29 <= v <= 85),
-    _Setting("pen_pos_down_default", int, 30, lambda v: 29 <= v <= 85),
+    # Pen-up acceleration, split out from the shared `acceleration` factor:
+    # pyaxidraw's one `accel` option scales the pen-down and pen-up rates
+    # together, so this drives ad.params.accel_rate_pu directly (see
+    # plot_worker._run_stage). Defaults to acceleration_default so an existing
+    # config that only set `acceleration` plots identically.
+    _Setting("acceleration_penup_default", int, 75, lambda v: 1 <= v <= 100),
+    # Cornering speed factor (pyaxidraw ad.params.cornering, raw pass-through).
+    # Higher = the planner rounds a sharp corner more, so the pen keeps more
+    # speed through the junction and dwells less — less ink pooling at corners.
+    _Setting("cornering_default", int, 10, lambda v: 1 <= v <= 100),
+    # User-defined envelope for every pen-height control (Settings sliders, each
+    # job's pen up/down, the pen-change-pause test moves, the public
+    # /queue/pen-height API). Was hard-coded 29–85 everywhere; main.py clamps
+    # against these and rejects a save where min >= max. The 29/85 defaults keep
+    # existing configs plotting identically.
+    _Setting("pen_pos_min", int, 29, lambda v: 0 <= v <= 100),
+    _Setting("pen_pos_max", int, 85, lambda v: 0 <= v <= 100),
+    _Setting("pen_pos_up_default", int, 60, lambda v: 0 <= v <= 100),
+    _Setting("pen_pos_down_default", int, 30, lambda v: 0 <= v <= 100),
+    # Servo raise/lower speed (ad.options.pen_rate_raise / pen_rate_lower). A
+    # faster lower rate spends less time with the nib planted before the first
+    # stroke move — smaller starting dot.
+    _Setting("pen_rate_lower_default", int, 50, lambda v: 1 <= v <= 100),
+    _Setting("pen_rate_raise_default", int, 75, lambda v: 1 <= v <= 100),
+    # Extra dwell (ms) after the pen finishes lowering / raising, before motion
+    # resumes (ad.options.pen_delay_down / pen_delay_up). Negative overlaps the
+    # move with the servo travel — a negative pen_delay_down trims the starting
+    # dot.
+    _Setting("pen_delay_down_default", int, 0, lambda v: -500 <= v <= 500),
+    _Setting("pen_delay_up_default", int, 0, lambda v: -500 <= v <= 500),
     _Setting("optimize_svg_default", bool, True),
     _Setting("optimize_svg_tolerance_default_mm", float, 0.10,
              lambda v: 0.01 <= v <= 10.0),
@@ -120,6 +148,14 @@ _SETTINGS: list[_Setting] = [
     # is not one of the three units falls through to the locale.
     _Setting("display_unit", str, "auto",
              lambda v: v in ("auto", "mm", "cm", "in")),
+    # How the six rate knobs (drawing/travel speed + acceleration, pen
+    # lower/raise rate) are shown and entered. "axidraw" keeps the pyaxidraw
+    # factors (1–110 %% speed, 1–100 %% accel/servo-sweep) unchanged; "universal"
+    # is a display/entry transform to mm/s, mm/s² and ms (see app/rate_units.py).
+    # Stored values are always the AxiDraw factor either way, so plot_worker and
+    # config.json never change and a universal-mode value still drives any EBB.
+    _Setting("units_mode", str, "axidraw",
+             lambda v: v in ("axidraw", "universal")),
     # Last update the user chose to skip. The update banner stays hidden while
     # this equals the latest remote version; a newer release re-shows it.
     _Setting("skipped_version", str, None),

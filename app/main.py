@@ -26,8 +26,8 @@ from lxml import etree
 
 from . import (
     camera, config, export, ink_cache, layer_group, notify, optimize_expert_queue,
-    optimize_queue, placement, plan_queue, plot_worker, state, svg_complexity,
-    svg_optimize, svg_utils, updates, upload_queue, workload,
+    optimize_queue, placement, plan_queue, plot_worker, rate_units, state,
+    svg_complexity, svg_optimize, svg_utils, updates, upload_queue, workload,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1172,8 +1172,14 @@ class JobCreate(_OptimizeCreateFields, _GridCreateFields):
     speed_pendown: int = 25
     speed_penup: int = 75
     acceleration: int = 75
+    acceleration_penup: int = 75
+    cornering: int = 10
     pen_pos_up: int = 60
     pen_pos_down: int = 30
+    pen_rate_lower: int = 50
+    pen_rate_raise: int = 75
+    pen_delay_down: int = 0
+    pen_delay_up: int = 0
     record_plot: bool = False
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
@@ -1219,8 +1225,16 @@ class SettingsUpdate(BaseModel):
     speed_pendown_default: int | None = Field(None, ge=1, le=110)
     speed_penup_default: int | None = Field(None, ge=1, le=110)
     acceleration_default: int | None = Field(None, ge=1, le=100)
-    pen_pos_up_default: int | None = Field(None, ge=29, le=85)
-    pen_pos_down_default: int | None = Field(None, ge=29, le=85)
+    acceleration_penup_default: int | None = Field(None, ge=1, le=100)
+    cornering_default: int | None = Field(None, ge=1, le=100)
+    pen_pos_min: int | None = Field(None, ge=0, le=100)
+    pen_pos_max: int | None = Field(None, ge=0, le=100)
+    pen_pos_up_default: int | None = Field(None, ge=0, le=100)
+    pen_pos_down_default: int | None = Field(None, ge=0, le=100)
+    pen_rate_lower_default: int | None = Field(None, ge=1, le=100)
+    pen_rate_raise_default: int | None = Field(None, ge=1, le=100)
+    pen_delay_down_default: int | None = Field(None, ge=-500, le=500)
+    pen_delay_up_default: int | None = Field(None, ge=-500, le=500)
     optimize_svg_default: bool | None = None
     optimize_svg_tolerance_default_mm: float | None = Field(None, ge=0.01, le=10.0)
     optimize_svg_linemerge_default: bool | None = None
@@ -1231,6 +1245,9 @@ class SettingsUpdate(BaseModel):
     # config.json as a JSON string; _clean_saved_pen_colors normalises it here.
     saved_pen_colors: list[str] | None = None
     display_unit: Literal["auto", "mm", "cm", "in"] | None = None
+    # How the six rate knobs are shown/entered (app/rate_units.py). A pure
+    # display transform — the values in this same PATCH stay AxiDraw factors.
+    units_mode: Literal["axidraw", "universal"] | None = None
     # Replaces the old machine_custom_enabled/machine_width_mm/
     # machine_height_mm/machine_auto_rotate quartet: a bed size is a property
     # of a named machine now, not a global override (see config.MACHINES).
@@ -1283,8 +1300,14 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
     "speed_pendown": (1, 110),
     "speed_penup": (1, 110),
     "acceleration": (1, 100),
-    "pen_pos_up": (29, 85),
-    "pen_pos_down": (29, 85),
+    "acceleration_penup": (1, 100),
+    "cornering": (1, 100),
+    # pen_pos_up / pen_pos_down are clamped in _clamp_job_fields against the
+    # user-configurable config.PEN_POS_MIN / PEN_POS_MAX, not a static row here.
+    "pen_rate_lower": (1, 100),
+    "pen_rate_raise": (1, 100),
+    "pen_delay_down": (-500, 500),
+    "pen_delay_up": (-500, 500),
     "record_timelapse_interval_s": (0.5, 3600.0),
     "record_speed_multiplier": (1.1, 60.0),
     "transform_scale": (0.01, 5.0),
@@ -1306,8 +1329,10 @@ _CLAMP_RANGES: dict[str, tuple[float, float]] = {
 # null), so drop nulls rather than 400 on them: the user emptied a box, they
 # didn't ask to unset the speed.
 _NON_NULLABLE_JOB_FIELDS = frozenset({
-    "speed_pendown", "speed_penup", "acceleration",
+    "speed_pendown", "speed_penup", "acceleration", "acceleration_penup",
+    "cornering",
     "pen_pos_up", "pen_pos_down",
+    "pen_rate_lower", "pen_rate_raise", "pen_delay_down", "pen_delay_up",
     "paper_width_mm", "paper_height_mm",
     "margin_top_mm", "margin_right_mm", "margin_bottom_mm", "margin_left_mm",
     "transform_scale", "transform_rotation_deg",
@@ -1342,6 +1367,10 @@ def _clamp_job_fields(d: dict,
         v = d.get(key)
         if v is not None:
             d[key] = max(lo, min(hi, v))
+    for key in ("pen_pos_up", "pen_pos_down"):
+        v = d.get(key)
+        if v is not None:
+            d[key] = max(config.PEN_POS_MIN, min(config.PEN_POS_MAX, v))
     for k in ("margin_top_mm", "margin_right_mm",
               "margin_bottom_mm", "margin_left_mm"):
         v = d.get(k)
@@ -1391,8 +1420,14 @@ class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     speed_pendown: int | None = None
     speed_penup: int | None = None
     acceleration: int | None = None
+    acceleration_penup: int | None = None
+    cornering: int | None = None
     pen_pos_up: int | None = None
     pen_pos_down: int | None = None
+    pen_rate_lower: int | None = None
+    pen_rate_raise: int | None = None
+    pen_delay_down: int | None = None
+    pen_delay_up: int | None = None
     record_plot: bool | None = None
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
@@ -1774,8 +1809,14 @@ class ApiJobMetadata(_OptimizeOptionalFields, _GridOptionalFields):
     speed_pendown: int | None = None
     speed_penup: int | None = None
     acceleration: int | None = None
+    acceleration_penup: int | None = None
+    cornering: int | None = None
     pen_pos_up: int | None = None
     pen_pos_down: int | None = None
+    pen_rate_lower: int | None = None
+    pen_rate_raise: int | None = None
+    pen_delay_down: int | None = None
+    pen_delay_up: int | None = None
     record_plot: bool | None = None
     record_mode: Literal["realtime", "timelapse", "sped_up"] | None = None
     record_timelapse_interval_s: float | None = None
@@ -1932,8 +1973,14 @@ async def api_create_job(file: UploadFile = File(...),
         "speed_pendown": pick(meta.speed_pendown, config.SPEED_PENDOWN_DEFAULT),
         "speed_penup": pick(meta.speed_penup, config.SPEED_PENUP_DEFAULT),
         "acceleration": pick(meta.acceleration, config.ACCELERATION_DEFAULT),
+        "acceleration_penup": pick(meta.acceleration_penup, config.ACCELERATION_PENUP_DEFAULT),
+        "cornering": pick(meta.cornering, config.CORNERING_DEFAULT),
         "pen_pos_up": pick(meta.pen_pos_up, config.PEN_POS_UP_DEFAULT),
         "pen_pos_down": pick(meta.pen_pos_down, config.PEN_POS_DOWN_DEFAULT),
+        "pen_rate_lower": pick(meta.pen_rate_lower, config.PEN_RATE_LOWER_DEFAULT),
+        "pen_rate_raise": pick(meta.pen_rate_raise, config.PEN_RATE_RAISE_DEFAULT),
+        "pen_delay_down": pick(meta.pen_delay_down, config.PEN_DELAY_DOWN_DEFAULT),
+        "pen_delay_up": pick(meta.pen_delay_up, config.PEN_DELAY_UP_DEFAULT),
         "record_plot": pick(meta.record_plot, config.RECORD_PLOT_DEFAULT),
         "record_mode": pick(meta.record_mode, config.CAMERA_RECORDING_MODE_DEFAULT),
         "record_timelapse_interval_s": pick(meta.record_timelapse_interval_s,
@@ -2355,16 +2402,25 @@ def api_nudge_origin_queue(req: NudgeOriginRequest):
     return nudge_origin_queue(req)
 
 
+def _clamp_pen_pos(v: int | None) -> int | None:
+    """Pull a pen-height value inside the user-configured envelope. Out-of-range
+    is clamped, not rejected — same rationale as _clamp_job_fields."""
+    if v is None:
+        return None
+    return max(config.PEN_POS_MIN, min(config.PEN_POS_MAX, v))
+
+
 class LivePenHeightRequest(BaseModel):
-    pen_pos_up: int | None = Field(None, ge=29, le=85)
-    pen_pos_down: int | None = Field(None, ge=29, le=85)
+    pen_pos_up: int | None = Field(None, ge=0, le=100)
+    pen_pos_down: int | None = Field(None, ge=0, le=100)
     test: Literal["up", "down"]
 
 
 @app.post("/queue/pen-height")
 def live_pen_height_queue(req: LivePenHeightRequest):
     try:
-        plot_worker.set_live_pen_heights(req.pen_pos_up, req.pen_pos_down, req.test)
+        plot_worker.set_live_pen_heights(
+            _clamp_pen_pos(req.pen_pos_up), _clamp_pen_pos(req.pen_pos_down), req.test)
     except RuntimeError as e:
         raise _worker_error(e)
     return {"ok": True}
@@ -2379,14 +2435,23 @@ class LivePlotSettingsRequest(BaseModel):
     speed_pendown: int | None = Field(None, ge=1, le=110)
     speed_penup: int | None = Field(None, ge=1, le=110)
     acceleration: int | None = Field(None, ge=1, le=100)
-    pen_pos_up: int | None = Field(None, ge=29, le=85)
-    pen_pos_down: int | None = Field(None, ge=29, le=85)
+    acceleration_penup: int | None = Field(None, ge=1, le=100)
+    cornering: int | None = Field(None, ge=1, le=100)
+    pen_pos_up: int | None = Field(None, ge=0, le=100)
+    pen_pos_down: int | None = Field(None, ge=0, le=100)
+    pen_rate_lower: int | None = Field(None, ge=1, le=100)
+    pen_rate_raise: int | None = Field(None, ge=1, le=100)
+    pen_delay_down: int | None = Field(None, ge=-500, le=500)
+    pen_delay_up: int | None = Field(None, ge=-500, le=500)
 
 
 @app.post("/queue/live-settings")
 def live_plot_settings_queue(req: LivePlotSettingsRequest):
+    payload = req.model_dump()
+    payload["pen_pos_up"] = _clamp_pen_pos(payload["pen_pos_up"])
+    payload["pen_pos_down"] = _clamp_pen_pos(payload["pen_pos_down"])
     try:
-        plot_worker.set_live_plot_settings(**req.model_dump())
+        plot_worker.set_live_plot_settings(**payload)
     except RuntimeError as e:
         raise _worker_error(e)
     return {"ok": True}
@@ -2706,6 +2771,10 @@ def _settings_payload() -> dict:
         snap["saved_pen_colors"] = _json.loads(config.SAVED_PEN_COLORS or "[]")
     except ValueError:
         snap["saved_pen_colors"] = []
+    # Per-knob {unit, min, max, step, kind, factor} for the rate sliders,
+    # already resolved for units_mode. In "axidraw" mode every entry is the
+    # identity transform, so the frontend runs one code path regardless.
+    snap["unit_specs"] = rate_units.unit_specs(config.UNITS_MODE)
     return snap
 
 
@@ -2728,6 +2797,29 @@ def _clean_saved_pen_colors(colors: list) -> str:
     return _json.dumps(seen[:24])
 
 
+def _apply_pen_pos_bounds(updates: dict) -> None:
+    """Validate a settings PATCH's pen-height envelope in place.
+
+    ``pen_pos_min`` / ``pen_pos_max`` (this PATCH's values, else the ones already
+    stored) must satisfy ``min < max``; a bad pair is a 400 rather than a silent
+    clamp because there's no sensible correction. The pen-up/down defaults are
+    then pulled inside the (possibly new) envelope so the stored defaults can
+    never sit outside what any pen-height control is allowed to reach."""
+    if not any(k in updates for k in
+               ("pen_pos_min", "pen_pos_max", "pen_pos_up_default", "pen_pos_down_default")):
+        return
+    lo = updates.get("pen_pos_min", config.PEN_POS_MIN)
+    hi = updates.get("pen_pos_max", config.PEN_POS_MAX)
+    if lo >= hi:
+        raise _coded(400, "pen_pos_bounds_invalid")
+    for key, current in (("pen_pos_up_default", config.PEN_POS_UP_DEFAULT),
+                         ("pen_pos_down_default", config.PEN_POS_DOWN_DEFAULT)):
+        v = updates.get(key, current)
+        clamped = max(lo, min(hi, v))
+        if clamped != v or key in updates:
+            updates[key] = clamped
+
+
 @app.patch("/settings")
 def patch_settings(req: SettingsUpdate):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
@@ -2735,6 +2827,7 @@ def patch_settings(req: SettingsUpdate):
         raise _coded(400, "no_settings")
     if "saved_pen_colors" in updates:
         updates["saved_pen_colors"] = _clean_saved_pen_colors(updates["saved_pen_colors"])
+    _apply_pen_pos_bounds(updates)
     config.update(**updates)
     if any(k.startswith("camera_") for k in updates):
         camera.apply_camera_settings()

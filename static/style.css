@@ -718,6 +718,20 @@ label.inline-check input[type="checkbox"] { margin: 0; }
   gap: 0.65rem;
   margin-bottom: 0.75rem;
 }
+/* Two directly-related controls side by side; collapses to one column when the
+   container is too narrow (settings modal on a phone, a narrow job card). */
+.slider-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.65rem 1rem;
+}
+/* Explains a group of controls just above it — sits tight under the pair, no
+   big paragraph gap like a stray .muted would give. Settings modal only. */
+.param-legend {
+  margin: -0.15rem 0 0.15rem;
+  line-height: 1.35;
+}
+.params-live-note { margin: 0.1rem 0 0.6rem; }
 .field.slider { flex: 1 1 auto; }
 .field.slider .field-label { margin-bottom: 0.25rem; }
 .slider-row {

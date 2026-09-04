@@ -125,6 +125,9 @@ SAME_AS_ENGLISH_OK = {
     "export.fmt_hpgl": "a format name and its file extension",
     "export.fmt_gcode": "a format name and its file extension",
     "apierror.worker_error": "a bare {detail} placeholder — the server supplies the text",
+    "settings.units.mode_axidraw": "two product names (EBB, AxiDraw) and a "
+                                   "'%' symbol — nothing to translate; the "
+                                   "CJK catalogs localise the parenthesis",
     "camera.recording.mode_timelapse": "a loanword in es/fr/it/nl/pt, and the "
                                        "catalogs that do have a native word "
                                        "(de/ja/ko/zh-Hans) already use it",
