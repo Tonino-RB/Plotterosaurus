@@ -718,6 +718,7 @@ label.inline-check input[type="checkbox"] { margin: 0; }
   gap: 0.65rem;
   margin-bottom: 0.75rem;
 }
+.slider-stack[hidden] { display: none; }
 /* Two directly-related controls side by side; collapses to one column when the
    container is too narrow (settings modal on a phone, a narrow job card). */
 .slider-pair {
