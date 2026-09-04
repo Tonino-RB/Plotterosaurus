@@ -1250,7 +1250,8 @@
                 </div>
 
                 <div class="optimize-expert-panel" hidden>
-                  <p class="muted" data-i18n="optimize.expert_note">Each ticked box runs its vpype command, in order, when you press Execute. Optimization does not run automatically at plot time in this mode — press Execute again after changing a box.</p>
+                  <p class="muted" data-i18n="optimize.expert_note">Each ticked box runs its vpype command, in order, when you press Execute — applied on top of the current result, so Executes stack. Undo steps back through them. Optimization does not run automatically at plot time in this mode.</p>
+                  <p class="warn" data-i18n="optimize.expert_layer_id_hint">Each layer's number in the Layers panel is its vpype layer ID — target a layer with it, e.g. color --layer 2 red, or --layer 2 on any vpype command.</p>
 
                   <div class="optimize-expert-box">
                     <label class="inline-check">
@@ -1276,6 +1277,7 @@
 
                   <div class="optimize-expert-run-row">
                     <button type="button" class="primary optimize-expert-execute" data-i18n="optimize.expert_execute">Execute</button>
+                    <button type="button" class="neutral optimize-expert-undo" data-i18n="optimize.expert_undo" disabled>Undo</button>
                     <span class="optimize-expert-spinner" hidden aria-hidden="true"></span>
                     <span class="optimize-expert-status muted"></span>
                   </div>

@@ -118,9 +118,11 @@ All fields are optional. Unspecified booleans, speeds, and `selected` flags fall
   // "beginner" runs the toggles above automatically before each plot.
   // "expert" instead uses three raw vpype-command boxes below, run manually
   // from the UI ahead of time — plotting does not re-run vpype for an
-  // expert-mode job. The boxes themselves are a UI-only workflow (see
-  // internal `POST /jobs/{id}/optimize-expert/execute`, not part of this
-  // API); these fields just carry their saved state.
+  // expert-mode job. Each Execute stacks onto the previous result; the UI has
+  // an Undo that steps back through them. The boxes themselves are a UI-only
+  // workflow (see internal `POST /jobs/{id}/optimize-expert/execute` and
+  // `.../undo`, not part of this API); these fields just carry their saved
+  // state.
   "optimize_mode":             "beginner",  // "beginner" | "expert"
   "optimize_expert_1_enabled": false,
   "optimize_expert_1_cmd":     "",           // Raw vpype command fragment, e.g. "linesimplify --tolerance 0.1mm"

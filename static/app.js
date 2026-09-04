@@ -1404,6 +1404,7 @@ function createCardForJob(job) {
     });
   }
   card.querySelector(".optimize-expert-execute").addEventListener("click", () => runOptimizeExpert(card));
+  card.querySelector(".optimize-expert-undo").addEventListener("click", () => runOptimizeExpertUndo(card));
   [card.querySelector(".speed-pendown"),
    card.querySelector(".speed-penup"),
    card.querySelector(".accel"),
@@ -1752,6 +1753,7 @@ function updateCard(card, job) {
   }
   renderDeltaOverlay(card, job, geomFootprint);
   updateGridArrangement(card, job);
+  syncOptimizeExpertUndoBtn(card, job);
   if (job.estimated_total_seconds) subParts.push(formatDuration(Math.round(job.estimated_total_seconds)));
   // Surface the SVG-level pre-optimize state on queued cards so the user knows
   // a future "Plot" click won't be instant if their SVG is still in the
@@ -2179,15 +2181,33 @@ function applyOptimizeMode(card, job) {
     gridSection.classList.toggle("disabled", mode === "expert");
     gridSection.querySelectorAll("input").forEach((el) => { el.disabled = mode === "expert"; });
   }
+  syncOptimizeExpertUndoBtn(card, job);
 }
+
+// Expert-mode Execute and Undo both run server-side; while one is in flight
+// for a job its id sits here so a mid-run re-render doesn't re-enable the
+// buttons under it.
+const expertOpInFlight = new Set();
 
 function optimizeExpertUiRefs(card) {
   return {
     btn: card.querySelector(".optimize-expert-execute"),
+    undoBtn: card.querySelector(".optimize-expert-undo"),
     spinner: card.querySelector(".optimize-expert-spinner"),
     statusEl: card.querySelector(".optimize-expert-status"),
     logEl: card.querySelector(".optimize-expert-log"),
   };
+}
+
+// Undo is available whenever the job carries a non-zero optimize_expert_undo_depth
+// (the server's count of stacked Executes) and nothing is currently running for
+// it. Kept in sync from applyOptimizeMode (card build / page reload) and
+// updateCard (live WS updates, including another client's Execute/Undo).
+function syncOptimizeExpertUndoBtn(card, job) {
+  const undoBtn = card.querySelector(".optimize-expert-undo");
+  if (!undoBtn) return;
+  const busy = expertOpInFlight.has(job.job_id);
+  undoBtn.disabled = busy || !(Number(job.optimize_expert_undo_depth) > 0);
 }
 
 function setOptimizeExpertStatus(card, msg, isError) {
@@ -2204,11 +2224,17 @@ function setOptimizeExpertStatus(card, msg, isError) {
 // lives in the server's queue, not the browser, so a reload just needs to
 // start polling again, never to re-POST.
 function pollOptimizeExpertStatus(card) {
-  const { btn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const { btn, undoBtn, spinner, logEl } = optimizeExpertUiRefs(card);
   const finish = (msg, isError) => {
+    expertOpInFlight.delete(card.dataset.id);
     btn.disabled = false;
     spinner.hidden = true;
     setOptimizeExpertStatus(card, msg, isError);
+    // A successful Execute always leaves at least one step to undo; on failure
+    // fall back to whatever depth the job still carries.
+    if (!isError) undoBtn.disabled = false;
+    else syncOptimizeExpertUndoBtn(card,
+      serverState.queue.find((j) => j.job_id === card.dataset.id) || { job_id: card.dataset.id });
   };
   const tick = async () => {
     if (!card.isConnected) return;  // job's card was removed while we polled
@@ -2242,7 +2268,8 @@ function pollOptimizeExpertStatus(card) {
 }
 
 async function runOptimizeExpert(card) {
-  const { btn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const { btn, undoBtn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const id = card.dataset.id;
   const boxes = {};
   for (const n of [1, 2, 3]) {
     boxes[`optimize_expert_${n}_enabled`] = card.querySelector(`.optimize-expert-${n}-enabled`).checked;
@@ -2254,32 +2281,76 @@ async function runOptimizeExpert(card) {
     setOptimizeExpertStatus(card, t("optimize.expert_no_command"), true);
     return;
   }
+  const clearBusy = () => {
+    expertOpInFlight.delete(id);
+    btn.disabled = false;
+    spinner.hidden = true;
+    syncOptimizeExpertUndoBtn(card, serverState.queue.find((j) => j.job_id === id) || { job_id: id });
+  };
+  expertOpInFlight.add(id);
   btn.disabled = true;
+  undoBtn.disabled = true;
   spinner.hidden = false;
   setOptimizeExpertStatus(card, t("optimize.expert_running"), false);
   logEl.hidden = true;
   logEl.textContent = "";
   let res;
   try {
-    res = await fetch(`/jobs/${card.dataset.id}/optimize-expert/execute`, {
+    res = await fetch(`/jobs/${id}/optimize-expert/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(boxes),
     });
   } catch (e) {
-    btn.disabled = false;
-    spinner.hidden = true;
+    clearBusy();
     setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: e.message }), true);
     return;
   }
   if (!res.ok) {
     const msg = await readErr(res);
-    btn.disabled = false;
-    spinner.hidden = true;
+    clearBusy();
     setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: msg }), true);
     return;
   }
   pollOptimizeExpertStatus(card);
+}
+
+async function runOptimizeExpertUndo(card) {
+  const { btn, undoBtn, spinner, logEl } = optimizeExpertUiRefs(card);
+  const id = card.dataset.id;
+  expertOpInFlight.add(id);
+  btn.disabled = true;
+  undoBtn.disabled = true;
+  spinner.hidden = false;
+  setOptimizeExpertStatus(card, t("optimize.expert_running"), false);
+  let newDepth = null;
+  try {
+    let res;
+    try {
+      res = await fetch(`/jobs/${id}/optimize-expert/undo`, { method: "POST" });
+    } catch (e) {
+      setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: e.message }), true);
+      return;
+    }
+    if (!res.ok) {
+      setOptimizeExpertStatus(card, t("optimize.expert_could_not_start", { message: await readErr(res) }), true);
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    if (typeof body.undo_depth === "number") newDepth = body.undo_depth;
+    setOptimizeExpertStatus(card, t("optimize.expert_undone"), false);
+    logEl.hidden = true;
+    logEl.textContent = "";
+    const fresh = serverState.queue.find((j) => j.job_id === id);
+    if (fresh) reloadCardSvg(card, fresh);
+  } finally {
+    expertOpInFlight.delete(id);
+    spinner.hidden = true;
+    btn.disabled = false;
+    syncOptimizeExpertUndoBtn(card, newDepth !== null
+      ? { job_id: id, optimize_expert_undo_depth: newDepth }
+      : (serverState.queue.find((j) => j.job_id === id) || { job_id: id }));
+  }
 }
 
 // Called once at card creation. A run started before a page reload keeps
@@ -2292,8 +2363,10 @@ async function resumeOptimizeExpertStatus(card, job) {
     if (!r.ok) return;
     const d = await r.json();
     if (d.status === "running") {
-      const { btn, spinner } = optimizeExpertUiRefs(card);
+      const { btn, undoBtn, spinner } = optimizeExpertUiRefs(card);
+      expertOpInFlight.add(card.dataset.id);
       btn.disabled = true;
+      undoBtn.disabled = true;
       spinner.hidden = false;
       setOptimizeExpertStatus(card, t("optimize.expert_running"), false);
       pollOptimizeExpertStatus(card);

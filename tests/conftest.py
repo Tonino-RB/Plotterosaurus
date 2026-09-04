@@ -237,7 +237,7 @@ _JOB_DEFAULTS = {
     "transform_rotation_deg": 0.0,
     "transform_offset_x_mm": 0.0, "transform_offset_y_mm": 0.0,
     "speed_pendown": 25, "speed_penup": 75, "acceleration": 75,
-    "optimize_svg": False,
+    "optimize_svg": False, "optimize_expert_undo_depth": 0,
     "grid_enabled": False, "grid_copies": 4,
     "grid_spacing_x_mm": 0.0, "grid_spacing_y_mm": 0.0,
     "grid_spacing_linked": True, "grid_cut_marks": False,

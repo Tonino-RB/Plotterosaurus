@@ -10,12 +10,15 @@ the plotter itself for CPU — see that module's docstring for why.
 
 Progress is exposed as a capped in-memory line buffer per job (the UI polls
 GET /jobs/{id}/optimize-expert/status), since vpype gives no numeric percent
-— only its own stdout/stderr as it runs. Always reads from the job's raw
-upload, never a previous expert-mode output: re-running Execute means
-re-applying the (possibly just-edited) three boxes to the pristine source,
-not compounding transformations onto the last result.
+— only its own stdout/stderr as it runs. Execute stacks: each run applies the
+three boxes on top of the current .opt.svg (the raw upload only for the very
+first run), snapshotting the previous result to {svg_id}.opt.undo.{n}.svg so
+undo_last() can step back one Execute at a time. optimize_expert_undo_depth on
+the job record counts how many steps remain.
 """
 import logging
+import os
+import shutil
 import threading
 from pathlib import Path
 
@@ -153,7 +156,85 @@ def forget(job_id: str) -> None:
         _last.pop(job_id, None)
 
 
+def undo_last(job_id: str, svg_id: str, raw_path: Path) -> int | None:
+    """Step ``{svg_id}.opt.svg`` back one Execute. Returns the new undo depth,
+    or ``None`` when there is nothing to undo.
+
+    Synchronous — pure file moves. The caller (main) has already refused this
+    while a run for the job is in flight, and the single worker guarantees no
+    Execute is touching these files concurrently.
+    """
+    job = state.get_job(job_id)
+    if job is None:
+        return None
+    depth = int(job.get("optimize_expert_undo_depth", 0) or 0)
+    if depth <= 0:
+        return None
+
+    folder = raw_path.parent
+    opt_path = folder / f"{svg_id}.opt.svg"
+    if depth == 1:
+        opt_path.unlink(missing_ok=True)             # back to the raw upload
+        new_depth = 0
+    else:
+        snap = _undo_snapshot(folder, svg_id, depth)
+        if snap.exists():
+            os.replace(snap, opt_path)               # restore + consume the snapshot
+            new_depth = depth - 1
+        else:
+            log.warning("optimize_expert_queue: undo snapshot %s missing; "
+                        "reverting job %s to the raw upload", snap.name, job_id)
+            opt_path.unlink(missing_ok=True)
+            _clear_snapshots(folder, svg_id)
+            new_depth = 0
+
+    _invalidate_estimate(job_id, optimize_expert_undo_depth=new_depth)
+    return new_depth
+
+
 # Internals ---------------------------------------------------------------
+
+def _undo_snapshot(folder: Path, svg_id: str, level: int) -> Path:
+    """The file holding the ``.opt.svg`` bytes to restore when undoing *from*
+    ``level`` (i.e. back to ``level - 1``). Level 1 has none — undoing it just
+    removes ``.opt.svg`` and the raw upload shows through again."""
+    return folder / f"{svg_id}.opt.undo.{level}.svg"
+
+
+def _clear_snapshots(folder: Path, svg_id: str) -> None:
+    for p in folder.glob(f"{svg_id}.opt.undo.*.svg"):
+        p.unlink(missing_ok=True)
+
+
+def _invalidate_estimate(job_id: str, **extra_fields) -> None:
+    """Drop the job's on-record time/distance estimate and re-queue it.
+
+    An expert transform (Execute or Undo) can change geometry/distances
+    arbitrarily, so the estimate from before is stale — same reasoning as
+    api.update_job dropping it on any edit. Preview/layers already refresh from
+    the new .opt.svg once the frontend sees the run as done; the estimate needs
+    the same nudge or it'd keep showing the pre-transform numbers until some
+    unrelated edit happened to touch it. ``extra_fields`` rides along on the
+    same write (the caller's new optimize_expert_undo_depth)."""
+    try:
+        plan_queue.cancel(job_id)
+        state.update_job(
+            job_id,
+            estimated_total_seconds=None,
+            progress_total_seconds=None,
+            distance_pendown_m=None,
+            distance_total_m=None,
+            pen_lifts=None,
+            plan_status=None,
+            plan_error=None,
+            **extra_fields,
+        )
+        fresh = state.get_job(job_id)
+        if fresh is not None:
+            plan_queue.enqueue(fresh)
+    except Exception:
+        log.exception("optimize_expert_queue: failed to refresh estimate for job %s", job_id)
+
 
 def _loop() -> None:
     global _inflight
@@ -203,23 +284,49 @@ def _process(task: _Task) -> None:
     # beginner-mode optimize (see svg_utils.prepare_for_vpype).
     svg_utils.prepare_for_vpype(task.src_path)
 
-    opt_path = task.src_path.with_name(f"{task.svg_id}.opt.svg")
+    folder = task.src_path.parent
+    opt_path = folder / f"{task.svg_id}.opt.svg"
+
+    # Execute stacks onto the current result. ``level`` is how many Executes
+    # are already baked into .opt.svg; if the file is gone (its library row was
+    # deleted out from under the job) the stack is meaningless — start over
+    # from the raw upload.
+    job = state.get_job(task.job_id)
+    level = int((job or {}).get("optimize_expert_undo_depth", 0) or 0)
+    if not opt_path.exists():
+        _clear_snapshots(folder, task.svg_id)
+        level = 0
+
+    made_snapshot = opt_path.exists()
+    snap_path = _undo_snapshot(folder, task.svg_id, level + 1) if made_snapshot else None
+    if snap_path is not None:
+        try:
+            shutil.copyfile(opt_path, snap_path)
+        except OSError:
+            log.exception("optimize_expert_queue: could not snapshot %s for undo", opt_path)
+            snap_path = None
+            made_snapshot = False
+
+    def _rollback() -> None:
+        """Put .opt.svg back to ``level`` after a failed/cancelled Execute."""
+        if snap_path is not None and snap_path.exists():
+            os.replace(snap_path, opt_path)         # restore + consume the snapshot
+        elif snap_path is None:
+            opt_path.unlink(missing_ok=True)        # level 0 -> raw shows through
+
+    src = opt_path if made_snapshot else task.src_path
     try:
         # One heavy job at a time across all background subsystems
         # (app/workload.py) — never runs alongside a beginner-mode optimize,
         # a plan estimate, or the ink cache.
         with workload.heavy("optimize-expert"):
             svg_optimize.run_custom_pipeline(
-                task.src_path, opt_path, task.box_texts,
+                src, opt_path, task.box_texts,
                 on_output=task.append_log,
                 timeout_s=config.OPTIMIZE_EXPERT_TIMEOUT_S,
             )
     except svg_optimize.OptimizeError as e:
-        if opt_path.exists():
-            try:
-                opt_path.unlink()
-            except OSError:
-                pass
+        _rollback()
         if task.cancel_event.is_set():
             task.ok = False
             task.error = "cancelled"
@@ -229,13 +336,9 @@ def _process(task: _Task) -> None:
         return
 
     if task.cancel_event.is_set():
-        # Cancelled mid-write but vpype somehow returned 0 anyway — discard
-        # the output to avoid leaving a half-meaningful file behind.
-        if opt_path.exists():
-            try:
-                opt_path.unlink()
-            except OSError:
-                pass
+        # Cancelled mid-write but vpype somehow returned 0 anyway — drop the
+        # output and put the previous level back.
+        _rollback()
         task.ok = False
         task.error = "cancelled"
         return
@@ -246,33 +349,10 @@ def _process(task: _Task) -> None:
         svg_utils.reconcile_layers(task.src_path, opt_path)
     except Exception:
         log.exception("optimize_expert_queue: layer reconcile failed for job %s", task.job_id)
-        opt_path.unlink(missing_ok=True)
+        _rollback()
         task.ok = False
         task.error = "could not re-align layers after optimization"
         return
 
     task.ok = True
-
-    # The vpype transform can change geometry/distances arbitrarily, so the
-    # job's on-record estimate (from before Execute) is now stale — same
-    # reasoning as api.update_job dropping it on any edit. Preview/layers
-    # already refresh from the new .opt.svg once the frontend sees this task
-    # as done; the estimate needs the same nudge or it'd keep showing the
-    # pre-transform numbers until some unrelated edit happened to touch it.
-    try:
-        plan_queue.cancel(task.job_id)
-        state.update_job(
-            task.job_id,
-            estimated_total_seconds=None,
-            progress_total_seconds=None,
-            distance_pendown_m=None,
-            distance_total_m=None,
-            pen_lifts=None,
-            plan_status=None,
-            plan_error=None,
-        )
-        fresh = state.get_job(task.job_id)
-        if fresh is not None:
-            plan_queue.enqueue(fresh)
-    except Exception:
-        log.exception("optimize_expert_queue: failed to refresh estimate for job %s", task.job_id)
+    _invalidate_estimate(task.job_id, optimize_expert_undo_depth=level + 1)

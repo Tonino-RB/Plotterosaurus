@@ -1567,9 +1567,11 @@ def _persist_expert_defaults(updates: dict) -> None:
 
 @app.post("/jobs/{job_id}/optimize-expert/execute")
 def optimize_expert_execute(job_id: str, req: OptimizeExpertExecute):
-    """Run the expert-mode pipeline now, ahead of plotting (see
-    plot_worker._run_optimize_phase — an expert-mode job's plot never re-runs
-    vpype; this is the only thing that produces/refreshes its .opt.svg)."""
+    """Run the expert-mode pipeline now, ahead of plotting. It stacks onto the
+    current .opt.svg (see optimize_expert_queue._process); POST
+    .../optimize-expert/undo steps it back. An expert-mode job's plot never
+    re-runs vpype — Execute and Undo are the only things that touch its
+    .opt.svg (see plot_worker._run_optimize_phase)."""
     j = state.get_job(job_id)
     if j is None:
         raise _coded(404, "job_not_found")
@@ -1604,6 +1606,26 @@ def optimize_expert_status(job_id: str):
     if j is None:
         raise _coded(404, "job_not_found")
     return optimize_expert_queue.get_status(job_id)
+
+
+@app.post("/jobs/{job_id}/optimize-expert/undo")
+def optimize_expert_undo(job_id: str):
+    """Step the expert-mode .opt.svg back one Execute (see
+    optimize_expert_queue.undo_last). Multi-level: repeat to walk back to the
+    raw upload."""
+    j = state.get_job(job_id)
+    if j is None:
+        raise _coded(404, "job_not_found")
+    if j["status"] not in ("ready", "completed", "failed", "cancelled"):
+        raise _coded(409, "cannot_edit_active")
+    if optimize_expert_queue.get_status(job_id)["status"] == "running":
+        raise _coded(409, "optimize_running")
+    new_depth = optimize_expert_queue.undo_last(
+        job_id, j["svg_id"], UPLOAD_DIR / f"{j['svg_id']}.svg",
+    )
+    if new_depth is None:
+        raise _coded(400, "nothing_to_undo")
+    return {"ok": True, "undo_depth": new_depth}
 
 
 def delete_svg_files(svg_id: str | None) -> None:
