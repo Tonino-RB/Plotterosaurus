@@ -510,7 +510,9 @@
   "layer_mode.group": "Gruppi",
   "layer_mode.pen": "Spessore penna",
   "layer_mode.note": "Scegli come suddividere il disegno in righe e fasi di cambio penna.",
-  "a11y.rename_layer": "Doppio clic per rinominare",
+  "a11y.rename_layer": "Clic per rinominare",
+  "a11y.toggle_layer": "Includi {name} nel tracciato",
+  "layer_mode.switch_confirm": "Cambiare la modalità livelli? Questa modalità mantiene il proprio elenco di livelli: nomi, ordine, colori e spessori attuali restano salvati e tornano quando passi di nuovo a questa modalità.",
   "optimize.expert_layer_id_hint": "Il numero di ogni livello nel pannello Livelli è il suo ID livello di vpype: usalo per selezionare un livello, ad es. color --layer 2 red, o --layer 2 in qualsiasi comando vpype.",
   "apierror.regroup_failed": "Impossibile raggruppare di nuovo il disegno: {reason}"
 }

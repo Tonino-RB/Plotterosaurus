@@ -510,7 +510,9 @@
   "layer_mode.group": "Grupos",
   "layer_mode.pen": "Grosor de pluma",
   "layer_mode.note": "Elige cómo se divide el dibujo en filas y etapas de cambio de pluma.",
-  "a11y.rename_layer": "Doble clic para renombrar",
+  "a11y.rename_layer": "Clic para renombrar",
+  "a11y.toggle_layer": "Incluir {name} en el trazado",
+  "layer_mode.switch_confirm": "¿Cambiar el modo de capas? Este modo mantiene su propia lista de capas: tus nombres, orden, colores y anchos actuales se guardan y vuelven cuando cambies de nuevo a este modo.",
   "optimize.expert_layer_id_hint": "El número de cada capa en el panel Capas es su ID de capa de vpype: úsalo para seleccionar una capa, p. ej. color --layer 2 red, o --layer 2 en cualquier comando de vpype.",
   "apierror.regroup_failed": "No se pudo reagrupar este dibujo: {reason}"
 }

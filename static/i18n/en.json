@@ -510,7 +510,9 @@
   "layer_mode.group": "Groups",
   "layer_mode.pen": "Pen width",
   "layer_mode.note": "Choose how the drawing is split into rows and pen-change stages.",
-  "a11y.rename_layer": "Double-click to rename",
+  "a11y.rename_layer": "Click to rename",
+  "a11y.toggle_layer": "Include {name} in the plot",
+  "layer_mode.switch_confirm": "Switch layer mode? This mode keeps its own layer list — your current names, order, colours and widths stay saved and come back when you switch to this mode again.",
   "optimize.expert_layer_id_hint": "Each layer's number in the Layers panel is its vpype layer ID — target a layer with it, e.g. color --layer 2 red, or --layer 2 on any vpype command.",
   "apierror.regroup_failed": "Couldn't regroup this drawing: {reason}"
 }

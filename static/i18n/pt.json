@@ -510,7 +510,9 @@
   "layer_mode.group": "Grupos",
   "layer_mode.pen": "Espessura da caneta",
   "layer_mode.note": "Escolha como o desenho é dividido em linhas e etapas de troca de caneta.",
-  "a11y.rename_layer": "Clique duas vezes para renomear",
+  "a11y.rename_layer": "Clique para renomear",
+  "a11y.toggle_layer": "Incluir {name} no traçado",
+  "layer_mode.switch_confirm": "Mudar o modo de camadas? Este modo mantém a sua própria lista de camadas — os seus nomes, ordem, cores e larguras atuais ficam guardados e voltam quando mudar novamente para este modo.",
   "optimize.expert_layer_id_hint": "O número de cada camada no painel Camadas é o seu ID de camada do vpype — use-o para selecionar uma camada, por ex. color --layer 2 red, ou --layer 2 em qualquer comando do vpype.",
   "apierror.regroup_failed": "Não foi possível reagrupar este desenho: {reason}"
 }

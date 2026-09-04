@@ -3,7 +3,8 @@
 
 ``svg_utils.apply_layer_styles`` is the writer; ``_effective_svg_path`` is where
 the styled file enters every downstream consumer (preview, plot, export). PATCH
-/jobs/{id} carries the overrides and drops them on a ``layer_mode`` switch.
+/jobs/{id} carries the overrides; a ``layer_mode`` switch drops them unless the
+client carries a parked per-mode snapshot back in the same PATCH.
 """
 from pathlib import Path
 
@@ -204,6 +205,44 @@ def test_layer_mode_switch_clears_layer_styles(client, job):
     r = client.patch(f"/jobs/{job['job_id']}", json={"layer_mode": "group"})
     assert r.status_code == 200
     assert r.json()["layer_styles"] == []
+
+
+def test_layer_mode_switch_keeps_a_carried_snapshot(client, job):
+    # The UI carries the parked mode's selections + styles back in the switch
+    # PATCH; every index still names a layer, so they survive verbatim.
+    snap_sel = [{"index": 1, "label": "renamed"}, {"index": 0, "label": "A"}]
+    snap_sty = [{"index": 0, "stroke": "#ff0000", "stroke_width_mm": 0.4}]
+    r = client.patch(f"/jobs/{job['job_id']}", json={
+        "layer_mode": "group",
+        "layer_selections": snap_sel,
+        "layer_styles": snap_sty,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert [(s["index"], s["label"]) for s in body["layer_selections"]] == [(1, "renamed"), (0, "A")]
+    assert body["layer_styles"] == snap_sty
+
+
+def test_layer_mode_switch_drops_a_stale_snapshot(client, job):
+    # A snapshot whose indices don't match the re-partitioned copy is discarded
+    # and the rows rebuilt fresh, with no leftover overrides.
+    r = client.patch(f"/jobs/{job['job_id']}", json={
+        "layer_mode": "group",
+        "layer_selections": [{"index": 99, "label": "gone"}],
+        "layer_styles": [{"index": 99, "stroke": "#ff0000"}],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(s["index"] for s in body["layer_selections"]) == [0, 1]
+    assert body["layer_styles"] == []
+
+
+def test_layer_mode_state_round_trips(client, job):
+    parked = {"pen": {"layer_selections": [{"index": 0, "label": "A"}], "layer_styles": []}}
+    r = client.patch(f"/jobs/{job['job_id']}", json={"layer_mode_state": parked})
+    assert r.status_code == 200
+    assert r.json()["layer_mode_state"] == parked
+    assert state.get_job(job["job_id"])["layer_mode_state"] == parked
 
 
 def test_save_as_svg_bakes_in_the_overrides(client, job):

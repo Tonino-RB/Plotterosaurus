@@ -510,7 +510,9 @@
   "layer_mode.group": "Groepen",
   "layer_mode.pen": "Penbreedte",
   "layer_mode.note": "Kies hoe de tekening wordt opgesplitst in rijen en penwissel-fasen.",
-  "a11y.rename_layer": "Dubbelklik om te hernoemen",
+  "a11y.rename_layer": "Klik om te hernoemen",
+  "a11y.toggle_layer": "{name} opnemen in de plot",
+  "layer_mode.switch_confirm": "Laagmodus wisselen? Deze modus houdt zijn eigen lagenlijst — je huidige namen, volgorde, kleuren en breedtes blijven bewaard en komen terug wanneer je weer naar deze modus wisselt.",
   "optimize.expert_layer_id_hint": "Het nummer van elke laag in het paneel Lagen is de vpype-laag-ID — gebruik het om een laag te selecteren, bijv. color --layer 2 red, of --layer 2 bij elke vpype-opdracht.",
   "apierror.regroup_failed": "Kan deze tekening niet hergroeperen: {reason}"
 }

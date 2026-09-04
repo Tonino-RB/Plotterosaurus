@@ -1384,11 +1384,38 @@ function createCardForJob(job) {
   // Layer grouping mode: server re-partitions the drawing and rebuilds the
   // rows; the broadcast re-renders. Sent on its own so the whole form isn't
   // re-read (a mode switch already invalidates the estimate server-side).
+  // Each mode keeps its own layer list — the outgoing mode's selections +
+  // style overrides are parked in job.layer_mode_state[mode] and restored when
+  // that mode is picked again. Only the top-level active fields ever plot.
   card.querySelector(".layer-mode").querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.classList.contains("active")) return;
-      setSegmentedValue(card.querySelector(".layer-mode"), btn.dataset.val);
-      queueCardUpdate(card, { layer_mode: btn.dataset.val });
+      const newMode = btn.dataset.val;
+      const cur = serverState.queue.find((j) => j.job_id === card.dataset.id);
+      if (!cur) return;
+      const ctx = cardCtx.get(card.dataset.id);
+      const oldMode = cur.layer_mode || "layer";   // from state, before setSegmentedValue moves .active
+      const modeState = { ...(cur.layer_mode_state || {}) };
+      // Heads-up only the first time an edited mode is parked — after that a
+      // switch is silent and lossless.
+      if (!modeState[oldMode] && layerModeHasEdits(cur, ctx)
+          && !confirm(t("layer_mode.switch_confirm"))) return;
+      modeState[oldMode] = {
+        layer_selections: (cur.layer_selections || []).map((s) => ({ ...s })),
+        layer_styles: (cur.layer_styles || []).map((s) => ({ ...s })),
+      };
+      const explicit = { layer_mode: newMode, layer_mode_state: modeState };
+      const saved = modeState[newMode];
+      if (saved) {
+        explicit.layer_selections = saved.layer_selections;
+        explicit.layer_styles = saved.layer_styles;
+        cur.layer_selections = saved.layer_selections;   // optimistic, like moveLayer()
+        cur.layer_styles = saved.layer_styles;
+      }
+      cur.layer_mode = newMode;
+      cur.layer_mode_state = modeState;
+      setSegmentedValue(card.querySelector(".layer-mode"), newMode);
+      queueCardUpdate(card, explicit);
     });
   });
   for (const n of [1, 2, 3]) {
@@ -1796,7 +1823,10 @@ function updateCard(card, job) {
     // Per-layer colour / width overrides render into a {svg_id}.styled.svg the
     // server serves on top of whichever file the above resolves to, so the
     // preview must refetch when they change too.
-    const effectiveKey = effectiveKind +
+    // Prefix svg_id so a layer-mode regroup (which re-points job.svg_id to a
+    // cached partitioned copy, without touching optimize/grid state) still
+    // registers as an effective-SVG change and reloads the preview + svg-meta.
+    const effectiveKey = `${job.svg_id}|${effectiveKind}` +
       ((job.layer_styles && job.layer_styles.length)
         ? `+styled:${JSON.stringify(job.layer_styles)}` : "");
     if (settled && ctx.previewEffectiveKind !== effectiveKey) {
@@ -2744,6 +2774,21 @@ function syncPreviewLayers(card, job) {
   groups.forEach((g, i) => { g.style.display = selected.has(i) ? "" : "none"; });
 }
 
+// True when the active layer_mode carries per-layer edits worth a heads-up
+// before it goes dormant on a mode switch. cut_marks rows are grid-managed and
+// regenerated after the switch, so they don't count.
+function layerModeHasEdits(job, ctx) {
+  const sels = (job.layer_selections || []).filter((s) => !s.cut_marks);
+  if ((job.layer_styles || []).length) return true;
+  if (sels.some((s) => s.selected === false)) return true;
+  if (sels.some((s) => s.speed_pendown != null || s.speed_penup != null || s.acceleration != null)) return true;
+  const layers = ctx && ctx.svg && ctx.svg.layers;
+  if (!layers) return false;
+  if (sels.map((s) => s.index).join(",") !== layers.map((l) => l.index).join(",")) return true;
+  const byIndex = new Map(layers.map((l) => [l.index, l.label]));
+  return sels.some((s) => s.label && byIndex.has(s.index) && s.label !== byIndex.get(s.index));
+}
+
 function renderLayers(card, job) {
   const ctx = cardCtx.get(job.job_id);
   if (!ctx || !ctx.svg) return;
@@ -2784,8 +2829,7 @@ function renderLayers(card, job) {
     );
     const estSecs = layerEstimateSeconds(job, ctx, sel.index);
     // The id vpype assigns this layer — shown so an Expert-mode command can
-    // target the row with `--layer N` / `lmove`. Outside the <label> so a click
-    // on the number doesn't toggle the checkbox.
+    // target the row with `--layer N` / `lmove`.
     const vpypeId = layer && layer.vpype_id != null ? layer.vpype_id : "";
     // Stroke width box, in mm: the stored override, else what the artwork
     // currently carries (ensureSvgColors), else blank.
@@ -2795,17 +2839,15 @@ function renderLayers(card, job) {
     const widthVal = widthMm != null ? Math.round(widthMm * 1000) / 1000 : "";
     li.innerHTML = `
       <span class="layer-vpype-id" title="${t("a11y.layer_vpype_id")}" data-i18n-title="a11y.layer_vpype_id">${escapeHtml(String(vpypeId))}</span>
-      <label>
-        <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} />
-        <button type="button" class="layer-swatch-btn" data-index="${sel.index}" title="${t("a11y.edit_layer_color")}" data-i18n-title="a11y.edit_layer_color">${swatch}</button>
-        <span class="layer-label" title="${t("a11y.rename_layer")}" data-i18n-title="a11y.rename_layer">${escapeHtml(displayLabel)}${
-          penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
-        }</span>
-      </label>
+      <input type="checkbox" data-index="${sel.index}" ${checked ? "checked" : ""} aria-label="${escapeHtml(t("a11y.toggle_layer", { name: displayLabel }))}" />
+      <button type="button" class="layer-swatch-btn" data-index="${sel.index}" title="${t("a11y.edit_layer_color")}" data-i18n-title="a11y.edit_layer_color">${swatch}</button>
       <span class="layer-stroke-width-wrap" title="${t("a11y.layer_stroke_width")}" data-i18n-title="a11y.layer_stroke_width">
         <input type="number" class="layer-stroke-width" data-index="${sel.index}" min="0" step="0.05" inputmode="decimal" value="${widthVal}" aria-label="${t("a11y.layer_stroke_width")}" />
         <span class="layer-sw-unit">mm</span>
       </span>
+      <span class="layer-label" title="${t("a11y.rename_layer")}" data-i18n-title="a11y.rename_layer">${escapeHtml(displayLabel)}${
+        penName ? `<span class="layer-pen">${escapeHtml(penName)}</span>` : ""
+      }</span>
       ${estSecs != null ? `<span class="layer-time">${escapeHtml(formatHoursMinutes(estSecs))}</span>` : ""}
       <div class="layer-move">
         <button type="button" class="icon-btn layer-move-up" data-index="${sel.index}" ${i === 0 ? "disabled" : ""} title="${t("a11y.move_up")}" data-i18n-title="a11y.move_up">↑</button>
@@ -2882,9 +2924,12 @@ function renderLayers(card, job) {
       const delta = btn.classList.contains("layer-move-up") ? -1 : 1;
       moveLayer(card, parseInt(btn.dataset.index), delta);
     });
-    // Double-click a row's name to rename it. Display-only: label lives on the
-    // layer_selections entry and just re-labels the row / its plot stage.
-    ul.addEventListener("dblclick", (e) => {
+    // Click a row's name to rename it (the checkbox is the only toggle now).
+    // Display-only: label lives on the layer_selections entry and just
+    // re-labels the row / its plot stage. Separate from the swatch/move click
+    // listener above — each no-ops on the other's targets; the second click of
+    // a physical double-click is swallowed by the .layer-label-edit guard.
+    ul.addEventListener("click", (e) => {
       const span = e.target.closest(".layer-label");
       if (!span || ul.querySelector(".layer-label-edit")) return;
       e.preventDefault();

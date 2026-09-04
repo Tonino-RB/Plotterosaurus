@@ -485,8 +485,7 @@ h2 { font-size: 1rem; margin: 0 0 0.5rem 0; color: var(--text-soft); }
 .layers { list-style: none; padding: 0; margin: 0 0 1rem 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
 .layers li { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-soft); }
 .layers li:last-child { border-bottom: none; }
-.layers label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; flex: 1; min-width: 0; }
-.layer-label { flex: 1; }
+.layer-label { flex: 1; min-width: 0; cursor: text; }
 .layer-label-edit { flex: 1; min-width: 0; font: inherit; padding: 0.1rem 0.3rem;
   border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
 .layer-mode { margin-bottom: 0.5rem; }

@@ -510,7 +510,9 @@
   "layer_mode.group": "グループ",
   "layer_mode.pen": "ペン幅",
   "layer_mode.note": "図を行とペン交換ステージにどう分割するかを選びます。",
-  "a11y.rename_layer": "ダブルクリックで名前を変更",
+  "a11y.rename_layer": "クリックで名前を変更",
+  "a11y.toggle_layer": "{name} をプロットに含める",
+  "layer_mode.switch_confirm": "レイヤーモードを切り替えますか？ このモードは独自のレイヤーリストを保持します。現在の名前・順序・色・線幅は保存され、このモードに戻ると復元されます。",
   "optimize.expert_layer_id_hint": "レイヤーパネルの各レイヤーの番号は vpype のレイヤー ID です。これでレイヤーを指定します。例: color --layer 2 red、または任意の vpype コマンドで --layer 2。",
   "apierror.regroup_failed": "この図を再グループ化できませんでした: {reason}"
 }

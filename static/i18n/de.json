@@ -510,7 +510,9 @@
   "layer_mode.group": "Gruppen",
   "layer_mode.pen": "Stiftbreite",
   "layer_mode.note": "Legt fest, wie die Zeichnung in Zeilen und Stiftwechsel-Etappen aufgeteilt wird.",
-  "a11y.rename_layer": "Zum Umbenennen doppelklicken",
+  "a11y.rename_layer": "Zum Umbenennen klicken",
+  "a11y.toggle_layer": "{name} in den Plot aufnehmen",
+  "layer_mode.switch_confirm": "Ebenenmodus wechseln? Dieser Modus behält seine eigene Ebenenliste – deine aktuellen Namen, Reihenfolge, Farben und Breiten bleiben gespeichert und kehren zurück, wenn du wieder in diesen Modus wechselst.",
   "optimize.expert_layer_id_hint": "Die Nummer jeder Ebene im Ebenen-Bereich ist ihre vpype-Ebenen-ID – damit sprichst du eine Ebene an, z. B. color --layer 2 red oder --layer 2 bei jedem vpype-Befehl.",
   "apierror.regroup_failed": "Zeichnung konnte nicht neu gruppiert werden: {reason}"
 }

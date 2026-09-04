@@ -510,7 +510,9 @@
   "layer_mode.group": "Groupes",
   "layer_mode.pen": "Largeur de plume",
   "layer_mode.note": "Choisissez comment le dessin est découpé en lignes et en étapes de changement de plume.",
-  "a11y.rename_layer": "Double-cliquez pour renommer",
+  "a11y.rename_layer": "Cliquez pour renommer",
+  "a11y.toggle_layer": "Inclure {name} dans le tracé",
+  "layer_mode.switch_confirm": "Changer de mode de calque ? Ce mode conserve sa propre liste de calques — vos noms, ordre, couleurs et épaisseurs actuels restent enregistrés et reviennent lorsque vous revenez à ce mode.",
   "optimize.expert_layer_id_hint": "Le numéro de chaque calque dans le panneau Calques est son identifiant de calque vpype — utilisez-le pour cibler un calque, par ex. color --layer 2 red, ou --layer 2 sur n'importe quelle commande vpype.",
   "apierror.regroup_failed": "Impossible de regrouper ce dessin : {reason}"
 }

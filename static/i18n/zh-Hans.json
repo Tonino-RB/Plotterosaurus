@@ -510,7 +510,9 @@
   "layer_mode.group": "组",
   "layer_mode.pen": "笔宽",
   "layer_mode.note": "选择如何将图形拆分为行和换笔阶段。",
-  "a11y.rename_layer": "双击以重命名",
+  "a11y.rename_layer": "点击以重命名",
+  "a11y.toggle_layer": "在绘图中包含 {name}",
+  "layer_mode.switch_confirm": "切换图层模式？此模式会保留自己的图层列表——当前的名称、顺序、颜色和线宽会被保存，再次切换回此模式时会恢复。",
   "optimize.expert_layer_id_hint": "图层面板中每个图层的编号就是它的 vpype 图层 ID——用它来指定图层，例如 color --layer 2 red，或在任意 vpype 命令中使用 --layer 2。",
   "apierror.regroup_failed": "无法重新分组此图形：{reason}"
 }

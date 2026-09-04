@@ -1363,6 +1363,13 @@ class JobUpdate(_OptimizeOptionalFields, _GridOptionalFields):
     layer_selections: list[dict] | None = None
     layer_styles: list[dict] | None = None
     layer_mode: Literal["layer", "group", "pen"] | None = None
+    # Parked per-mode {layer_selections, layer_styles} the UI restores on a
+    # switch back. A job's source_svg_id is immutable (re-upload / library-pick
+    # build a new job) and _regroup_svg is deterministic, so a snapshot's
+    # positional indices stay valid for the job's life; the switch handler
+    # re-validates anyway. Never feeds the plot — only the active top-level
+    # layer_selections / layer_styles do.
+    layer_mode_state: dict | None = None
     name: str | None = None
     paper_size_name: str | None = None
     paper_name: str | None = None
@@ -1488,14 +1495,28 @@ def update_job(job_id: str, req: JobUpdate):
         sid, info = _regroup_svg(src_id, new_mode)
         updates["svg_id"] = sid
         updates["source_svg_id"] = src_id
-        if "layer_selections" not in updates:
+        # The client may carry a parked per-mode snapshot back in this PATCH
+        # (layer_selections + layer_styles). Keep it only if every index still
+        # names a layer in the re-partitioned copy; otherwise rebuild fresh.
+        # layer_styles is keyed by the same positional index.
+        if "layer_selections" in updates:
+            valid = {l["index"] for l in info["layers"]}
+            updates["layer_selections"] = [
+                s for s in updates["layer_selections"] if s.get("index") in valid
+            ]
+            updates["layer_styles"] = [
+                s for s in updates.get("layer_styles", []) if s.get("index") in valid
+            ]
+            if not updates["layer_selections"]:
+                updates["layer_selections"] = [
+                    {"index": l["index"], "label": l["label"]} for l in info["layers"]
+                ]
+                updates["layer_styles"] = []
+        else:
             updates["layer_selections"] = [
                 {"index": l["index"], "label": l["label"]} for l in info["layers"]
             ]
-        # layer_styles is keyed by positional index into the *current* file; the
-        # re-partitioned copy has a different layer set, so the overrides no
-        # longer mean anything.
-        updates.setdefault("layer_styles", [])
+            updates.setdefault("layer_styles", [])
     # Keep the "Cut marks" row in step with grid_enabled + grid_cut_marks, from
     # whichever of the PATCH / the stored job carries each of the three.
     base_sel = updates.get("layer_selections", j.get("layer_selections") or [])
