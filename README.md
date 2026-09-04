@@ -1,6 +1,6 @@
 # Plotterosaurus
 
-> **Status: v1.0.0 — first public release.** Plotterosaurus is a fork of [Plotter Hub](https://github.com/Synendo/PlotterHub), with version numbering restarted at `1.0.0` to reflect that this is a separate line rather than a continuation of upstream's releases.
+> **Status: v1.0.1.** Plotterosaurus is a fork of [Plotter Hub](https://github.com/Synendo/PlotterHub), with version numbering restarted at `1.0.0` to reflect that this is a separate line rather than a continuation of upstream's releases.
 >
 > **This is experimental software that drives a machine with moving parts. Read the [Disclaimer](#disclaimer) before you run it.**
 
