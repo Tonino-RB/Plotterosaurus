@@ -2389,6 +2389,8 @@ function applyOptimizeMode(card, job) {
   if (gridSection) {
     gridSection.classList.toggle("disabled", mode === "expert");
     gridSection.querySelectorAll("input").forEach((el) => { el.disabled = mode === "expert"; });
+    const gridNote = gridSection.querySelector(".grid-mode-note");
+    if (gridNote) gridNote.hidden = mode !== "expert";
   }
   syncOptimizeExpertUndoBtn(card, job);
 }
